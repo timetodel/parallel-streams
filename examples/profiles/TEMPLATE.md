@@ -24,6 +24,12 @@ apply — every line here is repeated into every brief, so keep it short.
 <!-- The extra pass and what triggers it.
      Example: billing, authentication, permissions, tokens, anything on the public network. -->
 
+## Delegation
+<!-- What a session hands to a subagent instead of reading itself, and the model tier per kind of
+     work. Example: research and sweeps go to a subagent on the cheap fast tier; delegated
+     implementation runs on the session's own tier; review never below the tier that wrote the
+     code. Fix the tiers here so neighbouring sessions don't each pick by taste. -->
+
 ## Escalation
 <!-- What this project calls the deeper, more expensive mode, and how a session asks for it.
      Example: the session asks in a separate message and waits — it never starts a flagged step

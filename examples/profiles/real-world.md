@@ -34,6 +34,14 @@ Additionally required for: billing and pricing, licence enforcement, access cont
 key storage, anything crossing the network boundary, and anything listed in the project's registry
 of settled security decisions.
 
+## Delegation
+Anything that ends in a summary rather than an edit goes to a subagent: sweeps, prior art, consumer
+lists, broad searches. A stream runs for hours, and files read inline sit in its context for all of
+them. Tiers are fixed, not chosen per case: research and summarising on the cheap fast model;
+implementation delegated against an existing pattern on whatever the session itself runs; review,
+audit, and diagnosing a failure never below the model that wrote the code. A session that wants to
+deviate asks the owner.
+
 ## Escalation
 The project calls it "deep mode", and it is a session-level switch the owner turns on. A brief that
 needs it says so in its own line, up front, and the session waits for a yes rather than starting

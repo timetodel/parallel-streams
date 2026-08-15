@@ -23,6 +23,14 @@ Create an isolated workspace first — sessions share one project directory, and
 they overwrite each other's checkout. Branch, commits, pull request, and merge are yours to do
 without asking. Ask only about the decisions listed below.
 
+Delegate the reading. Anything that ends in a summary rather than an edit — "find every place
+that…", "how is this already done here", "list the consumers of X", a broad search — goes to a
+subagent, and you get a few lines back instead of a dozen files parked in this session's context,
+which is re-sent on every step until the stream ends. Read directly only when you already know the
+file and need one part of it. Model tier: research and summarising — the cheap fast one;
+implementation delegated against an existing pattern — the tier this session runs on; review,
+audit, or diagnosing a failure — no weaker than the tier that wrote the code.
+
 [+ merge-risk note when applicable: «Stream 3 is working in this package too — rebase before you
 open the pull request.»]
 
@@ -55,6 +63,45 @@ Plain language, decision first, code after.
 The review item appears twice on purpose — once as a section, once in the done-when list. It is the
 step most often skipped, and the checklist is where the session sees it at the exact moment it is
 about to declare the work finished.
+
+## Block 4: how to work — and why delegation lives there
+
+Two of the three paragraphs are about the session's autonomy: it gets its own workspace, and it
+runs branch, commits, pull request, and merge without asking. The third is about its context, and
+it is the one that gets left out.
+
+**A stream that reads with its own hands pays for it on every later step.** Files opened inline
+stay in the session's context, and that context is re-sent on every turn until the stream ends. A
+subagent reads the same files in its own context and hands back the conclusion. On a stream that
+runs for hours, this is the difference between a summary and a warehouse.
+
+The reason this line is mandatory rather than obvious: splitting a plan into parallel streams
+already satisfies the urge to parallelise, and sessions stop reaching for subagents entirely — they
+have a whole stream to themselves and the brief never told them otherwise. That was observed in
+practice, which is why the brief now says it out loud, and why the phrasing is permission as well
+as instruction: a session should not have to ask whether it may spawn a research subagent.
+
+Delegate: sweeps ("find every place that…"), prior art ("how is this already done here"), consumer
+lists, broad searches, cross-file comparisons — anything whose product is a summary.
+Do not delegate: a known file you need one part of, or an edit. A subagent costs more than the read
+it replaces when the read was going to be small.
+
+Model tiers, unless the profile says otherwise:
+
+| Subagent work | Tier |
+|---|---|
+| Research, reading, sweeps, summarising | the cheap fast one |
+| Implementation delegated against an existing pattern | the tier this session runs on |
+| Review, audit, diagnosing someone else's failure | no weaker than the tier that wrote the code |
+
+Fix the tiers in writing rather than asking per case. Asking costs an interruption every time,
+including for two-minute research, and letting each session pick by taste is exactly how neighbours
+end up running the same class of work at three different tiers.
+
+**Delegation is not escalation.** A research subagent is one worker answering one question, started
+by the session on its own. Escalation (block 6) is a deeper, more expensive mode the person has to
+turn on. Keeping them separate is what stops a session from asking for the expensive mode to do a
+routine lookup.
 
 ## Block 6: escalation
 

@@ -55,6 +55,11 @@ Create an isolated workspace first — sessions share one project directory, and
 they overwrite each other's checkout. Branch, commits, pull request, and merge are yours to do
 without asking. Ask only about the decisions listed below.
 
+Delegate the reading. Sweeps, prior art, consumer lists, broad searches — anything that ends in a
+summary rather than an edit — go to a subagent, so the answer comes back as a few lines instead of
+a dozen files parked in this session's context. Research runs on the cheap fast tier; delegated
+implementation on this session's tier; review never below the tier that wrote the code.
+
 ## What to do
 1. Add the `workspaces` table and the `workspace_members` table, with the role column carrying
    `owner`, `admin`, or `member`.
@@ -98,6 +103,11 @@ Wait until stream 1 (schema and migration) is merged into the main branch.
 Create an isolated workspace first — sessions share one project directory, and without isolation
 they overwrite each other's checkout. Branch, commits, pull request, and merge are yours to do
 without asking. Ask only about the decisions listed below.
+
+Delegate the reading. Sweeps, prior art, consumer lists, broad searches — anything that ends in a
+summary rather than an edit — go to a subagent, so the answer comes back as a few lines instead of
+a dozen files parked in this session's context. Research runs on the cheap fast tier; delegated
+implementation on this session's tier; review never below the tier that wrote the code.
 
 Stream 2 is adding endpoints in the same area of the codebase. Different files, but rebase before
 you open the pull request.
@@ -151,6 +161,11 @@ from memberships, and only the owner may see billing.
 Create an isolated workspace first — sessions share one project directory, and without isolation
 they overwrite each other's checkout. Branch, commits, pull request, and merge are yours to do
 without asking. Ask only about the decisions listed below.
+
+Delegate the reading. Sweeps, prior art, consumer lists, broad searches — anything that ends in a
+summary rather than an edit — go to a subagent, so the answer comes back as a few lines instead of
+a dozen files parked in this session's context. Research runs on the cheap fast tier; delegated
+implementation on this session's tier; review never below the tier that wrote the code.
 
 ## What to do
 1. Count active seats daily and prorate a seat added mid-cycle.
