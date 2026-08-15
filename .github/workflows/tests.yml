@@ -1,0 +1,26 @@
+name: tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.9", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - run: pip install pytest
+      - name: Unit tests
+        run: python -m pytest tests -q
+      - name: Renderer smoke test
+        run: |
+          printf '1:\n2: 1\n3: 1\n4: 2, 3\n5: 4\n' \
+            | python skills/parallel-streams/scripts/render_map.py --check

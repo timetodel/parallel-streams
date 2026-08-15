@@ -1,0 +1,42 @@
+# parallel-streams profile
+
+Copy this to `.parallel-streams.md` in your repository root and fill it in. Delete what does not
+apply — every line here is repeated into every brief, so keep it short.
+
+## Isolation
+<!-- How a session gets a workspace nobody else can move out from under it.
+     Example: one git worktree per stream, branched from a fresh origin/main. -->
+
+## Stream size
+<!-- Example: one pull request under 400 lines of diff. -->
+
+## Tests
+<!-- The command that proves a stream works. Example: `npm test` for the package you touched. -->
+
+## Gates
+<!-- Lint, types, formatting, and where the heavy checks run.
+     Example: `make lint typecheck` locally; the full matrix runs in CI, not on your machine. -->
+
+## Review
+<!-- The review gate before the pull request, and when a lighter one is acceptable. -->
+
+## Security review
+<!-- The extra pass and what triggers it.
+     Example: billing, authentication, permissions, tokens, anything on the public network. -->
+
+## Escalation
+<!-- What this project calls the deeper, more expensive mode, and how a session asks for it.
+     Example: the session asks in a separate message and waits — it never starts a flagged step
+     without it. -->
+
+## Merge
+<!-- Who merges, squash or rebase, whether CI must be green first. -->
+
+## Conventions
+<!-- Branch naming, commit message language and prefixes. -->
+
+## Settled decisions
+<!-- Path to a registry of decisions already closed, if you keep one. -->
+
+## Brief language
+<!-- The language the briefs should be written in. -->
