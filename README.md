@@ -123,6 +123,10 @@ Create an isolated workspace first — sessions share one project directory, and
 they overwrite each other's checkout. Branch, commits, pull request, and merge are yours to do
 without asking. Ask only about the decisions listed below.
 
+Delegate the reading — sweeps, prior art, broad searches go to a subagent, so you get a few lines
+back instead of a dozen files parked in this session's context. Research on the cheap fast tier;
+review never below the tier that wrote the code.
+
 Stream 2 is adding endpoints in the same area. Different files, but rebase before you open the PR.
 
 ## What to do
@@ -215,6 +219,9 @@ project's language — your isolation model, your test command, your review gate
 ## Isolation
 One git worktree per stream, branched from a fresh origin/main.
 
+## Delegation
+Research goes to a subagent on the cheap fast tier; review never below the tier that wrote the code.
+
 ## Tests
 `npm test` for the package you touched.
 
@@ -258,6 +265,14 @@ ceiling, not the target. Two well-briefed sessions beat six that keep colliding.
 **What if the plan is half done already?**
 The skill checks the merge history and adds a line under the diagram: what's merged, what's in
 flight, what hasn't started. If it can't verify that reliably, it says so instead of guessing.
+
+**Why does the brief tell the session to delegate its reading?**
+Because splitting a plan into streams quietly kills the habit. A session with a whole stream to
+itself feels parallel enough and stops spawning research subagents — so it reads with its own
+hands, and every file it opens stays in a context that is re-sent on every step until the stream
+ends. The brief names the behaviour, and names it as permission: no session should have to ask
+whether it may look something up. It also fixes the model tier per kind of work, so neighbouring
+sessions don't each pick by taste.
 
 **Why must every brief say something about escalation and review?**
 Because those are the two lines that were always meant to be there and were always the first to be

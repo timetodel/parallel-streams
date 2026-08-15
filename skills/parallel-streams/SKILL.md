@@ -106,8 +106,10 @@ conversation. Fixed block order, nothing skipped, nothing reordered:
 1. **Title** — an action, not an object ("Add the retry queue", not "Retry queue").
 2. **Context** — 3-5 lines: what and why, pointing at the plan section.
 3. **Dependencies** — what must be merged first, or "none, start now".
-4. **How to work** — create the isolated workspace first; the session handles branch, commits,
-   pull request, and merge on its own, and only asks about the decisions in block 8.
+4. **How to work** — create the isolated workspace first; delegate reading and research to
+   subagents instead of doing it inline, at the model tiers from the profile; the session handles
+   branch, commits, pull request, and merge on its own, and only asks about the decisions in
+   block 8.
 5. **What to do** — the concrete steps from the plan that belong to this stream.
 6. **Escalation** — mandatory line, either the trigger and the reason, or "not needed" and why.
 7. **Review** — mandatory line: which review gate runs before the merge.
@@ -115,7 +117,7 @@ conversation. Fixed block order, nothing skipped, nothing reordered:
    any user-visible wording, in plain language, decision before code.
 9. **Done when** — tests, gates, review completed, pull request merged.
 
-Template and the rules behind blocks 6-8: `references/brief-template.md`.
+Template and the rules behind blocks 4 and 6-8: `references/brief-template.md`.
 
 ## Step 6. Self-check before showing anything
 
@@ -130,6 +132,7 @@ Map:
 
 Each brief:
 
+- [ ] delegation line present — research to subagents, with the model tiers?
 - [ ] explicit escalation line — yes or no, with a reason?
 - [ ] explicit review line?
 - [ ] forks are concrete, taken from the plan, not generic advice?

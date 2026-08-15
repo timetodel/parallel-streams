@@ -3,6 +3,21 @@
 All notable changes to this project are documented here.
 This project follows [Semantic Versioning](https://semver.org/).
 
+## [1.1.0] — 2026-08-15
+
+### Added
+
+- **Delegation is now part of every brief.** Splitting a plan into streams turned out to kill the
+  habit of spawning research subagents: a session with a whole stream to itself feels parallel
+  enough, reads with its own hands, and carries every opened file in a context that is re-sent on
+  every step until the stream ends. The "How to work" block now names the behaviour — sweeps, prior
+  art, consumer lists and broad searches go to a subagent — and names it as permission, so no
+  session has to ask whether it may look something up.
+- **Model tiers are fixed in writing, not chosen per case** — research on the cheap fast tier,
+  delegated implementation on the session's own, review never below the tier that wrote the code.
+  Overridable through the new `## Delegation` profile section.
+- Self-check gained the matching line, so a brief without the delegation rule is a defect.
+
 ## [1.0.0] — 2026-08-15
 
 First public release.
