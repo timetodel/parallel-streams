@@ -5,6 +5,7 @@
 [![tests](https://github.com/timetodel/parallel-streams/actions/workflows/tests.yml/badge.svg)](https://github.com/timetodel/parallel-streams/actions/workflows/tests.yml)
 [![license](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![skill](https://img.shields.io/badge/Claude%20Code-skill-orange.svg)](https://code.claude.com/docs/en/skills)
+[![version](https://img.shields.io/badge/version-1.1.0-brightgreen.svg)](CHANGELOG.md)
 
 You open six agent sessions on one repository because the plan is big and the model is fast. An hour
 later two of them have rewritten the same file, a third built a helper the fourth had already
@@ -46,28 +47,25 @@ The repository carries [INSTALL.md](INSTALL.md) — step-by-step instructions wr
 agent**, not for you. It will fetch the skill folder, drop it in the right place, and tell you the
 command to run.
 
-### 2. As a plugin, one command
+### 2. By hand
 
-```
-/plugin marketplace add timetodel/parallel-streams
-/plugin install parallel-streams@parallel-streams
-```
-
-Updates later: `/plugin marketplace update parallel-streams`.
-
-### 3. By hand
-
-Copy `skills/parallel-streams/` into either location and restart the session:
-
-| Location | Scope |
-|---|---|
-| `~/.claude/skills/parallel-streams/` | you, in every project |
-| `<repo>/.claude/skills/parallel-streams/` | everyone working in that repository |
+Copy `skills/parallel-streams/` into the repository you actually run plans in, and restart the
+session:
 
 ```bash
 git clone https://github.com/timetodel/parallel-streams
-cp -r parallel-streams/skills/parallel-streams ~/.claude/skills/
+cp -r parallel-streams/skills/parallel-streams <your-repo>/.claude/skills/
 ```
+
+| Location | Scope |
+|---|---|
+| `<repo>/.claude/skills/parallel-streams/` | **default** — everyone working in that repository, and it ships with the repo |
+| `~/.claude/skills/parallel-streams/` | you, in every project — only if you want it everywhere |
+
+**It ships as a skill, not as a plugin, on purpose.** A plugin installs per user and then follows
+you into every project you open; this one is only useful where plans are big enough to split.
+Living in the repository also means the version is the one your teammates get, and updating it is a
+commit like any other. Updating: copy the directory over the old one.
 
 Requirements: an agent that supports skills, and Python 3.9+ for the diagram renderer (standard
 library only — no packages, no network).
@@ -256,7 +254,8 @@ billing system" doesn't split; a plan with phases, steps, and named artifacts do
 
 **Does this work outside Claude Code?**
 The skill is a markdown file with instructions and a Python script. Any agent that can read a file
-and run a command can follow it — the plugin install is the only Claude Code-specific part.
+and run a command can follow it. Nothing here is tied to one vendor's package manager — the whole
+delivery mechanism is "copy a directory into your repository".
 
 **How many streams should I actually open?**
 As many as the leftmost column, if your machine and your review capacity allow. The map is the

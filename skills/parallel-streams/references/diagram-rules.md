@@ -11,8 +11,7 @@ render again.
 
 ## Running the renderer
 
-The renderer ships next to this skill, at `scripts/render_map.py` inside the skill directory
-(for a plugin install: `${CLAUDE_PLUGIN_ROOT}/skills/parallel-streams/scripts/render_map.py`).
+The renderer ships next to this skill, at `scripts/render_map.py` inside the skill directory.
 It needs Python 3.9+ and nothing else — no packages, no network.
 
 Write the dependencies to a scratch file, one stream per line:
