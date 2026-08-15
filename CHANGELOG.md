@@ -18,6 +18,15 @@ This project follows [Semantic Versioning](https://semver.org/).
   Overridable through the new `## Delegation` profile section.
 - Self-check gained the matching line, so a brief without the delegation rule is a defect.
 
+### Changed
+
+- **Ships as a skill, not as a plugin.** The plugin manifests are gone and the install docs lead
+  with the project directory (`<repo>/.claude/skills/parallel-streams/`). A plugin installs per user
+  and then follows you into every project you open, while this skill is only useful where plans are
+  big enough to split; living in the repository also means your teammates get the version you
+  committed. Updating is copying the directory over the old one — there is nothing to unregister.
+  Anyone who installed the 1.0.0 plugin: remove it, copy the directory in instead.
+
 ## [1.0.0] — 2026-08-15
 
 First public release.
