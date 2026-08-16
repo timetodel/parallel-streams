@@ -5,7 +5,7 @@
 [![tests](https://github.com/timetodel/parallel-streams/actions/workflows/tests.yml/badge.svg)](https://github.com/timetodel/parallel-streams/actions/workflows/tests.yml)
 [![license](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![skill](https://img.shields.io/badge/Claude%20Code-skill-orange.svg)](https://code.claude.com/docs/en/skills)
-[![version](https://img.shields.io/badge/version-1.1.0-brightgreen.svg)](CHANGELOG.md)
+[![version](https://img.shields.io/badge/version-1.2.0-brightgreen.svg)](CHANGELOG.md)
 
 You open six agent sessions on one repository because the plan is big and the model is fast. An hour
 later two of them have rewritten the same file, a third built a helper the fourth had already
@@ -97,7 +97,9 @@ without the briefs.
 | 7 | Charge per seat | 3 | 8 | before proration — money math, and the seat rules disagree between phases | high + security |
 
 *"Waits for" and "Blocks" are verified against each other, not eyeballed. Both escalation and
-review are mandatory for every row — a blank there is treated as a defect.*
+review are mandatory for every row — `none` with a reason is an answer, a blank is a defect. Review
+depth follows what the stream touches — money and access control at the top, a docs-only diff at
+`none` — never how hard the work felt to write.*
 
 The diagram is **generated and self-verified**, never typed. See [why that matters](#the-diagram-is-generated-not-drawn).
 
@@ -224,7 +226,8 @@ Research goes to a subagent on the cheap fast tier; review never below the tier 
 `npm test` for the package you touched.
 
 ## Review
-Run the project's review command over the stream's diff. Default depth: high.
+Run the project's review command over the stream's diff. Default depth: high. A diff that cannot
+change behaviour may answer `none` with the reason.
 
 ## Security review
 Required for: billing, authentication, permissions, tokens, public network surface.
@@ -277,6 +280,15 @@ sessions don't each pick by taste.
 Because those are the two lines that were always meant to be there and were always the first to be
 dropped. Making them mandatory — including one deliberate repetition in the done-when checklist —
 is the fix that stuck.
+
+**Does that mean every stream has to be reviewed?**
+The *line* is mandatory, the gate is not. A stream whose diff cannot change behaviour — docs,
+translated strings, a version bump — answers `none` with the reason, and that counts as answered.
+What it may not do is decide by feel: depth comes from what the stream touches, because authors
+rate their own work as simple with striking consistency. Every `none` is paired with a fallback —
+if the work does end up touching executable code, the gate comes back — so "documentation only"
+can't quietly become a code change that skipped review. Teams that review everything on principle
+say so in the profile, and then `none` is never written at all.
 
 **Do I have to use git worktrees?**
 No, but you need *some* isolation. Sessions sharing one working directory fight over the active

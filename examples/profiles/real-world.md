@@ -26,8 +26,11 @@ via the project's gate script; a red gate blocks the merge exactly like red CI.
 
 ## Review
 Run the project's review command over the stream's diff before the pull request. Default depth:
-high. Small mechanical work following an existing pattern: medium. Never assign the cloud-billed
-top tier from a template — that one is the owner's decision, not a default.
+high. Small mechanical work following an existing pattern: medium. A stream whose diff cannot
+change behaviour — documentation, user-facing wording, a version bump, a file moved unchanged —
+answers `none` with the reason, and runs the default gate anyway if it does end up touching code.
+Never assign the cloud-billed top tier from a template — that one is the owner's decision, not a
+default.
 
 ## Security review
 Additionally required for: billing and pricing, licence enforcement, access control, tokens and

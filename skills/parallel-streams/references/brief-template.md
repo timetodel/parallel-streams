@@ -43,7 +43,9 @@ open the pull request.»]
  OR «Not needed: <reason>.»]
 
 ## Review
-Run <review gate from the profile> over this stream's changes before the pull request.
+[«Run <review gate from the profile> over this stream's changes before the pull request.»
+ OR «No review gate: <why this diff cannot change behaviour>. If anything here does end up
+ touching executable code, run <the profile's default gate> before the pull request anyway.»]
 [+ when applicable: «This stream touches <money / access control / secrets / network boundary> —
 run a security review as well.»]
 
@@ -56,7 +58,8 @@ Plain language, decision first, code after.
 ## Done when
 - [ ] tests pass
 - [ ] project gates are green
-- [ ] the review above ran and its findings are resolved
+- [ ] the review above ran and its findings are resolved — or it said `none`, and the finished diff
+      really did stay non-executable
 - [ ] pull request opened and merged the usual way
 ```
 
@@ -132,13 +135,33 @@ that session to ask up front and wait, rather than starting the flagged step wit
 
 ## Block 7: review
 
-- Default: run the project's review gate over this stream's changes before the pull request.
-- Small, mechanical work following an existing pattern may use a lighter gate — but the line is
-  still written explicitly.
-- Money, access control, tokens, secrets, network boundaries, or anything in the project's list of
-  settled security decisions: add a security review next to it.
-- Do not assign the heaviest, most expensive review tier by default. It belongs to a deliberate
-  decision by the person paying for it, not to a template.
+The line is mandatory; the gate is not. A stream whose diff cannot change behaviour answers `none`,
+and that is an answer. Silence is the defect — a session deciding by feel at the moment it is tired
+and wants to merge.
+
+**Depth follows what the stream touches, not how hard the work felt.** Authors rate their own work
+as simple with striking consistency; what the diff touches is the part both sides can see.
+
+| What the stream touches | Depth |
+|---|---|
+| Money, access control, secrets, personal data, anything reachable from outside | the profile's deepest gate, plus a security review |
+| A change that spreads — a sweep, a migration, a rename — or a new contract other streams will call | deep |
+| One area, following a pattern that already exists in the repository | the profile's lighter gate |
+| A diff that cannot change behaviour: prose, translated strings, comments, a version number, a file moved unchanged | `none`, with the reason |
+
+**`none` describes the diff, not the intention.** A stream planned as documentation-only that ends
+up editing a function is a code stream that skipped its review — and the plan is never the thing
+that decides, because the session discovers what it actually had to touch hours after the brief was
+written. That is why every `none` is paired with the fallback line: touch executable code, and the
+profile's default gate runs before the pull request. Written into the brief it costs one sentence;
+left out, `none` becomes the answer every ambiguous stream reaches for.
+
+**A profile may forbid `none` outright** — regulated code, an audit trail, a team that reviews
+everything on principle. Then the last row of the table does not apply and every stream carries a
+gate.
+
+Do not assign the heaviest, most expensive tier by default either. That one belongs to a deliberate
+decision by the person paying for it, not to a template.
 
 ## Block 8: forks
 
