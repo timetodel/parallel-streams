@@ -18,7 +18,10 @@ apply — every line here is repeated into every brief, so keep it short.
      Example: `make lint typecheck` locally; the full matrix runs in CI, not on your machine. -->
 
 ## Review
-<!-- The review gate before the pull request, and when a lighter one is acceptable. -->
+<!-- The review gate before the pull request, its depths, and whether a stream may answer `none`.
+     Example: default depth high; mechanical work following an existing pattern, lighter; a diff
+     that cannot change behaviour (docs, translated strings, a version bump), `none` with the
+     reason. Reviewing everything on principle? Say so here and `none` is never written. -->
 
 ## Security review
 <!-- The extra pass and what triggers it.

@@ -15,7 +15,7 @@ comes from a profile file, so the skill itself stays portable.
 | `## Stream size` | The size a single stream should stay under | one reviewable pull request |
 | `## Tests` | Command that proves the stream works | the project's documented test command |
 | `## Gates` | Lint, types, formatting, and where heavy checks run | the project's documented checks |
-| `## Review` | Review gate before the pull request, and its levels | a review pass before merge |
+| `## Review` | Review gate before the pull request, its depths, and whether a stream may answer `none` | a review pass before merge, `none` only for a diff that cannot change behaviour |
 | `## Security review` | Extra pass, and what triggers it | money, access control, secrets, network boundaries |
 | `## Delegation` | What a session hands to a subagent, and the model tier per kind of work | research to a subagent; cheap tier for research, session tier for delegated implementation, no weaker than the author for review |
 | `## Escalation` | What this project calls the deeper mode, and how to ask for it | described generically in the brief |
@@ -47,7 +47,9 @@ development machine.
 
 ## Review
 Run the project's review command over the stream's diff before opening the pull request.
-Default depth: high. Mechanical work following an existing pattern: medium.
+Default depth: high. Mechanical work following an existing pattern: medium. A stream whose diff
+cannot change behaviour — docs, translated strings, a version bump — may answer `none` with the
+reason; write "every stream carries a gate" here instead if this project never skips.
 
 ## Security review
 Additionally required for: billing, authentication, permissions, token handling, anything exposed

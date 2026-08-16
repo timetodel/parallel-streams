@@ -3,6 +3,32 @@
 All notable changes to this project are documented here.
 This project follows [Semantic Versioning](https://semver.org/).
 
+## [1.2.0] — 2026-08-16
+
+### Changed
+
+- **Review depth is now read off the stream, not off the author's confidence.** The old rule said
+  "default high, lighter for mechanical work", which asked each session to rate the difficulty of
+  its own work — a judgement authors make generously and consistently. Depth now comes from what
+  the stream touches: money, access control, secrets, personal data or an outside-reachable surface
+  at the deepest gate plus a security review; a change that spreads, or a new contract other
+  streams call, deep; one area following an existing pattern, lighter.
+- **A stream whose diff cannot change behaviour may answer `none`.** Documentation, translated
+  strings, comments, a version bump, a file moved unchanged — running a gate over those buys
+  nothing, and the previous wording had no way to say so: the lightest thing a brief could write
+  was still a gate. The mandatory part was never the gate, it is the *line* — silence is what the
+  rule exists to prevent.
+- **Every `none` carries a fallback.** `none` describes the diff, not the intention, and a stream
+  planned as documentation-only that ends up editing a function is a code stream that skipped its
+  review. The brief now states the return condition in the same block: touch executable code and
+  the profile's default gate runs before the pull request. The done-when checklist checks the claim
+  rather than the plan.
+
+### Added
+
+- Profiles can **forbid `none`** in `## Review` — regulated code, audit trails, teams that review
+  everything on principle. Then every stream carries a gate and the skip row never applies.
+
 ## [1.1.0] — 2026-08-15
 
 ### Added
