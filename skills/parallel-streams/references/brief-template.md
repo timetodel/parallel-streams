@@ -7,6 +7,13 @@ gets pasted into a fresh session and executed.
 conversation: no plan in context, no map, no reasoning about why the split looks like this. If a
 brief only makes sense to someone who read the map, it is not finished.
 
+**Where the brief appears, and under what heading.** It is printed in the reply, in a fenced block,
+under a heading that states its launch moment: `Stream 3 — after stream 1 merges`, or
+`Stream 1 — start now`. That is the form the person reads and copies from — the window is already
+open, and a file would mean opening a second one to reach the same text. The heading answers *when
+to open this session*; what the session delivers is the brief's own title, the first line inside the
+block. With the launch moment in every heading, the list of headings is itself the launch order.
+
 ## Template
 
 ```markdown

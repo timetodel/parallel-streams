@@ -3,6 +3,9 @@
 This is what the skill produces from [example-plan.md](example-plan.md). Nothing here was written
 by hand except the briefs' wording — the diagram came out of `render_map.py --check`.
 
+In a real session all of this arrives in the reply itself, ready to copy; it lives in a file here
+only so the README can link to a finished shape.
+
 ---
 
 Eight streams. The schema is the only true bottleneck: it defines the tables everything else reads,
@@ -37,7 +40,7 @@ noise, not information.
 
 ---
 
-## Stream 1 — Ship the workspace schema and migration
+## Stream 1 — start now
 
 ```markdown
 # Ship the workspace schema and migration
@@ -87,7 +90,7 @@ Plain language, decision first, code after.
 - [ ] pull request opened and merged the usual way
 ```
 
-## Stream 3 — Enforce workspace roles on every request
+## Stream 3 — after stream 1 merges
 
 ```markdown
 # Enforce workspace roles on every request
@@ -144,7 +147,7 @@ Plain language, decision first, code after.
 - [ ] pull request opened and merged the usual way
 ```
 
-## Stream 7 — Charge per seat
+## Stream 7 — after stream 3 merges
 
 ```markdown
 # Charge per seat
