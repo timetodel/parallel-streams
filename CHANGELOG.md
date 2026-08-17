@@ -3,6 +3,21 @@
 All notable changes to this project are documented here.
 This project follows [Semantic Versioning](https://semver.org/).
 
+## [1.3.0] — 2026-08-17
+
+### Changed
+
+- **The map and the briefs are printed in the reply, not parked in a file.** The output format said
+  "one copy-paste block per stream" and left where unstated, so sessions kept writing the briefs to
+  a document and pointing at it — which turns a copy into: open the file, find the stream, select
+  the block. The format now states it: the reply *is* the deliverable, and a file is written only
+  when the person asks for one, in addition rather than instead.
+- **Every brief's heading carries its launch moment** — `Stream 1 — start now`,
+  `Stream 3 — after stream 1 merges`, `Stream 8 — after streams 5, 6, 7 merge`. The heading used to
+  repeat the stream's name, which the brief's own title says one line later; what the reader
+  actually needs there is which sessions can be opened today. With the moment in every heading, the
+  list of headings is the launch order.
+
 ## [1.2.0] — 2026-08-16
 
 ### Changed

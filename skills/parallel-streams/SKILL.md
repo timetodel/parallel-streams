@@ -3,7 +3,7 @@ name: parallel-streams
 description: Split an approved plan into parallel work streams that different agent sessions can run at the same time without merge conflicts or duplicated work. Produces a dependency map (table plus diagram) and one self-contained brief per stream, ready to paste into a fresh session. Use when asked to "split the plan into streams", "parallelize this plan", "what can I run in parallel", "hand this plan to several agents", or "show me the stream map".
 ---
 
-<!-- parallel-streams 1.2.0 — https://github.com/timetodel/parallel-streams
+<!-- parallel-streams 1.3.0 — https://github.com/timetodel/parallel-streams
      Shipped as a skill: this directory is the whole thing. Update by copying a newer
      copy of it over this one; changes are listed in the repository's CHANGELOG.md. -->
 
@@ -118,7 +118,8 @@ a guess as fact.
 ## Step 5. Write one brief per stream
 
 Each brief is self-contained: the user pastes it into a fresh session that has none of this
-conversation. Fixed block order, nothing skipped, nothing reordered:
+conversation. Every brief appears in the reply itself, under a heading that says when to open it —
+the exact shape is in *Output format* below. Fixed block order, nothing skipped, nothing reordered:
 
 1. **Title** — an action, not an object ("Add the retry queue", not "Retry queue").
 2. **Context** — 3-5 lines: what and why, pointing at the plan section.
@@ -159,14 +160,30 @@ Each brief:
 - [ ] title names an action?
 - [ ] a reader with no other context could execute it?
 
+Delivery:
+
+- [ ] map and briefs printed in this reply, copyable without opening a file?
+- [ ] every brief under a heading naming its launch moment — `start now`, or the streams it waits for?
+
 Any "no" — fix it before showing. Never show a draft.
 
 ## Output format
 
+The map and the briefs are printed in this reply. They are the answer itself, not a document
+written beside it: the person copies each brief out of the window already in front of them, into a
+new session, without opening a file first.
+
 1. One-paragraph summary: how many streams, why this split, and whether a profile was found.
 2. The table.
 3. The diagram, plus the state line if the plan is partly done.
-4. One copy-paste block per stream, each with a clear heading. Skipped when only the map was asked for.
+4. One block per stream, in stream order, each under a heading of the form `Stream N — start now`
+   when nothing blocks it, or `Stream N — after stream M merges` when something does, naming every
+   stream it waits for (`Stream 8 — after streams 5, 6, 7 merge`). The heading carries the launch
+   moment, so the reader sees from the headings alone which sessions to open today; the name of the
+   work is the brief's own title, the first line inside the block. Each brief goes in a fenced block
+   so one gesture copies it whole. Skipped when only the map was asked for.
 5. One closing line: which streams can be opened right now.
 
-Do not restate the launch order in prose — the table and the diagram already say it twice.
+Asked for a file as well — write it, and print everything here too.
+
+Do not restate the launch order in prose — the table, the diagram and the headings already carry it.

@@ -5,7 +5,7 @@
 [![tests](https://github.com/timetodel/parallel-streams/actions/workflows/tests.yml/badge.svg)](https://github.com/timetodel/parallel-streams/actions/workflows/tests.yml)
 [![license](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![skill](https://img.shields.io/badge/Claude%20Code-skill-orange.svg)](https://code.claude.com/docs/en/skills)
-[![version](https://img.shields.io/badge/version-1.2.0-brightgreen.svg)](CHANGELOG.md)
+[![version](https://img.shields.io/badge/version-1.3.0-brightgreen.svg)](CHANGELOG.md)
 
 You open six agent sessions on one repository because the plan is big and the model is fast. An hour
 later two of them have rewritten the same file, a third built a helper the fourth had already
@@ -106,7 +106,11 @@ The diagram is **generated and self-verified**, never typed. See [why that matte
 ### 2. One self-contained brief per stream
 
 Copy-paste into a fresh session. It has no memory of the conversation that produced it, and it
-doesn't need one:
+doesn't need one.
+
+The briefs arrive in the reply, not in a file you have to open, and each one sits under a heading
+that says when to open it — `Stream 1 — start now`, `Stream 3 — after stream 1 merges` — so the
+list of headings reads as today's launch order:
 
 ```markdown
 # Enforce workspace roles on every request
