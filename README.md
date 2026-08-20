@@ -128,8 +128,8 @@ they overwrite each other's checkout. Branch, commits, pull request, and merge a
 without asking. Ask only about the decisions listed below.
 
 Delegate the reading — sweeps, prior art, broad searches go to a subagent, so you get a few lines
-back instead of a dozen files parked in this session's context. Research on the cheap fast tier;
-review never below the tier that wrote the code.
+back instead of a dozen files parked in this session's context. Research and mechanical tasks on
+the cheap fast tier; new logic on the session's own; review never below the session's tier.
 
 Stream 2 is adding endpoints in the same area. Different files, but rebase before you open the PR.
 
@@ -224,7 +224,8 @@ project's language — your isolation model, your test command, your review gate
 One git worktree per stream, branched from a fresh origin/main.
 
 ## Delegation
-Research goes to a subagent on the cheap fast tier; review never below the tier that wrote the code.
+Research and mechanical tasks go to a subagent on the cheap fast tier; new logic on the session's
+own tier; review never below the session's tier.
 
 ## Tests
 `npm test` for the package you touched.

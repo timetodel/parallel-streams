@@ -43,9 +43,10 @@ same way. You stay the conductor: you hold the plan, talk to the person, and run
 commits, pull request and merge. Write code with your own hands only for a change small enough that
 briefing a subagent would cost more than the edit.
 
-Model tier: research and summarising — the cheap fast one; implementation against an existing
-pattern — the tier this session runs on; review, audit, or diagnosing a failure — no weaker than
-the tier that wrote the code.
+Model tier: research and summarising — the cheap fast one; a mechanical task, where a worked
+example sits next to it and the job is "do the same for this case" — the cheap fast one too; a
+task with new logic — the tier this session runs on; review, audit, or diagnosing a failure — no
+weaker than the tier this session runs on, even when the cheap tier wrote the code.
 
 [+ merge-risk note when applicable: «Stream 3 is working in this package too — rebase before you
 open the pull request.»]
@@ -122,12 +123,17 @@ Model tiers, unless the profile says otherwise:
 | Subagent work | Tier |
 |---|---|
 | Research, reading, sweeps, summarising | the cheap fast one |
-| Implementation against an existing pattern | the tier this session runs on |
-| Review, audit, diagnosing someone else's failure | no weaker than the tier that wrote the code |
+| Mechanical task: a worked example sits next to it, the job is "do the same for this case" | the cheap fast one |
+| Task with new logic: no example to copy, a choice between options, or money, permissions, or schema involved | the tier this session runs on |
+| Review, audit, diagnosing someone else's failure | no weaker than the tier this session runs on, even when the cheap tier wrote the code |
 
 Fix the tiers in writing rather than asking per case. Asking costs an interruption every time,
 including for two-minute research, and letting each session pick by taste is exactly how neighbours
 end up running the same class of work at three different tiers.
+
+When unsure whether a task is mechanical, take the session tier: quality outranks the saving.
+Never review on the cheap tier — a cheap implementer is safe precisely because a stronger model
+checks the work.
 
 **Delegation is not escalation.** A research subagent is one worker answering one question, started
 by the session on its own. Escalation (block 6) is a deeper, more expensive mode the person has to
