@@ -272,13 +272,15 @@ ceiling, not the target. Two well-briefed sessions beat six that keep colliding.
 The skill checks the merge history and adds a line under the diagram: what's merged, what's in
 flight, what hasn't started. If it can't verify that reliably, it says so instead of guessing.
 
-**Why does the brief tell the session to delegate its reading?**
+**Why does the brief tell the session to delegate its reading and its writing?**
 Because splitting a plan into streams quietly kills the habit. A session with a whole stream to
-itself feels parallel enough and stops spawning research subagents — so it reads with its own
-hands, and every file it opens stays in a context that is re-sent on every step until the stream
-ends. The brief names the behaviour, and names it as permission: no session should have to ask
-whether it may look something up. It also fixes the model tier per kind of work, so neighbouring
-sessions don't each pick by taste.
+itself feels parallel enough and stops spawning subagents — so it reads with its own hands, and
+every file it opens stays in a context that is re-sent on every step until the stream ends. The same
+happens to implementation, and naming only the reading half made it worse: one wave kept every
+research subagent and ran no implementers at all, hand-writing hundreds of lines that then scrolled
+past the person the stream reports to. So the brief names both halves, and names them as permission:
+no session should have to ask whether it may look something up or hand a task to an implementer. It
+also fixes the model tier per kind of work, so neighbouring sessions don't each pick by taste.
 
 **Why must every brief say something about escalation and review?**
 Because those are the two lines that were always meant to be there and were always the first to be

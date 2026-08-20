@@ -3,7 +3,7 @@ name: parallel-streams
 description: Split an approved plan into parallel work streams that different agent sessions can run at the same time without merge conflicts or duplicated work. Produces a dependency map (table plus diagram) and one self-contained brief per stream, ready to paste into a fresh session. Use when asked to "split the plan into streams", "parallelize this plan", "what can I run in parallel", "hand this plan to several agents", or "show me the stream map".
 ---
 
-<!-- parallel-streams 1.3.0 — https://github.com/timetodel/parallel-streams
+<!-- parallel-streams 1.4.0 — https://github.com/timetodel/parallel-streams
      Shipped as a skill: this directory is the whole thing. Update by copying a newer
      copy of it over this one; changes are listed in the repository's CHANGELOG.md. -->
 
@@ -125,7 +125,8 @@ the exact shape is in *Output format* below. Fixed block order, nothing skipped,
 2. **Context** — 3-5 lines: what and why, pointing at the plan section.
 3. **Dependencies** — what must be merged first, or "none, start now".
 4. **How to work** — create the isolated workspace first; delegate reading and research to
-   subagents instead of doing it inline, at the model tiers from the profile; the session handles
+   subagents instead of doing it inline, and delegate each task's implementation the same way, with
+   a separate subagent reviewing it, at the model tiers from the profile; the session handles
    branch, commits, pull request, and merge on its own, and only asks about the decisions in
    block 8.
 5. **What to do** — the concrete steps from the plan that belong to this stream.
@@ -152,7 +153,7 @@ Map:
 
 Each brief:
 
-- [ ] delegation line present — research to subagents, with the model tiers?
+- [ ] delegation line present — research *and* implementation to subagents, with the model tiers?
 - [ ] explicit escalation line — yes or no, with a reason?
 - [ ] explicit review line — a gate, or `none` with its reason plus the line that restores the gate
       if the diff turns out to touch code?

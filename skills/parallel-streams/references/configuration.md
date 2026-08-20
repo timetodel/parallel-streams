@@ -17,7 +17,7 @@ comes from a profile file, so the skill itself stays portable.
 | `## Gates` | Lint, types, formatting, and where heavy checks run | the project's documented checks |
 | `## Review` | Review gate before the pull request, its depths, and whether a stream may answer `none` | a review pass before merge, `none` only for a diff that cannot change behaviour |
 | `## Security review` | Extra pass, and what triggers it | money, access control, secrets, network boundaries |
-| `## Delegation` | What a session hands to a subagent, and the model tier per kind of work | research to a subagent; cheap tier for research, session tier for delegated implementation, no weaker than the author for review |
+| `## Delegation` | What a session hands to a subagent, and the model tier per kind of work | research and each task's implementation to subagents, implementation reviewed by another; cheap tier for research, session tier for implementation, no weaker than the author for review |
 | `## Escalation` | What this project calls the deeper mode, and how to ask for it | described generically in the brief |
 | `## Merge` | Who merges, squash or rebase, whether CI must be green first | the session merges its own pull request once checks pass |
 | `## Conventions` | Branch naming, commit message language and prefixes | the repository's existing style |
@@ -56,9 +56,11 @@ Additionally required for: billing, authentication, permissions, token handling,
 to the public network.
 
 ## Delegation
-Reading and research go to a subagent, not into the session's own context. Tiers: research — the
-cheap fast model; implementation delegated against an existing pattern — whatever the session runs
-on; review and audit — the strongest model available, never below the one that wrote the code.
+Reading and research go to a subagent, not into the session's own context. So does the
+implementation of each task: one subagent writes it, another reviews it against the task, and the
+session accepts the result. Tiers: research — the cheap fast model; implementation against an
+existing pattern — whatever the session runs on; review and audit — the strongest model available,
+never below the one that wrote the code.
 
 ## Escalation
 This project calls it "deep mode". The session asks for it in a separate message and waits for a
