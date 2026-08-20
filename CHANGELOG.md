@@ -3,6 +3,21 @@
 All notable changes to this project are documented here.
 This project follows [Semantic Versioning](https://semver.org/).
 
+## [1.4.1] — 2026-08-20
+
+### Changed
+
+- **The implementation tier splits in two: mechanical work goes cheap, new logic stays on the
+  session's tier.** Once every task started going to an implementation subagent, a single
+  "implementation — the tier this session runs on" row meant a wave of ten streams ran even its
+  rename-a-field tasks on the most expensive tier. A task with a worked example next to it, where
+  the job is "do the same for this case", now goes to the cheap fast tier; a task with new logic —
+  no example to copy, a choice between options, or money, permissions, or schema involved — stays on
+  the session's tier, and so does anything the session is unsure about.
+- **Review is pinned to the session's tier, not to whoever wrote the code.** With a cheap
+  implementer allowed, "no weaker than the tier that wrote the code" would have let a cheap review
+  follow cheap work. A cheap implementer is safe precisely because a stronger model checks it.
+
 ## [1.4.0] — 2026-08-20
 
 ### Changed

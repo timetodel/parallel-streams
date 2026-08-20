@@ -3,7 +3,7 @@ name: parallel-streams
 description: Split an approved plan into parallel work streams that different agent sessions can run at the same time without merge conflicts or duplicated work. Produces a dependency map (table plus diagram) and one self-contained brief per stream, ready to paste into a fresh session. Use when asked to "split the plan into streams", "parallelize this plan", "what can I run in parallel", "hand this plan to several agents", or "show me the stream map".
 ---
 
-<!-- parallel-streams 1.4.0 — https://github.com/timetodel/parallel-streams
+<!-- parallel-streams 1.4.1 — https://github.com/timetodel/parallel-streams
      Shipped as a skill: this directory is the whole thing. Update by copying a newer
      copy of it over this one; changes are listed in the repository's CHANGELOG.md. -->
 
