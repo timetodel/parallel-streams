@@ -34,9 +34,18 @@ Delegate the reading. Anything that ends in a summary rather than an edit — "f
 that…", "how is this already done here", "list the consumers of X", a broad search — goes to a
 subagent, and you get a few lines back instead of a dozen files parked in this session's context,
 which is re-sent on every step until the stream ends. Read directly only when you already know the
-file and need one part of it. Model tier: research and summarising — the cheap fast one;
-implementation delegated against an existing pattern — the tier this session runs on; review,
-audit, or diagnosing a failure — no weaker than the tier that wrote the code.
+file and need one part of it.
+
+Delegate the writing too. Each task under *What to do* goes to an implementation subagent, which
+writes the code and its tests in its own context and hands back a summary; a second subagent then
+reviews that work against the task before you accept it, and each round of fixes is delegated the
+same way. You stay the conductor: you hold the plan, talk to the person, and run the branch,
+commits, pull request and merge. Write code with your own hands only for a change small enough that
+briefing a subagent would cost more than the edit.
+
+Model tier: research and summarising — the cheap fast one; implementation against an existing
+pattern — the tier this session runs on; review, audit, or diagnosing a failure — no weaker than
+the tier that wrote the code.
 
 [+ merge-risk note when applicable: «Stream 3 is working in this package too — rebase before you
 open the pull request.»]
@@ -76,9 +85,9 @@ about to declare the work finished.
 
 ## Block 4: how to work — and why delegation lives there
 
-Two of the three paragraphs are about the session's autonomy: it gets its own workspace, and it
-runs branch, commits, pull request, and merge without asking. The third is about its context, and
-it is the one that gets left out.
+The first paragraph is about the session's autonomy: it gets its own workspace, and it runs branch,
+commits, pull request, and merge without asking. The other two are about who reads and who writes,
+and they are the ones that get left out.
 
 **A stream that reads with its own hands pays for it on every later step.** Files opened inline
 stay in the session's context, and that context is re-sent on every turn until the stream ends. A
@@ -93,15 +102,27 @@ as instruction: a session should not have to ask whether it may spawn a research
 
 Delegate: sweeps ("find every place that…"), prior art ("how is this already done here"), consumer
 lists, broad searches, cross-file comparisons — anything whose product is a summary.
-Do not delegate: a known file you need one part of, or an edit. A subagent costs more than the read
-it replaces when the read was going to be small.
+Do not delegate: a known file you need one part of. A subagent costs more than the read it replaces
+when the read was going to be small.
+
+**The writing has to be named too, or it stops being delegated.** Observed 2026-08-20: a wave whose
+briefs named only research kept its research subagents and lost its implementers entirely — every
+stream wrote hundreds of lines by hand, and all of that code travelled through the chat in front of
+the person who does not read code, instead of staying inside a subagent's context. Naming only half
+of the delegation reads as permission for the other half. Delegated writing also buys a second pair
+of eyes for free: the implementer, the reviewer and the session accepting the result are three
+different workers, and no one is reviewing their own code.
+
+Delegate: each task in the brief, as one implementation subagent plus a separate reviewing subagent,
+and every round of fixes after the review. Do not delegate: an edit small enough that writing the
+brief would take longer than making it.
 
 Model tiers, unless the profile says otherwise:
 
 | Subagent work | Tier |
 |---|---|
 | Research, reading, sweeps, summarising | the cheap fast one |
-| Implementation delegated against an existing pattern | the tier this session runs on |
+| Implementation against an existing pattern | the tier this session runs on |
 | Review, audit, diagnosing someone else's failure | no weaker than the tier that wrote the code |
 
 Fix the tiers in writing rather than asking per case. Asking costs an interruption every time,

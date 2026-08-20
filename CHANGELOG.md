@@ -3,6 +3,20 @@
 All notable changes to this project are documented here.
 This project follows [Semantic Versioning](https://semver.org/).
 
+## [1.4.0] — 2026-08-20
+
+### Changed
+
+- **The brief now delegates the writing, not only the reading.** Block 4 named research subagents
+  and said nothing about implementation, and sessions read that as permission to write everything
+  themselves: an entire wave kept its research subagents and ran zero implementers, with hundreds of
+  hand-written lines passing through the chat in front of a person who does not read code. Each task
+  in a brief now goes to an implementation subagent with a separate subagent reviewing it, rounds of
+  fixes included; the session conducts, talks to the person, and owns the branch and the merge.
+- **"Do not delegate an edit" is gone from the reference.** It was the line that made hand-writing
+  look correct. The exception that remains is a change small enough that briefing a subagent would
+  cost more than making it.
+
 ## [1.3.0] — 2026-08-17
 
 ### Changed
