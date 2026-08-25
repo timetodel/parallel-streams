@@ -3,9 +3,13 @@ name: parallel-streams
 description: Split an approved plan into parallel work streams that different agent sessions can run at the same time without merge conflicts or duplicated work. Produces a dependency map (table plus diagram) and one self-contained brief per stream, ready to paste into a fresh session. Use when asked to "split the plan into streams", "parallelize this plan", "what can I run in parallel", "hand this plan to several agents", or "show me the stream map".
 ---
 
-<!-- parallel-streams 1.4.1 — https://github.com/timetodel/parallel-streams
+<!-- parallel-streams 1.5.0 — https://github.com/timetodel/parallel-streams
      Shipped as a skill: this directory is the whole thing. Update by copying a newer
-     copy of it over this one; changes are listed in the repository's CHANGELOG.md. -->
+     copy of it over this one; changes are listed in the repository's CHANGELOG.md.
+     Project rules come from the profile `.parallel-streams.md` in the repository root.
+     The coordination channel — the machinery behind the commands this skill prints — is
+     the `coordination/` subdirectory. It is optional: a profile with no `## Coordination`
+     section leaves the skill working exactly as it did before. See `coordination/README.md`. -->
 
 # Split a plan into parallel streams
 
@@ -26,6 +30,23 @@ If it does not exist, use these defaults and say once, in the summary, that defa
 isolation by git worktree, one reviewable pull request per stream, tests via the project's
 documented command, review before merge. Details and the full field list:
 `references/configuration.md`.
+
+**Coordination channel.** If the profile has a `## Coordination` section, the project has a way for
+running sessions to reach each other — sessions cannot see each other's context, and a plan edited
+after a session started never reaches it. Copy those commands verbatim into blocks 4 and 9 of every
+brief, filled in for that stream: announce the stream on start, send a finding to a live neighbour,
+close what arrives, ask who owns a task before proposing work outside your own, release the stream
+before saying done. No such section — skip it entirely and say nothing about coordination; the
+skill carries the protocol, never the mechanism.
+
+Each stream's address in that channel is `<wave>/<stream number>` — the wave id from the plan's file
+name and the number from column 1 of the table. Names of branches and folders drift within a wave;
+the number in the plan does not, so it is the only address that keeps working.
+
+A project with no waves and no plan file is supported too: the channel supplies the wave itself —
+from work already running next to it, or from today's date when nothing is — and hands out the next
+free stream number. The channel's own machinery ships with this skill, in `coordination/`; how it is
+installed into a project: `coordination/README.md`.
 
 ## Step 1. Read the whole plan
 
@@ -115,6 +136,10 @@ If some of the work already landed, a map without that note misleads. Check the 
 which are in flight, which have not started. If the check is approximate, say so — do not present
 a guess as fact.
 
+Which streams are *in flight* is the half that guessing gets wrong: a worktree left behind by a
+closed session looks exactly like a running one. If the profile declares a coordination channel,
+ask it — it answers from the sessions' own claims, not from directory names.
+
 ## Step 5. Write one brief per stream
 
 Each brief is self-contained: the user pastes it into a fresh session that has none of this
@@ -124,18 +149,25 @@ the exact shape is in *Output format* below. Fixed block order, nothing skipped,
 1. **Title** — an action, not an object ("Add the retry queue", not "Retry queue").
 2. **Context** — 3-5 lines: what and why, pointing at the plan section.
 3. **Dependencies** — what must be merged first, or "none, start now".
-4. **How to work** — create the isolated workspace first; delegate reading and research to
-   subagents instead of doing it inline, and delegate each task's implementation the same way, with
-   a separate subagent reviewing it, at the model tiers from the profile; the session handles
-   branch, commits, pull request, and merge on its own, and only asks about the decisions in
-   block 8.
+4. **How to work** — create the isolated workspace first, then announce the stream on the
+   coordination channel if the profile has one (the announcement is what makes this session
+   reachable at all, and it is worthless after the fact — put it before any edit); delegate reading
+   and research to subagents instead of doing it inline, and delegate each task's implementation the
+   same way, with a separate subagent reviewing it, at the model tiers from the profile; the session
+   handles branch, commits, pull request, and merge on its own, and only asks about the decisions in
+   block 8. When the channel exists, this block also carries: how a finding reaches a live
+   neighbour, that arriving records must be closed, and — before proposing any work outside this
+   stream's own tasks — how to ask who owns that task. The person approving cannot know a task was
+   planned for another stream; they will say yes.
 5. **What to do** — the concrete steps from the plan that belong to this stream.
 6. **Escalation** — mandatory line, either the trigger and the reason, or "not needed" and why.
 7. **Review** — mandatory line: which review gate runs before the merge, or `none` with its reason
    and the condition that brings the gate back.
 8. **Decide with me before implementing** — the real forks *from this plan* for this stream, plus
    any user-visible wording, in plain language, decision before code.
-9. **Done when** — tests, gates, review completed, pull request merged.
+9. **Done when** — tests, gates, review completed, pull request merged; and, where the profile has a
+   coordination channel, the stream released — releasing is what forces the question "is everything
+   that arrived actually handled", which nothing else in the flow asks.
 
 Template and the rules behind blocks 4 and 6-8: `references/brief-template.md`.
 
@@ -160,6 +192,8 @@ Each brief:
 - [ ] forks are concrete, taken from the plan, not generic advice?
 - [ ] title names an action?
 - [ ] a reader with no other context could execute it?
+- [ ] profile has a coordination channel — announce-on-start (before any edit) in block 4, release
+      in block 9, and this stream's own address filled in, not a placeholder?
 
 Delivery:
 

@@ -20,6 +20,10 @@ jobs:
       - run: pip install pytest
       - name: Unit tests
         run: python -m pytest tests -q
+      - name: PowerShell is present (the channel tests skip themselves without it)
+        run: pwsh -NoProfile -Command '$PSVersionTable.PSVersion.ToString()'
+      - name: Coordination channel tests
+        run: python -m pytest skills/parallel-streams/coordination/tests -q
       - name: Renderer smoke test
         run: |
           printf '1:\n2: 1\n3: 1\n4: 2, 3\n5: 4\n' \

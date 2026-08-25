@@ -5,7 +5,7 @@
 [![tests](https://github.com/timetodel/parallel-streams/actions/workflows/tests.yml/badge.svg)](https://github.com/timetodel/parallel-streams/actions/workflows/tests.yml)
 [![license](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![skill](https://img.shields.io/badge/Claude%20Code-skill-orange.svg)](https://code.claude.com/docs/en/skills)
-[![version](https://img.shields.io/badge/version-1.3.0-brightgreen.svg)](CHANGELOG.md)
+[![version](https://img.shields.io/badge/version-1.5.0-brightgreen.svg)](CHANGELOG.md)
 
 You open six agent sessions on one repository because the plan is big and the model is fast. An hour
 later two of them have rewritten the same file, a third built a helper the fourth had already
@@ -246,6 +246,42 @@ Without a profile it uses sane defaults and says so once.
 
 ---
 
+## The coordination channel (optional)
+
+Splitting the plan is not the whole problem. Once the sessions are running, they are blind to each
+other: none of them can see another's context, and a plan edited after they started never reaches
+them — each read it once, at its own start. So a finding one session makes for another has no way
+to arrive, and "who owns this task?" has no one to answer it.
+
+The channel is the part that answers those. It ships inside the skill, in `coordination/`, and it
+is **off until you install it**:
+
+```
+pwsh skills/parallel-streams/coordination/install.ps1
+```
+
+That gives a project five commands, which the skill then writes into every brief it produces:
+
+| Command | What it does |
+|---|---|
+| `-Mode Claim` | announce this stream on start — otherwise a running session is indistinguishable from one nobody opened |
+| `-Mode Add` | send a finding to a live neighbour, addressed by stream number (`wave6/3`), not by branch name |
+| `-Mode Done` | close what arrived, so it stops coming back after each context compaction |
+| `-Mode Release` | hand the stream back before saying done — refused while the inbox still has open entries |
+| `-Mode Streams` | ask who owns which task, before proposing work outside your own |
+
+The board and the claims live in the repository's shared internal directory, so every worktree sees
+them at once, they belong to no branch, and they never need merging.
+
+A profile with no `## Coordination` section leaves all of this out: the skill prints no channel
+commands and behaves exactly as it did before. Full description, including one known limitation
+stated in the open: [coordination/README.md](skills/parallel-streams/coordination/README.md).
+
+Requirements: PowerShell 7 (the tool and both hooks are `.ps1`; it runs on Windows, macOS and
+Linux) and a git repository.
+
+---
+
 ## What it is, and what it isn't
 
 **It is** a planning step: it reads a plan, works out the dependency structure, and writes the
@@ -253,7 +289,8 @@ briefs. The output is text you can read, argue with, and paste.
 
 **It isn't** an orchestrator. It doesn't spawn sessions, doesn't watch them, doesn't merge for you.
 That is deliberate — you stay the one who decides how many sessions to open and when. The map tells
-you what's possible; the calendar is yours.
+you what's possible; the calendar is yours. The optional coordination channel does not change that:
+it lets running sessions reach each other, it does not run them.
 
 **It needs a plan.** Not a perfect one, but something concrete enough to have parts. "Rewrite the
 billing system" doesn't split; a plan with phases, steps, and named artifacts does.
@@ -296,6 +333,17 @@ rate their own work as simple with striking consistency. Every `none` is paired 
 if the work does end up touching executable code, the gate comes back — so "documentation only"
 can't quietly become a code change that skipped review. Teams that review everything on principle
 say so in the profile, and then `none` is never written at all.
+
+**Do I have to install the coordination channel?**
+No. The skill splits plans without it, exactly as it did before — leave the `## Coordination`
+section out of the profile and it never mentions the channel. Install it when the answer to "how
+does a session tell its neighbour what it just found?" is "it can't", which is the moment several
+sessions on one repository stop being independent.
+
+**The channel is PowerShell — I'm on macOS.**
+PowerShell 7 is a cross-platform install (`brew install powershell`, `apt install powershell`); the
+scripts avoid Windows-only calls and their tests run on Linux in this repository's own CI. If you
+would rather not add it, skip the channel — nothing else in the skill needs it.
 
 **Do I have to use git worktrees?**
 No, but you need *some* isolation. Sessions sharing one working directory fight over the active

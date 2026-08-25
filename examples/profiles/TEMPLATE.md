@@ -49,3 +49,13 @@ apply — every line here is repeated into every brief, so keep it short.
 
 ## Brief language
 <!-- The language the briefs should be written in. -->
+
+## Coordination
+<!-- Only if the coordination channel is installed (skills/parallel-streams/coordination).
+     The installer writes this section for you, filled in with the five commands. Leave the
+     section out entirely and the skill says nothing about coordination — that is a supported
+     way to run it. -->
+
+## Plans
+<!-- The folder where wave plans live, backtick-quoted, e.g. `docs/plans/`.
+     The channel's nudge guard watches that folder; without the line it stays disconnected. -->

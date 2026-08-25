@@ -3,6 +3,46 @@
 All notable changes to this project are documented here.
 This project follows [Semantic Versioning](https://semver.org/).
 
+## [1.5.0] — 2026-08-25
+
+### Added
+
+- **A coordination channel, shipped inside the skill and off by default.** Splitting a plan leaves
+  a second problem untouched: once the sessions are running they are blind to each other, and a
+  plan edited after they started never reaches them — each read it once, at its own start. A
+  finding one session makes for another had no way to arrive, and "who owns this task?" had no one
+  to answer it. `coordination/` now carries the machinery: a board, a claim registry, two hooks, an
+  installer and its tests. One command installs it into a project; a profile with no
+  `## Coordination` section leaves the skill behaving exactly as before.
+- **Five commands the skill writes into every brief** when the profile declares the channel:
+  announce the stream on start, send a finding to a live neighbour, close what arrived, release the
+  stream before saying done, and ask who owns a task before proposing work outside your own.
+  Addresses are stream numbers from the plan (`wave6/3`) — branch names drift within a wave, the
+  number does not.
+- **The board and the claims live in the repository's shared internal directory**, so every
+  worktree sees them at once, they belong to no branch, and they never need merging.
+
+### Changed
+
+- **A project with no waves and no plan file is supported.** The wave used to be required, and a
+  session working outside one had nothing to write its claim into. Now the wave comes from the
+  plan's file name; failing that, the session joins work already running next to it; failing that,
+  a wave is opened under today's date. The stream number can be left out too — the next free one is
+  issued.
+
+### Fixed
+
+- **Two sessions starting in the same second no longer take the same stream number.** Found by a
+  test run on a build box, along with six more defects of the same family — each silent, each
+  ending with a finding delivered to the wrong session while both sides believed all was well.
+
+### Known limitation
+
+- **One branch name can be worn by two streams.** A session that renamed its branch and did not
+  announce again keeps the old name in its claim, and that name counts as worn. If a neighbour then
+  takes the freed name, a finding addressed by it reaches both. Addressing by `wave/stream` is
+  never ambiguous; the full account, and where the fix belongs, is in `coordination/README.md`.
+
 ## [1.4.1] — 2026-08-20
 
 ### Changed
