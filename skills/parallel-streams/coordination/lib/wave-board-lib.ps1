@@ -1,0 +1,1876 @@
+#Requires -Version 7
+<#
+Shared plumbing for the wave board: where it lives, how it's read, who a finding is addressed to,
+and whose session is alive.
+
+A separate file because there are two consumers, and they must understand the board IDENTICALLY:
+the tool (`../wave-board.ps1`, which writes and closes entries) and the delivery hook
+(`../hooks/wave-board-deliver.ps1`, which brings entries into a session). Let their addressing
+rules drift apart and a finding silently fails to arrive — and it looks exactly like "the neighbour
+has nothing to say."
+
+The file does nothing by itself: it only declares functions.
+#>
+
+# ‼️ Strip git environment variables BEFORE the first call to git. Otherwise, with an externally
+# set GIT_DIR, the board ends up in the WRONG repository (git is asked for the common directory
+# and answers with the one it was given), the branch name comes from someone else's tree, and the
+# whole list of live sessions is someone else's too. All of this silently: the one who posted the
+# finding is sure it was delivered, while the neighbour "has nothing to say" — the exact thing the
+# board was built to prevent.
+# The full breakdown of this trap is in the included file.
+. (Join-Path $PSScriptRoot 'git-env-clean.ps1')
+
+function Get-BoardPath {
+    param([string]$Override)
+    if ($Override) { return $Override }
+    # The shared directory, not one per worktree: it's the same for every tree, sits outside
+    # branches (so it can't get stuck inside someone else's claim), and survives the worktree
+    # being deleted along with the closed session.
+    # From the main folder git answers with a relative path; from a worktree, an absolute one.
+    $common = (& git rev-parse --git-common-dir 2>$null)
+    if ($LASTEXITCODE -ne 0 -or -not $common) { throw 'not a git repository — the wave board has nowhere to live' }
+    $common = $common.Trim()
+    if (-not [System.IO.Path]::IsPathRooted($common)) { $common = Join-Path $PWD $common }
+    return Join-Path (Resolve-Path $common).Path 'wave-board/board.jsonl'
+}
+
+function Get-StreamKey {
+    param([string]$Raw)
+    # A single stream gets called three ways: by branch (`feat/wave3-plan-clock`), by worktree
+    # folder (`wave3-plan-clock`), and by folder with the branch's slash swapped for a plus
+    # (`feat+wave4-measure-and-accept`). We fold them all to one key, otherwise a finding addressed
+    # by branch name won't find a session that knows itself by folder name.
+    if (-not $Raw) { return '' }
+    $key = ($Raw -replace '\\', '/') -replace '\+', '/'
+    $key = $key.Split('/')[-1]
+    $key = $key -replace '^worktree-', ''
+    return $key.Trim().ToLowerInvariant()
+}
+
+function Get-StreamKeys {
+    param([string]$Raw)
+    # All keys for the named stream. A branch name and a folder name usually fold to the same key,
+    # but NOT always: worktree `oddfolder-tab` with branch `feat/oddbranch-tab` gives two different
+    # ones. Release writes one of them, while a lookup asks by the other — and it fails to
+    # recognize its own stream's release.
+    $key = Get-StreamKey -Raw $Raw
+    $keys = [System.Collections.Generic.List[string]]::new()
+    if ($key) { $keys.Add($key) }
+    foreach ($tree in (Get-Worktrees)) {
+        $branchKey = Get-StreamKey -Raw $tree.branch
+        $folderKey = Get-StreamKey -Raw $tree.path
+        if ($key -ne $branchKey -and $key -ne $folderKey) { continue }
+        if ($branchKey) { $keys.Add($branchKey) }
+        if ($folderKey) { $keys.Add($folderKey) }
+    }
+    return @($keys | Where-Object { $_ } | Select-Object -Unique)
+}
+
+function Get-CurrentKeys {
+    # A session has two keys: by branch and by working folder name. Either one matching means the
+    # finding is hers.
+    #
+    # We ask git ONCE per run, same as for the worktree list. The delivery hook gets called on
+    # every user message, and it needs the stream's names twice — once to parse the registry and
+    # once to select its own entries; a second git call would have been a cost for nothing.
+    if ($null -ne $script:WaveBoardCurrentKeys) { return $script:WaveBoardCurrentKeys }
+    $keys = [System.Collections.Generic.List[string]]::new()
+    try {
+        $branch = (& git rev-parse --abbrev-ref HEAD 2>$null)
+        if ($LASTEXITCODE -eq 0 -and $branch) { $keys.Add((Get-StreamKey -Raw $branch.Trim())) }
+    } catch {
+        # Detached HEAD or a broken git — the second key is enough.
+    }
+    $keys.Add((Get-StreamKey -Raw (Split-Path -Leaf $PWD)))
+    $script:WaveBoardCurrentKeys = @($keys | Where-Object { $_ } | Select-Object -Unique)
+    return $script:WaveBoardCurrentKeys
+}
+
+function Get-FailureReason {
+    param($Failure)
+    # A human reads the reason, but system messages come in the system's language — here, English.
+    # We translate the common case (someone else has the file open) ourselves; everything else we
+    # pass through as-is, but flag it as "a system message", so a foreign phrasing isn't mistaken
+    # for ours.
+    $message = "$($Failure.Exception.Message)".Trim()
+    # Both an English and a Russian pattern: the OS may report this in either language depending on locale.
+    if ($message -match 'being used by another process' -or $message -match 'используется другим процессом') {
+        return 'the file is locked by another process'
+    }
+    if ($message -match 'Access to the path .* is denied' -or $message -match 'Отказано в доступе') {
+        return 'no access to the file'
+    }
+    return "system message: $message"
+}
+
+function Add-BoardLine {
+    param([string]$Path, [string]$Line)
+    # ‼️ We cut the path with plain string ops, and create the directory inside the try/catch. Shell
+    # path parsing asks the shell about the drive, and on a missing drive (or a dropped network
+    # share) it dies outright — a raw English system message leaked out instead of our own error.
+    # This was fixed for posting; accepting a finding failed the exact same way (reproduced).
+    $dir = [System.IO.Path]::GetDirectoryName($Path)
+    try {
+        if ($dir -and -not (Test-Path -LiteralPath $dir -PathType Container)) {
+            New-Item -ItemType Directory -Path $dir -Force -ErrorAction Stop | Out-Null
+        }
+    } catch {
+        # Stay silent: the write attempt below will name the real reason, and it'll do it in plain terms.
+    }
+    # Append-only, with retries: several sessions write to the board at once. Rewriting the whole
+    # file would lose a neighbour's line, and a neighbour holding the file busy lasts a fraction of a
+    # second.
+    $reason = 'reason unknown'
+    for ($try = 1; $try -le 10; $try++) {
+        try {
+            # Open for read-write, not append: before writing our line we need to look at how the
+            # file currently ends. A truncated write (a session closed mid-word, disk ran out)
+            # leaves no trailing newline, and gluing a new record onto it ruins BOTH — neither
+            # parses, while the tool still reports success.
+            $stream = [System.IO.File]::Open($Path, 'OpenOrCreate', 'ReadWrite', 'Read')
+            try {
+                $prefix = ''
+                if ($stream.Length -gt 0) {
+                    $stream.Position = $stream.Length - 1
+                    if ($stream.ReadByte() -ne 10) { $prefix = "`n" }
+                }
+                $stream.Position = $stream.Length
+                $bytes = [System.Text.Encoding]::UTF8.GetBytes($prefix + $Line + "`n")
+                $stream.Write($bytes, 0, $bytes.Length)
+            } finally {
+                $stream.Dispose()
+            }
+            return
+        } catch {
+            # Keep the real reason: after ten tries, "board is busy" might not be the truth — out
+            # of disk space, permissions, a removable drive that dropped — each needs its own fix.
+            $reason = Get-FailureReason -Failure $_
+            Start-Sleep -Milliseconds 50
+        }
+    }
+    throw "could not append to the board ($Path). Last reason: $reason"
+}
+
+function Read-BoardContent {
+    param([string]$Path)
+    # A board read that CAN REPORT FAILURE. "We couldn't read it" and "the board is empty" are
+    # opposite things that look identical: an empty list. Compaction depends on this difference —
+    # mistaking a busy file for an empty board would replace it with an empty file and erase every
+    # open finding.
+    # It's not only neighbouring sessions that hold the board for a fraction of a second — antivirus,
+    # the indexing service, and backup software do too, and in that fraction of a second the file
+    # size specifically does NOT change.
+    # ‼️ We learn "there's no board" FROM A FAILED OPEN, not a separate existence check. An
+    # existence check answers "no" both where it's genuinely missing and where it's merely
+    # "not visible": a nonexistent drive, a dropped network share, a folder with access closed off.
+    # An empty board and an invisible board are opposite things that looked identical; at
+    # release time that meant "the inbox is empty, go ahead and release" in a case where the inbox
+    # actually hadn't been read at all.
+    $reason = ''
+    for ($try = 1; $try -le 5; $try++) {
+        try {
+            # Share the file for read and write: a neighbour might be appending their own line right now.
+            $stream = [System.IO.File]::Open($Path, 'Open', 'Read', 'ReadWrite')
+            try {
+                $length = $stream.Length
+                $reader = [System.IO.StreamReader]::new($stream, [System.Text.Encoding]::UTF8)
+                $lines = @(($reader.ReadToEnd() -split "`r?`n") | Where-Object { $_.Trim() })
+                return [pscustomobject]@{
+                    Ok = $true; Missing = $false; Lines = $lines; Length = $length; Reason = ''
+                }
+            } finally {
+                $stream.Dispose()
+            }
+        } catch {
+            if (Test-MissingPathFailure -Failure $_) {
+                return [pscustomobject]@{
+                    Ok = $true; Missing = $true; Lines = @(); Length = 0; Reason = ''
+                }
+            }
+            # Keep the real reason: "busy" and "no permission" need different fixes.
+            $reason = Get-FailureReason -Failure $_
+            Start-Sleep -Milliseconds 30
+        }
+    }
+    return [pscustomobject]@{ Ok = $false; Missing = $false; Lines = @(); Length = -1; Reason = $reason }
+}
+
+function Read-BoardLines {
+    param([string]$Path)
+    # The forgiving version, for callers who care more about not choking than about the truth: the
+    # delivery hook, when the board is busy, has to stay quiet rather than get in the way. Everyone
+    # else should use Read-BoardContent.
+    return @((Read-BoardContent -Path $Path).Lines)
+}
+
+function Get-BoardEntries {
+    param([string[]]$Lines)
+    # A pair of "raw line + parsed record". Compaction needs the raw line: it rewrites the board as
+    # the TEXT of the surviving lines, not reassembled records — reserializing would quietly change
+    # how fields look (the same time of day would come back written differently), and the board
+    # would drift from itself.
+    $entries = [System.Collections.Generic.List[object]]::new()
+    foreach ($line in $Lines) {
+        $record = $null
+        try { $record = $line | ConvertFrom-Json } catch { continue }
+        if (-not $record.id) { continue }
+        $entries.Add([pscustomobject]@{ Line = $line; Record = $record })
+    }
+    return @($entries)
+}
+
+function Get-BoardClosings {
+    param($Entries)
+    # Closing comes in two kinds, and they must not be confused.
+    #
+    # An addressed finding closes GLOBALLY: the one single recipient acted on it — the matter is
+    # settled. A broadcast (`-To *`) is addressed to many, and ITS closing is PERSONAL: the line
+    # carries the key of the stream that closed it and silences the entry only for that stream. A
+    # global close of such a finding would hide it from everyone at once: whoever acted on it first
+    # would take it away from the rest, and a stream that never moved or restarted since it was
+    # posted would never see it at all.
+    #
+    # A close is a separate line further down the file, so we collect everything first, then filter.
+    $global = [System.Collections.Generic.HashSet[string]]::new()
+    $by = @{}
+    foreach ($entry in $Entries) {
+        if (-not $entry.Record.done) { continue }
+        $id = [string]$entry.Record.id
+        $who = Get-StreamKey -Raw ([string]$entry.Record.by)
+        if (-not $who) { [void]$global.Add($id); continue }
+        if (-not $by.ContainsKey($id)) { $by[$id] = [System.Collections.Generic.List[string]]::new() }
+        if ($who -notin $by[$id]) { $by[$id].Add($who) }
+    }
+    return [pscustomobject]@{ Global = $global; By = $by }
+}
+
+function Get-BroadcastLifetimeDays {
+    # The shelf life of an "everyone" entry. A wave lives for weeks: a finding nobody acted on in
+    # two weeks is as stale as the wave itself. Every session in the project pays for it in context
+    # meanwhile — including trees set up later that have nothing to do with that wave. This is a
+    # fallback for when the global close was forgotten: an addressed entry always has a way out
+    # (its close is global), a broadcast one doesn't.
+    return 14
+}
+
+function Get-BroadcastAgeState {
+    param($Record)
+    # Age of an "everyone" entry: `live` — still current, `stale` — expired, `broken` — the date
+    # can't be parsed.
+    #
+    # The shelf life applies to "everyone" entries and to "acknowledged" notices: an ordinary
+    # addressed finding closes globally, and silently suppressing it would be wrong — it just
+    # hasn't been acted on yet. A notice, though, self-closes at display time, and it needs a
+    # shelf life for when the author never comes back to their session: otherwise it would sit on
+    # the board forever.
+    # Both broadcast addresses count, not just the single asterisk: an entry to "the whole
+    # project's sessions" has an even wider hole — it reaches EVERY new worktree, including ones
+    # set up for other waves, and without a shelf life it would live forever.
+    if ((Get-StreamKey -Raw ([string]$Record.to)) -notin @('*', '**') -and [string]$Record.kind -ne 'ack') {
+        return 'live'
+    }
+    $raw = $Record.at
+    if ($raw -is [datetime]) {
+        return $(if ($raw -lt (Get-Date).AddDays(-(Get-BroadcastLifetimeDays))) { 'stale' } else { 'live' })
+    }
+    $text = [string]$raw
+    $when = [datetime]::MinValue
+    # The date can't be parsed (the line was hand-edited, another version wrote it, the field is
+    # empty or numeric) — we treat the entry as expired, not as living forever. The previous, softer
+    # behaviour reopened, in a narrow case, exactly the hole the shelf life was built to close: such
+    # an entry got delivered to every new tree and survived compaction. Erring safe: a finding with
+    # a broken date isn't fit to be acted on anyway, and the display will call it out separately —
+    # it won't just quietly vanish.
+    if (-not $text -or -not [datetime]::TryParse($text, [cultureinfo]::InvariantCulture,
+            [System.Globalization.DateTimeStyles]::None, [ref]$when)) {
+        return 'broken'
+    }
+    return $(if ($when -lt (Get-Date).AddDays(-(Get-BroadcastLifetimeDays))) { 'stale' } else { 'live' })
+}
+
+function Get-BoardStates {
+    param($Entries, [string[]]$Viewer)
+    # Sorts entries into states: open, closed for this viewer, expired, with a broken date. Display
+    # has to tell them apart — otherwise it's unclear why an entry sits in the file yet shows up
+    # nowhere, and a human goes off to compact the board or file a duplicate finding.
+    $closings = Get-BoardClosings -Entries $Entries
+    $mine = @($Viewer | Where-Object { $_ })
+    $open = [System.Collections.Generic.List[object]]::new()
+    $closedForViewer = [System.Collections.Generic.List[object]]::new()
+    $stale = [System.Collections.Generic.List[object]]::new()
+    $broken = [System.Collections.Generic.List[object]]::new()
+    foreach ($entry in $Entries) {
+        $record = $entry.Record
+        if ($record.done -or -not $record.title) { continue }
+        $id = [string]$record.id
+        # A global close removes the entry for everyone — both an addressed one and one closed with
+        # the -ForAll key.
+        if ($closings.Global.Contains($id)) { continue }
+        # No switch on purpose: its `continue` moves to the switch's next condition, not to the
+        # loop's next entry, and an entry would land in two states at once.
+        $age = Get-BroadcastAgeState -Record $record
+        if ($age -eq 'stale') { $stale.Add($entry); continue }
+        if ($age -eq 'broken') { $broken.Add($entry); continue }
+        $seen = $closings.By[$id]
+        if ($mine.Count -gt 0 -and $seen -and @($seen | Where-Object { $_ -in $mine }).Count -gt 0) {
+            $closedForViewer.Add($entry)
+            continue
+        }
+        $open.Add($entry)
+    }
+    return [pscustomobject]@{
+        Open            = @($open)
+        ClosedForViewer = @($closedForViewer)
+        Stale           = @($stale)
+        Broken          = @($broken)
+        Closings        = $closings
+    }
+}
+
+function Select-OpenEntries {
+    param($Entries, [string[]]$Viewer)
+    # Without `-Viewer` — everything open for anyone at all (showing the whole board, compaction).
+    # With it — what's open FOR THIS SPECIFIC STREAM: its own personal closes are no longer visible to it.
+    return @((Get-BoardStates -Entries $Entries -Viewer $Viewer).Open)
+}
+
+function Select-KeepEntries {
+    param($Entries)
+    # What survives compaction: entries open for anyone at all, plus the NAMED closes of those
+    # entries (without them, a stream that already acted on an "everyone" finding would get it
+    # again). Everything else — entries closed by a global line, expired ones, their closes, and
+    # unreadable scraps — is dropped.
+    $liveIds = [System.Collections.Generic.HashSet[string]]::new()
+    foreach ($entry in (Get-BoardStates -Entries $Entries).Open) {
+        [void]$liveIds.Add([string]$entry.Record.id)
+    }
+    return @($Entries | Where-Object {
+            $id = [string]$_.Record.id
+            if ($_.Record.done) { $_.Record.by -and $liveIds.Contains($id) } else { $liveIds.Contains($id) }
+        })
+}
+
+function Get-OpenRecords {
+    param([string]$Path, [string[]]$Viewer)
+    $entries = Get-BoardEntries -Lines (Read-BoardLines -Path $Path)
+    return @(Select-OpenEntries -Entries $entries -Viewer $Viewer | ForEach-Object { $_.Record })
+}
+
+function Compress-Board {
+    param([string]$Path)
+    # Compaction: only open entries stay on the board. A closed entry otherwise sits there as a
+    # line forever, and the whole board gets parsed on every single move of every session.
+    #
+    # This is a dangerous operation — it REWRITES the whole board — so every step second-guesses
+    # itself: couldn't read it — leave it alone; read a non-empty file and parsed not a single
+    # record — leave it alone. A mistake here costs every open finding at once, while looking like a
+    # cheerful success report.
+    if (-not (Test-Path $Path)) { return [pscustomobject]@{ Before = 0; After = 0; Unreadable = 0 } }
+    $reason = 'reason unknown'
+    for ($try = 1; $try -le 10; $try++) {
+        $content = Read-BoardContent -Path $Path
+        if (-not $content.Ok) {
+            throw "couldn't read the board, won't compact it blind ($Path). Last reason: $($content.Reason)"
+        }
+        $entries = Get-BoardEntries -Lines $content.Lines
+        if ($content.Length -gt 0 -and $entries.Count -eq 0) {
+            throw "the board has $($content.Length) bytes but not a single record parsed out of it ($Path) — compaction would have wiped its contents; sort the file out by hand"
+        }
+        # One selection for both compaction and display: otherwise display would promise to remove
+        # something other than what actually gets removed.
+        $keep = @(Select-KeepEntries -Entries $entries | ForEach-Object { $_.Line })
+        # Compaction silently drops unreadable lines — and that's a scrap of somebody's finding. We
+        # count them and name them in the report: something erased silently is indistinguishable
+        # from something that was never there.
+        $unreadable = $content.Lines.Count - $entries.Count
+        # A temp file next to the board: replacing it within the same volume is one atomic action,
+        # and no half-written file is left in the board's place no matter how the work ends.
+        $temp = "$Path.compact-$PID-$(Get-Random).tmp"
+        $text = if ($keep.Count -gt 0) { ($keep -join "`n") + "`n" } else { '' }
+        [System.IO.File]::WriteAllText($temp, $text, [System.Text.UTF8Encoding]::new($false))
+        try {
+            # Compare the size against what we read: a neighbour might have appended a line while we
+            # were rewriting — then start over, or their line would be lost.
+            if ((Get-Item $Path).Length -ne $content.Length) { throw 'the board was appended to while we were rewriting it' }
+            [System.IO.File]::Move($temp, $Path, $true)
+            return [pscustomobject]@{ Before = $content.Lines.Count; After = $keep.Count; Unreadable = $unreadable }
+        } catch {
+            # Same craftsmanship for the reason as everywhere else: plain terms for a human, a
+            # foreign message flagged as such.
+            $reason = Get-FailureReason -Failure $_
+            Remove-Item $temp -Force -ErrorAction SilentlyContinue
+            Start-Sleep -Milliseconds 50
+        }
+    }
+    throw "couldn't compact the board ($Path). Last reason: $reason"
+}
+
+function Get-AliveBeaconPath {
+    param([string]$TreePath)
+    # The beacon of a live session. The delivery hook updates it in ITS OWN worktree on every move,
+    # and everyone else reads it from here. The address is declared exactly once: let the writer and
+    # the reader drift apart and live sessions would become invisible, which would look like "every
+    # stream is closed."
+    return (Join-Path $TreePath '.claude/.cache/wave-board-alive.txt')
+}
+
+function Test-AliveBeacon {
+    param([string]$TreePath)
+    # The threshold is deliberately generous: the beacon only updates on a USER move, and a session
+    # can go quiet for hours while genuinely working — a long subagent run, waiting on a build, an
+    # overnight pause in the conversation. Erring toward "alive" is safe: the finding lands on the
+    # board and waits for the session. Erring the other way sends the finding into the "Wave
+    # loose ends" pile past a neighbour who's actually alive — that is, past the whole mechanism.
+    $aliveHours = 12
+    $beacon = Get-AliveBeaconPath -TreePath $TreePath
+    try {
+        if (-not (Test-Path $beacon)) { return $false }
+        return ((Get-Date) - (Get-Item $beacon).LastWriteTime).TotalHours -lt $aliveHours
+    } catch {
+        return $false
+    }
+}
+
+function Get-Worktrees {
+    # Repository worktrees: path, branch, and a LIVE-session flag (a fresh beacon).
+    #
+    # Liveness isn't the same as the tree existing: a closed session leaves its tree behind, and a
+    # finding has nowhere to go from there. But a missing beacon doesn't mean "closed" either — the
+    # session might have started before the hook existed. Hence three states — "alive" (fresh
+    # beacon), "unknown" (tree exists, no beacon) and "closed" (no tree at all) — and they need to
+    # be reported honestly.
+    #
+    # A worktree lock as a liveness signal was rejected: the environment sets and clears it
+    # irregularly — on 2026-08-24 none of the project's 23 trees had one, including the tree of the
+    # session that was actively working at that moment. See the decision registry
+    # (platform-and-build.md) for the write-up.
+    # We ask git ONCE per run. Many things need the list (stream names, address checks, hints); it
+    # doesn't change within one short run, and without caching it would rack up a dozen git calls
+    # per session move.
+    if ($null -ne $script:WaveBoardWorktrees) { return $script:WaveBoardWorktrees }
+    $lines = @()
+    try {
+        $lines = @(& git worktree list --porcelain 2>$null)
+        if ($LASTEXITCODE -ne 0) { $script:WaveBoardWorktrees = @(); return @() }
+    } catch {
+        $script:WaveBoardWorktrees = @()
+        return @()
+    }
+    $trees = [System.Collections.Generic.List[hashtable]]::new()
+    $current = $null
+    foreach ($line in $lines) {
+        if ($line -like 'worktree *') {
+            $current = @{
+                path   = ($line.Substring(9) -replace '\\', '/').TrimEnd('/')
+                branch = ''
+                live   = $false
+            }
+            $trees.Add($current)
+            continue
+        }
+        if (-not $current) { continue }
+        if ($line -like 'branch *') { $current.branch = $line.Substring(7) -replace '^refs/heads/', '' }
+    }
+    foreach ($tree in $trees) { $tree.live = Test-AliveBeacon -TreePath $tree.path }
+    $script:WaveBoardWorktrees = @($trees | ForEach-Object { [pscustomobject]$_ })
+    return $script:WaveBoardWorktrees
+}
+
+function Get-KnownStreamKeys {
+    param([switch]$AliveOnly)
+    # Keys of the trees that exist — a finding's address gets checked against them. We take both
+    # forms of the name (branch and folder): a session knows itself by either. `-AliveOnly` keeps
+    # only the ones whose session checked in recently — good for a hint, but NOT for checking an
+    # address: posting a finding in advance, for a session that gets picked up in an hour, is
+    # perfectly normal.
+    $keys = [System.Collections.Generic.List[string]]::new()
+    foreach ($tree in (Get-Worktrees)) {
+        if ($AliveOnly -and -not $tree.live) { continue }
+        if ($tree.branch) { $keys.Add((Get-StreamKey -Raw $tree.branch)) }
+        $keys.Add((Get-StreamKey -Raw $tree.path))
+    }
+    return @($keys | Where-Object { $_ } | Select-Object -Unique)
+}
+
+function Select-ForStream {
+    param($Records, [string[]]$Keys, $Claim)
+    # What on the board is addressed to this session. Four kinds of address, and they must not be
+    # confused:
+    #   `**`             — every session in the project except the poster;
+    #   `*`               — every session of ITS OWN wave (when the wave is known to both sides),
+    #                        except the poster: otherwise the entry would reach two dozen trees,
+    #                        half of them set up for other waves and paying for it in context for
+    #                        nothing;
+    #   `wave/stream`     — by claim: this is the main form of address, because that's how the
+    #                        stream is named in the plan;
+    #   a branch or folder name — the fallback for streams that never made a claim.
+    $mine = @($Keys)
+    $myWave = if ($Claim) { Get-WaveKey -Raw ([string]$Claim.wave) } else { '' }
+    $myStream = if ($Claim) { Get-StreamNumberKey -Raw ([string]$Claim.stream) } else { '' }
+    return @($Records | Where-Object {
+            $raw = [string]$_.to
+            $to = Get-StreamKey -Raw $raw
+            $fromMe = (Get-StreamKey -Raw ([string]$_.from)) -in $mine
+            $address = Get-StreamAddress -Raw $raw
+            if ($to -eq '**') {
+                -not $fromMe
+            } elseif ($to -eq '*') {
+                $recordWave = Get-WaveKey -Raw ([string]$_.wave)
+                # Neither side names the wave — behave as before and deliver it: not delivering is
+                # worse than delivering something extra.
+                (-not $fromMe) -and (-not $recordWave -or -not $myWave -or $recordWave -eq $myWave)
+            } elseif ($address) {
+                [bool]$myWave -and $address.Wave -eq $myWave -and $address.Stream -eq $myStream
+            } else {
+                $to -in $mine
+            }
+        })
+}
+
+function Test-TaskInList {
+    param([string]$Tasks, [string]$Task)
+    # Does a task fall within a stream's task list. The plan writes them however comes naturally:
+    # "10-13", "10, 11, 12", "6, 7 and 9", "1b". Answers the question "who owns this task", for
+    # when a session is tempted to pick up a neighbouring task and its owner, away from the screen,
+    # has no idea it was planned for someone else.
+    if (-not $Tasks -or -not $Task) { return $false }
+    $wanted = Get-StreamNumberKey -Raw $Task
+    if (-not $wanted) { return $false }
+    foreach ($chunk in ($Tasks -split '[^\p{L}\p{Nd}\-–]+')) {
+        $piece = $chunk.Trim()
+        if (-not $piece) { continue }
+        $range = [regex]::Match($piece, '^(\d+)\s*[-–]\s*(\d+)$')
+        if ($range.Success -and $wanted -match '^\d+$') {
+            $from = [int]$range.Groups[1].Value
+            $till = [int]$range.Groups[2].Value
+            if ([int]$wanted -ge [math]::Min($from, $till) -and [int]$wanted -le [math]::Max($from, $till)) {
+                return $true
+            }
+            continue
+        }
+        if ((Get-StreamNumberKey -Raw $piece) -eq $wanted) { return $true }
+    }
+    return $false
+}
+
+function Format-BoardRecord {
+    param($Record)
+    $tail = if ($Record.where) { " — $($Record.where)" } else { '' }
+    return "  • `"$($Record.title)`"$tail [id $($Record.id)]"
+}
+
+# ─────────────────────────────────────────────────────────────────────────────────────────────
+# Stream claim registry: who is running a stream right now.
+#
+# The board answers "what was handed over"; the registry answers "to whom, and are they alive."
+# Without a registry, a finding's address is inferred from a branch or folder name, and names lie:
+# in wave 6's plan two streams were assigned the same branch, while the sessions worked on
+# different ones, and one session had reused a folder for a different task in the meantime. Such an
+# address gets delivered silently, and to the wrong place.
+#
+# The design is deliberately different from the board's: one file per worktree, written ONLY by its
+# own session. One writer per file means no retries, no need to parse the whole log for a single
+# field. The board stays a multi-writer log; the registry is a set of small files next to it.
+#
+# ‼️ A lock is still needed, though — not for the claim file, but for CHOOSING A STREAM NUMBER: the
+# number is chosen from a snapshot of the whole registry, and sessions that announce at the same
+# moment read the same snapshot. `Enter-RegistryLock` guards this — see the write-up right there.
+# ─────────────────────────────────────────────────────────────────────────────────────────────
+
+function Get-AliveHours {
+    # The freshness threshold for a checked-in mark — shared between the tree beacon and the stream
+    # claim: let them drift apart and the same tree would count as alive in one place and silent in
+    # another.
+    return 12
+}
+
+function Get-SilentDaysBeforeStuck {
+    # How long a stream stays silent before a finding addressed to it lands in the "stuck" summary.
+    # A full day means not "the session closed" but "time for human eyes": an overnight pause in the
+    # conversation doesn't count as this yet, an abandoned stream does.
+    return 1
+}
+
+function Get-RegistryDir {
+    param([string]$BoardOverride)
+    # Right next to the board, in the same shared directory: the same three properties (visible to
+    # every tree, outside branches, survives a tree being deleted). Tests supply their own board —
+    # the registry follows it automatically.
+    #
+    # ‼️ We strip the file name with plain string ops, not by parsing the path through the shell:
+    # shell path parsing asks about the drive and dies outright on a missing one. The tool used to
+    # crash right here, on the very first line, leaking a raw English system message before it ever
+    # got the chance to give an honest error about the claims directory.
+    $board = Get-BoardPath -Override $BoardOverride
+    $parent = [System.IO.Path]::GetDirectoryName($board)
+    if (-not $parent) { $parent = '.' }
+    return [System.IO.Path]::Combine($parent, 'streams')
+}
+
+function Get-PathKey {
+    param([string]$TreePath)
+    # The claim file's name. The readable part is the tree's folder name; the tail is a fingerprint
+    # of the full path — two folders with the same name in different places on disk shouldn't
+    # overwrite each other's claims.
+    $normalized = ($TreePath -replace '\\', '/').TrimEnd('/').ToLowerInvariant()
+    $leaf = ($normalized.Split('/')[-1] -replace '[^\p{L}\p{Nd}]+', '-').Trim('-')
+    if (-not $leaf) { $leaf = 'tree' }
+    $sha = [System.Security.Cryptography.SHA1]::Create()
+    try {
+        $bytes = $sha.ComputeHash([System.Text.Encoding]::UTF8.GetBytes($normalized))
+    } finally {
+        $sha.Dispose()
+    }
+    $tail = -join ($bytes[0..3] | ForEach-Object { $_.ToString('x2') })
+    return "$leaf-$tail"
+}
+
+function Get-ClaimPath {
+    param([string]$Dir, [string]$TreePath)
+    # ‼️ Joined with plain string ops. Joining paths through the shell asks about the drive and dies
+    # outright on a missing one — accepting a finding failed right here, leaking a raw English
+    # system message instead of our own error (reproduced).
+    return [System.IO.Path]::Combine($Dir, (Get-PathKey -TreePath $TreePath) + '.json')
+}
+
+function Get-WaveKey {
+    param([string]$Raw)
+    # The wave's key. A wave gets called "wave6", "6", and by the plan's file name — we fold them
+    # to one form, otherwise a claim filed under one spelling won't be found by another.
+    if (-not $Raw) { return '' }
+    $text = $Raw.Trim().ToLowerInvariant()
+    # The plan's file name: pull the wave marker out of it, if there is one.
+    $matched = [regex]::Match($text, 'wave\s*(\d+)')
+    if ($matched.Success) { return "wave$($matched.Groups[1].Value)" }
+    if ($text -match '^\d+$') { return "wave$text" }
+    return ($text -replace '[^\p{L}\p{Nd}]+', '-').Trim('-')
+}
+
+function Get-StreamNumberKey {
+    param([string]$Raw)
+    # The stream number's key. The plan writes it as "3", "S3", "s3", and "3b" — they're all about
+    # the same thing.
+    # The accepted prefixes are 's' (stream), 'p', '#' and '№' — a plan is written by a human, and
+    # the same stream gets called "S3", "p3" or "#3" in different plans. Addresses are parsed here
+    # and nowhere else, so this set is the whole contract.
+    if (-not $Raw) { return '' }
+    $text = $Raw.Trim().ToLowerInvariant() -replace '^[sp#№]\s*', ''
+    return ($text -replace '[^\p{L}\p{Nd}]+', '')
+}
+
+# Wave names that are ACTUALLY declared in the claim registry. Address parsing needs this: a wave
+# isn't only ever called "wave6" — where there are no waves at all, the claim itself supplies one,
+# named after a date or a word. Whoever already read the registry (the tool, the delivery hook)
+# hands over the list — parsing itself doesn't go read the registry: it's called once per board
+# entry, and reading the folder on every call would be a cost for nothing. An empty list means
+# parsing behaves as before, understanding a plan wave and a date wave only.
+$script:WaveBoardKnownWaves = @()
+
+function Set-KnownWaves {
+    param([string[]]$Keys)
+    $script:WaveBoardKnownWaves = @($Keys | Where-Object { $_ } | Select-Object -Unique)
+}
+
+function Get-KnownWaves {
+    return @($script:WaveBoardKnownWaves)
+}
+
+function Set-KnownWavesFromRegistry {
+    param([string]$Dir)
+    # A convenience form for whoever already has the registry at hand. Stays silent on any failure:
+    # an unparsed wave list is an address that won't parse, not a breakdown of the mechanism for
+    # everyone else.
+    try {
+        Set-KnownWaves -Keys @((Get-Claims -Dir $Dir) | ForEach-Object { $_.WaveKey })
+    } catch {
+        Set-KnownWaves -Keys @()
+    }
+}
+
+function Get-StreamAddress {
+    param([string]$Raw)
+    # Parses a "wave/stream" address: `wave6/3`, `6/3`, `wave6/S3`, `2026-08-24/2`, `sprint-alpha/1`.
+    # Returns $null if it isn't one.
+    #
+    # It can't be confused with a branch name (`feat/wave6-compute-channel`), and this protection
+    # rests on the RIGHT-HAND side: it must hold a stream number, not a word. No branch name fits
+    # that, so the left side could be broadened without weakening the check.
+    #
+    # On the left, a wave gets called three ways, and all three must parse:
+    #   `wave6`, `6`      — a wave from the plan;
+    #   `2026-08-24`      — a wave substituted by date, for projects with no waves at all (there may
+    #                       be no claims for it yet: a finding gets posted even for a stream that
+    #                       opens tomorrow);
+    #   any other name    — only if that wave is ACTUALLY declared in the registry (`Set-KnownWaves`).
+    # Without this, a date-wave address wouldn't parse at all, and a finding just wouldn't reach the
+    # neighbour.
+    #
+    # The wave name is matched WHOLE, not as a folded key: otherwise `wave6-compute/3` (a folder
+    # name, not an address) would fold to wave `wave6` and get parsed as someone else's stream.
+    #
+    # The right-hand side takes the same optional prefix as Get-StreamNumberKey, plus a single
+    # trailing letter for numbers like "3b" — plans do split one stream in two that way.
+    if (-not $Raw) { return $null }
+    $parts = @($Raw.Trim() -split '/')
+    if ($parts.Count -ne 2) { return $null }
+    $left = $parts[0].Trim()
+    $right = $parts[1].Trim()
+    if ($right -notmatch '^[sp#№]?\s*\d+[a-z]?$') { return $null }
+    $wave = Get-WaveKey -Raw $left
+    $isPlanWave = $left -match '^(wave\s*)?\d+$'
+    $isDateWave = $left -match '^\d{4}-\d{2}-\d{2}$'
+    $isKnownWave = $wave -and $wave -eq $left.ToLowerInvariant() -and $wave -in (Get-KnownWaves)
+    if (-not ($isPlanWave -or $isDateWave -or $isKnownWave)) { return $null }
+    return [pscustomobject]@{
+        Wave   = $wave
+        Stream = Get-StreamNumberKey -Raw $right
+    }
+}
+
+function Get-DateWaveKey {
+    # The name a wave gets substituted with by default: today's date. The `YYYY-MM-DD` form was
+    # picked for three properties — it reads naturally, sorts like a date, and parses as an address
+    # (`2026-08-24/2`).
+    return (Get-Date).ToString('yyyy-MM-dd')
+}
+
+function Get-SeenTime {
+    param($Claim)
+    # A claim's checked-in timestamp. An unparsed one counts as the oldest possible: you can't use
+    # it to decide what's more recent.
+    $raw = $Claim.seen_at
+    if ($raw -is [datetime]) { return $raw }
+    $when = [datetime]::MinValue
+    if ([datetime]::TryParse([string]$raw, [cultureinfo]::InvariantCulture,
+            [System.Globalization.DateTimeStyles]::None, [ref]$when)) {
+        return $when
+    }
+    return [datetime]::MinValue
+}
+
+function Get-AutoWaveKey {
+    param($Claims)
+    # Which wave a session that never named one should join: whichever one has work happening RIGHT
+    # NOW. Otherwise every session would start its own date-named wave, and neighbours would never
+    # see each other.
+    #
+    # ‼️ Only waves that were substituted THEMSELVES. A named wave (`wave6`) has its stream numbers
+    # coming from the plan: joining it would mean taking someone else's number, and half the
+    # findings would go to the wrong place.
+    $live = @($Claims | Where-Object { $_.Record.wave_auto -and $_.State -eq 'live' })
+    if ($live.Count -eq 0) { return '' }
+    # There might be more than one thing going on nearby — take the one checked in most recently.
+    $freshest = @($live | Sort-Object -Property @{ Expression = { Get-SeenTime -Claim $_.Record } } -Descending)[0]
+    return $freshest.WaveKey
+}
+
+function Get-NextStreamNumber {
+    param($Claims, [string]$WaveKey, [string]$TreePath)
+    # The next free stream number within a wave. A number is always needed — it's how the stream is
+    # named in an address — but where there's no plan, a human has nowhere to take it from: it was
+    # never assigned there.
+    $here = ($TreePath -replace '\\', '/').TrimEnd('/')
+    $inWave = @($Claims | Where-Object { $_.WaveKey -eq $WaveKey })
+    # This session's own earlier claim on this wave isn't a "neighbour": re-announcing the same
+    # session must stay the same stream, otherwise an address it already told its neighbours would
+    # change on its own.
+    $mine = @($inWave | Where-Object {
+            (([string]$_.Record.worktree) -replace '\\', '/').TrimEnd('/') -eq $here -and $_.StreamKey
+        })
+    if ($mine.Count -gt 0) { return $mine[0].StreamKey }
+    return (Get-FreeStreamNumber -Claims $Claims -WaveKey $WaveKey -TreePath $TreePath)
+}
+
+function Get-FreeStreamNumber {
+    param($Claims, [string]$WaveKey, [string]$TreePath)
+    # The next free number within a wave, NOT counting our own claim. Split from the function above
+    # because, when contending for a number, our own claim is already sitting in the registry — and
+    # counting it would make the session "yield" the number to itself and stay stuck in the same
+    # spot.
+    #
+    # We count from the highest number taken, not from how many claims exist: a released stream
+    # doesn't free its number (findings are addressed to it by that number), and the plan's numbers
+    # don't run in sequence anyway.
+    $here = ($TreePath -replace '\\', '/').TrimEnd('/')
+    $used = 0
+    foreach ($claim in @($Claims | Where-Object { $_.WaveKey -eq $WaveKey })) {
+        if (((([string]$claim.Record.worktree) -replace '\\', '/').TrimEnd('/')) -eq $here) { continue }
+        $digits = [regex]::Match([string]$claim.StreamKey, '^\d+')
+        if (-not $digits.Success) { continue }
+        $number = [int]$digits.Value
+        if ($number -gt $used) { $used = $number }
+    }
+    return [string]($used + 1)
+}
+
+function Test-ClaimHasPlan {
+    param($Claim)
+    # Does the stream have a wave plan. The answer decides where the tool sends a human with a
+    # finding or a work summary: to a section of the plan, or a reply to the owner. Suggesting a
+    # line in a file that doesn't exist is a dead end: the session can neither carry it out nor
+    # figure out what to do instead.
+    #
+    # There's exactly one signal: was the wave substituted BY ITSELF. Whether the wave was named or
+    # taken from the plan's file name, there's a plan — even if the plan file itself isn't recorded
+    # in the claim, since the announce command doesn't always record it. An old-format claim carries
+    # no such signal — its wave is named, so a plan exists.
+    #
+    # ‼️ We do NOT check whether the plan file exists. The claim is read from someone else's
+    # worktree, while the plan lives in the stream's own tree: its absence "here" says nothing about
+    # it, and the old check would have declared plan-less exactly those streams whose plan happens to
+    # sit in a neighbouring folder.
+    if (-not $Claim) { return $false }
+    if (Test-ClaimHasField -Claim $Claim -Name 'wave_auto') { return -not $Claim.wave_auto }
+    # A claim from the previous version carries no such signal at all, and "no signal means there's
+    # a plan" lied to it precisely where it was made OUTSIDE a wave: such a stream would be told to
+    # add a line to a plan section it doesn't have. So, absent the signal, we judge by the wave's
+    # name: a plan's wave is called `waveN`, while a date or word is one the session substituted
+    # itself.
+    return ((Get-WaveKey -Raw ([string]$Claim.wave)) -match '^wave\d+$')
+}
+
+function Test-ClaimHasField {
+    param($Claim, [string]$Name)
+    # Does the claim have this field AT ALL. "No field" and "field omitted" have to be told apart: a
+    # claim made by the previous version carries no such signal, and needs judging by a different rule.
+    if (-not $Claim) { return $false }
+    if ($Claim -is [System.Collections.IDictionary]) { return $Claim.Contains($Name) }
+    return [bool]$Claim.PSObject.Properties[$Name]
+}
+
+function Get-ClaimOrder {
+    param($Claim)
+    # The ordering key among claims: announce time, and worktree path as a tiebreaker. Neither
+    # field of a claim ever changes, so the order is the same for every session and doesn't shift
+    # from run to run. Two decisions rest on it: who keeps the stream number in a dispute over it,
+    # and whose claim founded the wave.
+    #
+    # If the time can't be parsed, we treat the claim as the latest one: the unknown shouldn't
+    # displace the known.
+    $when = [datetime]::MaxValue
+    $raw = $Claim.claimed_at
+    if ($raw -is [datetime]) {
+        $when = $raw
+    } else {
+        $parsed = [datetime]::MinValue
+        if ([string]$raw -and [datetime]::TryParse([string]$raw, [cultureinfo]::InvariantCulture,
+                [System.Globalization.DateTimeStyles]::None, [ref]$parsed)) {
+            $when = $parsed
+        }
+    }
+    return [pscustomobject]@{
+        When = $when
+        Path = (([string]$Claim.worktree) -replace '\\', '/').TrimEnd('/').ToLowerInvariant()
+    }
+}
+
+function Get-NumberRivals {
+    param($Claims, [string]$WaveKey, [string]$StreamKey, [string]$TreePath)
+    # Claims from OTHER trees on the same address — the same wave and the same stream number.
+    # Released ones don't count: the session that ran that stream is gone, so there's nothing to
+    # dispute.
+    $here = ($TreePath -replace '\\', '/').TrimEnd('/')
+    return @($Claims | Where-Object {
+            $_.WaveKey -eq $WaveKey -and $_.StreamKey -eq $StreamKey -and $_.State -ne 'released' -and
+            ((([string]$_.Record.worktree) -replace '\\', '/').TrimEnd('/')) -ne $here
+        })
+}
+
+function Test-YieldsStreamNumber {
+    param($Mine, $Rivals)
+    # Which of two sessions announced with the same number gives it up. The one who announced
+    # earlier keeps the number; on a tie, the one whose tree path sorts first alphabetically. The
+    # order is total and unchanging, so two sessions never shift at the same time and never trade
+    # numbers back and forth forever.
+    $me = Get-ClaimOrder -Claim $Mine
+    foreach ($rival in $Rivals) {
+        $other = Get-ClaimOrder -Claim $rival.Record
+        if ($other.When -lt $me.When) { return $true }
+        if ($other.When -eq $me.When -and [string]::CompareOrdinal($other.Path, $me.Path) -lt 0) {
+            return $true
+        }
+    }
+    return $false
+}
+
+function Test-WaveIsAuto {
+    param($Claims, [string]$WaveKey)
+    # Was the wave substituted by itself — meaning it has no plan.
+    #
+    # Decided by the wave's FIRST claim, not just any of them: whoever announced earliest founds the
+    # wave, and the rest join it. The old rule ("plan-less if even one claim is plan-less") made an
+    # entire planned wave plan-less the moment a single session announced into it without naming a
+    # wave — and the text about plan sections would vanish for all its streams at once. We use the
+    # same ordering as when disputing a stream number (announce time, then tree path as a
+    # tiebreaker): it doesn't change from run to run, and every session gets the same answer.
+    if (-not $WaveKey) { return $false }
+    $inWave = @($Claims | Where-Object { $_.WaveKey -eq $WaveKey })
+    if ($inWave.Count -gt 0) {
+        $eldest = @($inWave | Sort-Object -Property @(
+                @{ Expression = { (Get-ClaimOrder -Claim $_.Record).When } }
+                @{ Expression = { (Get-ClaimOrder -Claim $_.Record).Path } }
+            ))[0]
+        return -not (Test-ClaimHasPlan -Claim $eldest.Record)
+    }
+    # No claims for that wave exist at all — only its name is known. A date-name only ever belongs to
+    # a self-substituted wave.
+    return [bool]($WaveKey -match '^\d{4}-\d{2}-\d{2}$')
+}
+
+function Test-AddresseeHasPlan {
+    param($Claims, [string]$Raw, $Address, $Mine)
+    # Does the RECIPIENT of a finding have a wave plan. One answer serves every "put it in the wave
+    # loose ends" suggestion — let them drift apart by branch and half the refusals would point to a
+    # plan section that doesn't exist.
+    #
+    # Order: the recipient's own claim (it knows its plan for sure) → the wave from the address →
+    # our own wave. Knowing nothing about the recipient — behave as before and assume there's a
+    # plan: suggesting a plan section where it exists is more harmless than staying quiet about it
+    # where it's needed.
+    $found = @(Find-Claims -Claims $Claims -Raw $Raw)
+    if ($found.Count -gt 0) {
+        return (@($found | Where-Object { Test-ClaimHasPlan -Claim $_.Record }).Count -gt 0)
+    }
+    $waveKey = if ($Address) {
+        [string]$Address.Wave
+    } elseif ($Mine) {
+        Get-WaveKey -Raw ([string]$Mine.wave)
+    } else {
+        ''
+    }
+    if (-not $waveKey) { return $true }
+    return -not (Test-WaveIsAuto -Claims $Claims -WaveKey $waveKey)
+}
+
+function Get-ClaimReadTimeoutMs {
+    param([switch]$Strict)
+    # How long we tolerate waiting for a neighbour's claim file to be released.
+    #
+    # It's not only neighbouring sessions that hold it for a fraction of a second — antivirus,
+    # Windows Search, backup software, and a cloud-sync folder do too. `Read-BoardContent` reads the
+    # findings board the same way, for the same reason, and it's had retries from the start too.
+    #
+    # A strict reader (choosing a stream number) gets an order of magnitude more: a missed claim
+    # costs it a matching address FOREVER, and it's better to wait two seconds. A tolerant one (the
+    # delivery hook, display) can't afford to wait that long: it's called on every session move and
+    # has to be fast.
+    return $(if ($Strict) { 2500 } else { 150 })
+}
+
+function Test-MissingPathFailure {
+    param($Failure)
+    # Tells "this doesn't exist" apart from "couldn't check". The first is a legitimate answer, the
+    # second is trouble that a strict reader must say out loud.
+    #
+    # ‼️ We learn this FROM AN EXCEPTION, not a separate existence check. An existence check answers
+    # "no" both where it's genuinely missing and where it's merely "not visible": a folder with
+    # access closed off, a nonexistent drive, a dropped network share. That answer is
+    # indistinguishable from an honest "no claims yet" — and that's exactly where every hole of this
+    # class was found.
+    $inner = $Failure.Exception
+    while ($inner.InnerException) { $inner = $inner.InnerException }
+    return ($inner -is [System.IO.FileNotFoundException]) -or
+        ($inner -is [System.IO.DirectoryNotFoundException])
+}
+
+function Read-ClaimRecord {
+    param([string]$Path, [switch]$Strict)
+    # A neighbour's claim, with HONEST outcomes. Four states, and they must not be confused:
+    #   ok         — read and parsed;
+    #   missing    — the file doesn't exist at all (the tree never announced, the claim was removed);
+    #   unreadable — the file EXISTS but couldn't be read;
+    #   broken     — read it, but couldn't parse it.
+    #
+    # ‼️ Before, "couldn't read it" and "no file" answered the same way — empty, and on one try.
+    # Because of this, a neighbour whose file was held by antivirus at that instant became
+    # NONEXISTENT: a second session took its number, cheerfully reported success without a word of
+    # warning, and the dispute-resolution loop read the same corrupted snapshot and didn't see the
+    # rival either. The address collision stuck forever. Reproduced: the claim file was locked for a
+    # second and a half, and two streams got the same number.
+    #
+    # ‼️ We learn "no file" FROM A FAILED OPEN, not a separate existence check: that one answers "no"
+    # in cases where it's merely not visible too (see `Test-MissingPathFailure`).
+    $deadline = (Get-Date).AddMilliseconds((Get-ClaimReadTimeoutMs -Strict:$Strict))
+    $reason = 'reason unknown'
+    while ($true) {
+        try {
+            # Share the file for read and write: a neighbour might be updating its own checked-in mark right now.
+            $stream = [System.IO.File]::Open($Path, 'Open', 'Read', 'ReadWrite')
+            $text = ''
+            try {
+                $reader = [System.IO.StreamReader]::new($stream, [System.Text.Encoding]::UTF8)
+                $text = $reader.ReadToEnd()
+            } finally {
+                $stream.Dispose()
+            }
+            $record = $null
+            try {
+                $record = $text | ConvertFrom-Json
+            } catch {
+                # Parsing failed — this is NOT grounds for a retry: a broken file is broken for good.
+                return [pscustomobject]@{
+                    State = 'broken'; Record = $null; Reason = (Get-FailureReason -Failure $_)
+                }
+            }
+            if (-not $record.worktree) {
+                return [pscustomobject]@{
+                    State = 'broken'; Record = $null; Reason = 'the claim names no worktree'
+                }
+            }
+            return [pscustomobject]@{ State = 'ok'; Record = $record; Reason = '' }
+        } catch {
+            if (Test-MissingPathFailure -Failure $_) {
+                return [pscustomobject]@{ State = 'missing'; Record = $null; Reason = '' }
+            }
+            # Keep the real reason: "file busy" and "no permission" need different fixes.
+            $reason = Get-FailureReason -Failure $_
+        }
+        if ((Get-Date) -ge $deadline) { break }
+        Start-Sleep -Milliseconds 30
+    }
+    return [pscustomobject]@{ State = 'unreadable'; Record = $null; Reason = $reason }
+}
+
+function Read-ClaimFile {
+    param([string]$Path)
+    # The forgiving version for callers who care more about not choking than about the truth: our
+    # own claim, the "checked in" mark, release. Anyone using the registry to CHOOSE A NUMBER should
+    # use `Read-ClaimRecord` in strict mode.
+    return (Read-ClaimRecord -Path $Path).Record
+}
+
+function Get-ClaimState {
+    param($Claim)
+    # Four states instead of three — all honest:
+    #   live     — claim open, mark fresh;
+    #   silent   — claim open, mark stale (the session may have closed without releasing, or it may
+    #              have been quietly working for hours: a subagent run, waiting on a build, a pause
+    #              in the conversation);
+    #   released — the stream was released properly, the session is gone;
+    #   no claim — the stream was never announced at all; deciding that is not this function's job,
+    #              it's the caller's.
+    if (-not $Claim) { return 'no claim' }
+    if ([string]$Claim.state -eq 'released') { return 'released' }
+    $seen = [datetime]::MinValue
+    $raw = [string]$Claim.seen_at
+    if (-not $raw -or -not [datetime]::TryParse($raw, [cultureinfo]::InvariantCulture,
+            [System.Globalization.DateTimeStyles]::None, [ref]$seen)) {
+        return 'silent'
+    }
+    if (((Get-Date) - $seen).TotalHours -lt (Get-AliveHours)) { return 'live' }
+    return 'silent'
+}
+
+function Get-ClaimCurrentNames {
+    param($Claim)
+    # The names a stream carries RIGHT NOW. Three sources: what was recorded in the claim when it
+    # announced (branch and working folder), its worktree's current branch, and — if this is our own
+    # session — what's visible right this moment, for when git stays completely silent.
+    if (-not $Claim) { return @(Get-CurrentKeys) }
+    $names = [System.Collections.Generic.List[string]]::new()
+    foreach ($raw in @([string]$Claim.branch, [string]$Claim.worktree)) {
+        $names.Add((Get-StreamKey -Raw $raw))
+    }
+    $here = (([string]$Claim.worktree) -replace '\\', '/').TrimEnd('/').ToLowerInvariant()
+    foreach ($tree in (Get-Worktrees)) {
+        if ((($tree.path) -replace '\\', '/').TrimEnd('/').ToLowerInvariant() -ne $here) { continue }
+        if ($tree.branch) { $names.Add((Get-StreamKey -Raw $tree.branch)) }
+        $names.Add((Get-StreamKey -Raw $tree.path))
+    }
+    if ($here -eq (($PWD.Path -replace '\\', '/').TrimEnd('/').ToLowerInvariant())) {
+        foreach ($key in (Get-CurrentKeys)) { $names.Add($key) }
+    }
+    return @($names | Where-Object { $_ } | Select-Object -Unique)
+}
+
+function Get-ClaimRememberedNames {
+    param($Claim)
+    # Names a stream only REMEMBERS: the branch got renamed, and the session announced again, which
+    # rewrote the claim wholesale. Without this memory, a finding ALREADY ACCEPTED under the old name
+    # wouldn't arrive and wouldn't hold up release — it would just vanish silently.
+    #
+    # ‼️ Remembering isn't the same as carrying: these names have different rights — see
+    # `Resolve-ClaimNames`.
+    if (-not $Claim) { return @() }
+    $current = @(Get-ClaimCurrentNames -Claim $Claim)
+    $names = foreach ($raw in @($Claim.former_branches)) {
+        $key = Get-StreamKey -Raw ([string]$raw)
+        if ($key -and $key -notin $current) { $key }
+    }
+    return @($names | Select-Object -Unique)
+}
+
+function Resolve-ClaimNames {
+    param($Entries)
+    # ‼️ Who answers to which name is decided FOR THE WHOLE REGISTRY AT ONCE, not per claim
+    # separately. Otherwise one name legitimately points to two streams, and closing a finding with
+    # a named address becomes GLOBAL instead of PERSONAL: whoever closed it first snuffs it out for
+    # everyone.
+    #
+    # What happened once name memory shipped without this rule (reproduced on the real repository):
+    # branch names get reused in a live tree, and a new session took a name a neighbour merely
+    # remembered. The finding went to both, both were told "acted on — go ahead and close it," and
+    # the one that only remembered the name closed the other one's finding. The true recipient never
+    # saw anything, released green with an empty inbox, and the author got an "acknowledged" — from a
+    # stream it never named. Before name memory existed, this never happened at all: a finding always
+    # reached exactly the right session.
+    #
+    # It all follows from a single rule: NO MORE THAN ONE STREAM ANSWERS TO ANY GIVEN NAME.
+    #   • whoever carries the name right now — always answers to it;
+    #   • whoever only remembers it — only if NO ONE ELSE carries or remembers it either;
+    #   • a released stream doesn't answer at all: there's no session left, and its memory shouldn't
+    #     take a name away from a live neighbour and snuff out someone else's findings.
+    # A name remembered by two and carried by no one belongs to neither: accepting such a finding
+    # refuses out loud (no recipient), and that's more honest than silently delivering it at random.
+    $carried = @{}
+    $recalled = @{}
+    foreach ($entry in $Entries) {
+        if ($entry.State -eq 'released') { continue }
+        foreach ($name in $entry.Current) { $carried[$name] = 1 + [int]$carried[$name] }
+        foreach ($name in $entry.Remembered) { $recalled[$name] = 1 + [int]$recalled[$name] }
+    }
+    foreach ($entry in $Entries) {
+        if ($entry.State -eq 'released') {
+            $entry.Keys = @()
+            $entry.Silenced = @($entry.Current + $entry.Remembered | Select-Object -Unique)
+            continue
+        }
+        $keys = [System.Collections.Generic.List[string]]::new()
+        $silenced = [System.Collections.Generic.List[string]]::new()
+        foreach ($name in $entry.Current) { $keys.Add($name) }
+        foreach ($name in $entry.Remembered) {
+            if ([int]$carried[$name] -eq 0 -and [int]$recalled[$name] -eq 1) {
+                $keys.Add($name)
+            } else {
+                $silenced.Add($name)
+            }
+        }
+        $entry.Keys = @($keys | Select-Object -Unique)
+        $entry.Silenced = @($silenced)
+    }
+    return $Entries
+}
+
+function Get-NameRememberers {
+    param($Claims, [string]$Name)
+    # Who REMEMBERS this name, carried by no one right now. Needed by exactly one refusal: a name
+    # remembered by two and carried by no one deliberately belongs to neither (see
+    # `Resolve-ClaimNames`), and the human needs to be told exactly that, not left guessing about
+    # worktrees.
+    if (-not $Name) { return @() }
+    $live = @($Claims | Where-Object { $_.State -ne 'released' })
+    if (@($live | Where-Object { $Name -in $_.Current }).Count -gt 0) { return @() }
+    return @($live | Where-Object { $Name -in $_.Remembered })
+}
+
+function Get-StreamNames {
+    param($Claim, $Claims)
+    # The names a stream answers to RIGHT NOW, taking the whole registry into account. The single
+    # answer to "what is this stream called" — used by all three: accepting a finding, the delivery
+    # hook, and releasing a stream.
+    #
+    # The registry is mandatory: without it there's no way to know whether a live neighbour carries
+    # the remembered name — and that's exactly what the "no more than one stream per name" rule
+    # rests on.
+    if (-not $Claim) { return @(Get-CurrentKeys) }
+    $here = (([string]$Claim.worktree) -replace '\\', '/').TrimEnd('/').ToLowerInvariant()
+    foreach ($entry in @($Claims)) {
+        if ((([string]$entry.Record.worktree) -replace '\\', '/').TrimEnd('/').ToLowerInvariant() -ne $here) {
+            continue
+        }
+        return @($entry.Keys)
+    }
+    # No claim found in the registry (it was just filed, the registry was read earlier) — answer at
+    # least to the names it carries: those aren't in dispute by construction.
+    return @(Get-ClaimCurrentNames -Claim $Claim)
+}
+
+function Get-ClaimFiles {
+    param([string]$Dir, [switch]$Strict)
+    # A listing of the claims directory — the FIRST read of the registry, and it must fail honestly.
+    #
+    # ‼️ This is where the quietest hole in the whole mechanism used to sit. Listing through the
+    # shell with a name pattern, when access to the folder's contents is closed off, RETURNS AN
+    # EMPTY LIST and reports no error (verified; three other listing methods in the same experiment
+    # fail honestly). There was nothing to catch: since no exception was thrown, neither retries nor
+    # a loud refusal ever fired, and the strict guard further up the code simply never got called.
+    # In practice it looked like this: a neighbour is running the first stream, a second session
+    # announces and gets the SAME number with a success code; "who owns this" answers "nobody took
+    # it"; a finding for the live stream gets "this stream never announced."
+    #
+    # Hence the rule for the whole toolkit: ask the file system only in ways where "couldn't" is
+    # distinguishable from "empty". Here that means an exception, not an empty answer.
+    #
+    # ‼️ "No folder" is a legitimate answer of "no claims yet": the first session to announce is the
+    # one that creates the registry. But a DEAD PATH answers with the exact same failure — a dropped
+    # drive, a vanished network share — and that's real trouble, and passing it off as an empty
+    # registry is wrong: on a dead drive, "who owns this" would answer "nobody took the task," and
+    # release would answer "this session has no claim," both with a success code. So we tell them
+    # apart: is there AT LEAST ONE existing folder further up the path. There is — the path is alive,
+    # the registry just doesn't exist yet. There isn't — we say so out loud.
+    #
+    # Everything else (no permission, access closed off) is trouble right away, no further questions asked.
+    $deadline = (Get-Date).AddMilliseconds((Get-ClaimReadTimeoutMs -Strict:$Strict))
+    $reason = 'reason unknown'
+    while ($true) {
+        try {
+            return @([System.IO.Directory]::GetFiles($Dir, '*.json'))
+        } catch {
+            if (Test-MissingPathFailure -Failure $_) {
+                if (Test-PathReachable -Path $Dir) { return @() }
+                $reason = "the path is unreachable altogether: $(Get-FailureReason -Failure $_)"
+                break
+            }
+            $reason = Get-FailureReason -Failure $_
+        }
+        if ((Get-Date) -ge $deadline) { break }
+        Start-Sleep -Milliseconds 30
+    }
+    if ($Strict) {
+        throw "couldn't list the claim registry ($Dir), and deciding on it blind isn't an option — a stream number would collide with a neighbour's, and someone else's task would look unclaimed. Reason: $reason"
+    }
+    return @()
+}
+
+function Get-Claims {
+    param([string]$Dir, [switch]$Strict)
+    # The whole registry, with computed state. Ordered by wave and stream number, so display doesn't
+    # jump around from run to run.
+    #
+    # ‼️ `-Strict` is for whoever uses this list to CHOOSE A STREAM NUMBER, look up a task's owner, or
+    # decide a finding's fate. It cannot afford to miss a neighbour: a skipped claim gives two streams
+    # the same address, an answer of "nobody took this task," and a finding accepted by an already-
+    # released stream — all silently and permanently. Tolerant readers (the delivery hook on every
+    # move, board display) stay quiet and work with what they got: there, a miss costs one invisible
+    # line, not an address.
+    #
+    # We do NOT check whether the folder exists separately: an existence check answers "no" in cases
+    # where it's really "not visible," and that's exactly the substitution every hole of this class
+    # rested on. The listing answers instead — it tells "no folder" apart from "couldn't check."
+    $claims = [System.Collections.Generic.List[object]]::new()
+    foreach ($file in (Get-ClaimFiles -Dir $Dir -Strict:$Strict)) {
+        $read = Read-ClaimRecord -Path $file -Strict:$Strict
+        # ‼️ For the strict reader, ANY outcome besides "read it" is a refusal out loud. To whoever
+        # is choosing a number or looking up a task's owner, "file busy" and "file broken" are the
+        # same thing: the file is right there, but the stream vanishes from the list. Before, only
+        # the first one refused out loud, while the second passed silently — and an empty file, one
+        # truncated midway, or one left by a different version of the toolkit gave TWO STREAMS THE
+        # SAME ADDRESS without a single warning (reproduced across all four kinds of corruption).
+        #
+        # No point retrying on a broken file — it's broken for good; but staying quiet is even less
+        # of an option — unlike busy, this won't fix itself.
+        if ($Strict -and $read.State -eq 'unreadable') {
+            throw "couldn't read a neighbour's claim ($file), and choosing a stream number blind isn't an option — it would collide with a neighbour's. Reason: $($read.Reason). Try again in a few seconds."
+        }
+        if ($Strict -and $read.State -eq 'broken') {
+            throw "a neighbour's claim is broken and won't parse ($file) — while it stays this way its stream is invisible, and its number would get handed out a second time. Reason: $($read.Reason). Remove the file or fix it."
+        }
+        $record = $read.Record
+        if (-not $record) { continue }
+        $claims.Add([pscustomobject]@{
+                File       = $file
+                Record     = $record
+                WaveKey    = Get-WaveKey -Raw ([string]$record.wave)
+                StreamKey  = Get-StreamNumberKey -Raw ([string]$record.stream)
+                Current    = @(Get-ClaimCurrentNames -Claim $record)
+                Remembered = @(Get-ClaimRememberedNames -Claim $record)
+                Keys       = @()
+                Silenced   = @()
+                State      = Get-ClaimState -Claim $record
+            })
+    }
+    # ‼️ Names are handed out in a SECOND pass, once the whole registry is assembled: which stream a
+    # name answers to depends on whether anyone else carries or remembers it too. That question
+    # can't be settled one claim at a time, and a wrong answer to it hands the same finding to two
+    # streams at once.
+    return @((Resolve-ClaimNames -Entries @($claims)) | Sort-Object WaveKey, StreamKey)
+}
+
+function Find-Claims {
+    param($Claims, [string]$Raw)
+    # Who a finding is addressed to. First try it as "wave/stream" — that's the main form of
+    # address, because that's how the stream is named in the plan; failing that, as a branch or
+    # folder name.
+    $address = Get-StreamAddress -Raw $Raw
+    if ($address) {
+        return @($Claims | Where-Object {
+                $_.WaveKey -eq $address.Wave -and $_.StreamKey -eq $address.Stream
+            })
+    }
+    $key = Get-StreamKey -Raw $Raw
+    if (-not $key) { return @() }
+    return @($Claims | Where-Object { $key -in $_.Keys })
+}
+
+function Get-CurrentClaim {
+    param([string]$Dir, [switch]$Strict)
+    # ‼️ `-Strict` is for whoever needs "no claim" and "the file happens to be busy right now" to
+    # mean different things. Releasing a stream against a busy file would answer "this session has
+    # no claim — nothing to release," and the session would close without releasing: neighbours would
+    # go on addressing findings to a stream that, as far as they know, is still alive. Same root
+    # cause as choosing a number — a single read attempt and emptiness standing in for the truth.
+    $read = Read-ClaimRecord -Path (Get-ClaimPath -Dir $Dir -TreePath $PWD.Path) -Strict:$Strict
+    if ($Strict -and $read.State -eq 'unreadable') {
+        throw "couldn't read this session's claim ($($read.Reason)) — releasing the stream blind isn't an option, or it would stay listed as yours. Try again in a few seconds."
+    }
+    # ‼️ Broken is a refusal too. Otherwise the owner of a broken claim is invisible TO THEMSELVES:
+    # release answers "this session has no claim, nothing to release" and succeeds, the session
+    # closes, and neighbours keep addressing findings to a stream they believe is alive.
+    if ($Strict -and $read.State -eq 'broken') {
+        # ‼️ Name the path IN FULL, and give a way out that actually works. Before, the refusal
+        # didn't name the file at all and suggested announcing again — and announcing reads the
+        # whole registry strictly, hits the same file, and refuses too. A human would read their own
+        # refusal and have no way out of it.
+        throw "this session's claim is broken and won't parse ($(Get-ClaimPath -Dir $Dir -TreePath $PWD.Path)) — while it stays this way the stream is invisible, both to neighbours and to you. Reason: $($read.Reason). Remove this file, then announce again."
+    }
+    return $read.Record
+}
+
+function Get-RegistryLockPath {
+    param([string]$Dir)
+    # The lock lives INSIDE the claim registry itself: it guards exactly that, and travels with it
+    # (tests supply their own board — the registry and the lock follow it automatically).
+    #
+    # ‼️ The name deliberately doesn't end in `.json`: claim listing reads by that pattern, and the
+    # lock would show up in it as a ghost stream — no wave, no number, yet still taking a slot in the
+    # neighbour list and the wave's stream count.
+    #
+    # Joined with plain string ops: joining paths through the shell dies outright on a missing drive.
+    return [System.IO.Path]::Combine($Dir, '.claim.lock')
+}
+
+function Get-RegistryLockWaitSeconds {
+    # How long we wait for a neighbour's lock in total before moving on without it (saying so out
+    # loud). The critical section is a few folder reads and writing one file — a fraction of a
+    # second — so even a dozen sessions announcing at once fit within the limit with room to spare.
+    return 30
+}
+
+function Get-RegistryLockSpeakAfterSeconds {
+    # After this long, a silent wait starts to look like the tool hanging: a human is waiting on a
+    # response to their command and, seeing nothing, starts hammering the keyboard.
+    return 2
+}
+
+function Get-PathState {
+    param([string]$Path)
+    # What sits at a path: `container` — a folder, `leaf` — a file, `none` — nothing, `unknown` —
+    # couldn't tell. Its own function, because the path check itself CAN THROW: on a missing drive
+    # it doesn't answer "no", it throws an error, and under strict shell mode that error used to leak
+    # the tool a raw English message about a drive that doesn't exist.
+    # ‼️ We ask the system ONE question, not two in a row. The world changes between two answers:
+    # sessions of a wave create the registry folder at the same moment, and if a neighbour managed to
+    # create it between the question "is this a folder?" and the question "does it exist at all?",
+    # the result was a confident but FALSE "there's a file here, not a folder." What was dangerous
+    # wasn't the wrong answer itself, but the advice built on it: it pointed to deleting the folder
+    # where neighbours' claims live. Under load, the lie showed up on every fifth run.
+    #
+    # A path's properties come from a single system answer: has a folder — it's a folder; exists
+    # without the folder flag — it's a file; doesn't exist at all — its own kind of failure says so.
+    try {
+        $attributes = [System.IO.File]::GetAttributes($Path)
+        $kind = if ($attributes -band [System.IO.FileAttributes]::Directory) { 'container' } else { 'leaf' }
+        return [pscustomobject]@{ Kind = $kind; Reason = '' }
+    } catch {
+        if (Test-MissingPathFailure -Failure $_) {
+            return [pscustomobject]@{ Kind = 'none'; Reason = '' }
+        }
+        return [pscustomobject]@{ Kind = 'unknown'; Reason = (Get-FailureReason -Failure $_) }
+    }
+}
+
+function Test-PathReachable {
+    param([string]$Path)
+    # Is the path alive at all: is there at least one existing folder somewhere above it. Needed to
+    # tell "the registry doesn't exist yet" (normal: the first session to announce creates it) apart
+    # from "the path doesn't exist at all" (a dropped drive or network share) — the system answers
+    # both cases with the exact same failure.
+    #
+    # This check only lies toward "no," and that's the safe direction: doubt leads to a refusal out
+    # loud, not a quiet "there are no claims."
+    $current = [System.IO.Path]::GetDirectoryName($Path)
+    while ($current) {
+        if ((Get-PathState -Path $current).Kind -eq 'container') { return $true }
+        $parent = [System.IO.Path]::GetDirectoryName($current)
+        if ($parent -eq $current) { break }
+        $current = $parent
+    }
+    return $false
+}
+
+function Get-BlockingAncestor {
+    param([string]$Path)
+    # The nearest ancestor of the path that exists and is NOT a folder. Needed for exactly one
+    # honest refusal: when a file occupies the board's folder, the registry folder can't be created,
+    # but the file above it up the path is to blame, not the registry itself — and that's the one
+    # that needs naming, or a human has nothing to go look for.
+    # The path is cut with plain string ops, not shell parsing: that dies on a missing drive, and
+    # here is exactly where we're figuring out what's wrong with the path.
+    $current = [System.IO.Path]::GetDirectoryName($Path)
+    while ($current) {
+        $state = Get-PathState -Path $current
+        if ($state.Kind -eq 'container') { return '' }
+        if ($state.Kind -eq 'leaf') { return $current }
+        if ($state.Kind -eq 'unknown') { return '' }
+        $parent = [System.IO.Path]::GetDirectoryName($current)
+        if ($parent -eq $current) { break }
+        $current = $parent
+    }
+    return ''
+}
+
+function Assert-RegistryDir {
+    param([string]$Dir)
+    # The registry folder must actually BE a folder, and that needs saying right away — in plain
+    # words, with the real reason.
+    #
+    # ‼️ Three traps live here, and all three have fired for real.
+    #
+    # First: the "does this path exist" check answers "yes" for a file too, and `New-Item -ItemType
+    # Directory -Force` on top of a file quietly does nothing and reports success. From there, the
+    # lock would honestly wait half a minute, print a scary "lock wasn't released, the neighbouring
+    # session must have crashed" — and still fail one line down, while writing the claim.
+    #
+    # Second: judge by the OUTCOME, not by two separate probes ("no folder" + "path busy" =
+    # "there's a file there"). Probe-then-probe is a race: sessions of a wave create the registry
+    # folder at the same moment, and a neighbour can create it between the two probes. The very first
+    # session would accuse its neighbour of putting a file where the folder should be, and announcing
+    # would fail with a confident but false refusal.
+    #
+    # Third: a silent success report left the refusal WITHOUT a reason — "reason unknown" — even
+    # though the reason is known and nameable: the path is blocked by a file further up the tree.
+    # And on a missing drive, things never even got this far: the path check itself threw first.
+    $state = Get-PathState -Path $Dir
+    if ($state.Kind -eq 'container') { return }
+    if ($state.Kind -eq 'leaf') {
+        throw "the path meant for the claims folder is occupied: there's a file there, not a folder ($Dir). While it stays there, no session can announce — take a look at what it is and clear the path"
+    }
+    if ($state.Kind -eq 'unknown') {
+        throw "couldn't check the claims folder ($Dir). Reason: $($state.Reason)"
+    }
+    $reason = ''
+    try {
+        New-Item -ItemType Directory -Path $Dir -Force -ErrorAction Stop | Out-Null
+    } catch {
+        # A neighbour might have created the folder at the very same instant — that's not a failure,
+        # it's business as usual; we judge below, by the outcome. But we keep the reason: if it
+        # didn't work out, the human needs THAT reason, not our guess.
+        $reason = Get-FailureReason -Failure $_
+    }
+    $state = Get-PathState -Path $Dir
+    if ($state.Kind -eq 'container') { return }
+    if ($state.Kind -eq 'leaf') {
+        throw "the path meant for the claims folder is occupied: there's a file there, not a folder ($Dir). While it stays there, no session can announce — take a look at what it is and clear the path"
+    }
+    if ($state.Kind -eq 'unknown') {
+        throw "couldn't check the claims folder ($Dir). Reason: $($state.Reason)"
+    }
+    # No folder, and creating it didn't report any trouble. So we look further up the path — most
+    # often there's a file there.
+    $blocking = Get-BlockingAncestor -Path $Dir
+    if ($blocking) {
+        throw "the path to the claims folder is blocked by a file ($blocking) — remove or rename it, or no session will be able to announce"
+    }
+    if (-not $reason) { $reason = 'creating the folder reported no trouble, but the folder is not there' }
+    throw "couldn't set up the claims folder ($Dir). Reason: $reason"
+}
+
+function Enter-RegistryLock {
+    param([string]$Dir)
+    # A cross-process lock on CHOOSING A STREAM NUMBER. Returns an open file handle for the lock —
+    # hand it back to `Exit-RegistryLock` later; $null means "couldn't take the lock."
+    #
+    # ‼️ What it protects against (without this, it'll get "cleaned up" as dead weight). Choosing a
+    # number reads a snapshot of the whole registry, and without a lock that isn't atomic. Six
+    # sessions opened at once: all read the still-empty registry and take number 1; in the
+    # dispute-resolution loop, two of them count the next free number from the very same snapshot at
+    # the same time — and both take 2; whichever re-reads the registry before the other manages to
+    # write its own shift never sees its rival and exits the loop with number 2, while the other,
+    # comparing itself to the "elder," also stays at 2. Retrying doesn't save this: sessions exit the
+    # loop based on a STALE snapshot. Under the lock, the second session reads a registry that
+    # already has the first one's claim recorded, and the numbers diverge properly.
+    #
+    # The lock is a HELD FILE HANDLE, opened with no shared access. Not a named mutex (the toolkit
+    # gets dropped into any project, and cross-process mutexes don't work outside Windows) and not
+    # "the file exists, so it's taken."
+    #
+    # ‼️ Why not go by whether the file exists — this is the crux of it. Then a crashed session
+    # leaves the file behind, and to keep the board from locking up forever you'd need a staleness
+    # threshold and a takeover. And a takeover can't be made safe with off-the-shelf means: the
+    # decision "the lock is stale, I'm taking it" is made based on ONE file state, while a DIFFERENT
+    # one gets taken away — the holder may have already left, a neighbour may have already set a fresh
+    # lock, and that's the one taken away while the neighbour is working inside it. Verified on a rig
+    # with eight processes: double entry gets caught. A held handle has none of this problem at all —
+    # the system closes it itself when the process dies, and the lock frees up at that very instant
+    # (verified by killing the holder: the next one got in immediately, no need to wait out a
+    # threshold).
+    #
+    # ‼️ The lock file is NEVER deleted — not on exit, not during cleanup. The handle holds the lock,
+    # not the file — delete it, and a second process would create the file anew and take the lock on
+    # the NEW file, while the first one still holds the old one. Both would end up inside at once. An
+    # empty file in the registry folder is a trivial price, and it doesn't show up in claim listings
+    # (see the name, above).
+    #
+    # ‼️ How reliable this actually is — honestly, with no promises made. On Windows, mutual
+    # exclusion between processes is enforced by the OS itself, and this has been verified in
+    # practice here. On other systems, .NET fakes shared access with advisory kernel locks, and
+    # those don't work everywhere: some network filesystems don't support them at all, and they can
+    # be turned off by a runtime setting. There's no way to test this on the development machine.
+    #
+    # The mutual-exclusion rig in the test suite catches this class of breakage, but it can't be
+    # relied on as a guarantee: it only runs where THIS repository's tests get run — on one machine.
+    # A toolkit dropped into someone else's project doesn't run tests and doesn't need Python.
+    #
+    # Hence the rule for whoever carries this toolkit onward: the claim registry must live on an
+    # ordinary local disk. If it ends up on a network share, run the mutual-exclusion rig there
+    # before trusting the lock to work.
+
+    # ‼️ The lock does NOT allow re-entry: a second attempt by the same process gets rejected exactly
+    # like a foreign one. There's no nested entry today, and none should be added: a session would
+    # lock itself out, wait out the limit, and move on without the lock, printing a warning about a
+    # stuck neighbour that doesn't exist. If nested entry is ever needed, pass the already-held handle
+    # in — don't take the lock a second time.
+    Assert-RegistryDir -Dir $Dir
+    $path = Get-RegistryLockPath -Dir $Dir
+    $started = Get-Date
+    $deadline = $started.AddSeconds((Get-RegistryLockWaitSeconds))
+    $spoke = $false
+    while ($true) {
+        try {
+            $stream = [System.IO.File]::Open($path, 'OpenOrCreate', 'Write', 'None')
+            try {
+                # Who's holding it — for a human who peeks inside the file. None of the lock's actual
+                # workings depend on this: the handle holds the lock, not what's written inside.
+                $stream.SetLength(0)
+                $note = [System.Text.Encoding]::UTF8.GetBytes(
+                    "process $PID@$([System.Environment]::MachineName), taken $((Get-Date).ToString('s'))")
+                $stream.Write($note, 0, $note.Length)
+                $stream.Flush()
+            } catch {
+                # The note didn't get written — no big deal, the lock is already ours. No reason to
+                # fail the announcement over it: nothing about how the lock works depends on this note.
+            }
+            if ($spoke) { [Console]::Out.WriteLine('The claim registry lock is free now — continuing the announcement.') }
+            return $stream
+        } catch {
+            # ‼️ A contested lock and an unfixable obstacle look identical here — a failed file open —
+            # but the fix is the opposite in each case: a contest should be waited out, an obstacle is
+            # pointless to wait for (half a minute of waiting, a story about a neighbouring session,
+            # and it still fails one line down, while writing the claim; before the lock existed, the
+            # refusal here was instant and honest).
+            #
+            # We tell them apart by the kind of error: "file locked by another process" arrives as an
+            # ordinary I/O error, while a bad path and missing permissions come as their own kinds
+            # (verified). Trying "is the file still there" instead won't work — that check is
+            # inherently racy — the holder can leave between the failure and the check, and an
+            # ordinary contest gets mistaken for an obstacle.
+            $failure = $_.Exception
+            while ($failure.InnerException) { $failure = $failure.InnerException }
+            #
+            # ‼️ The directory check below is NOT the racy "is the file still there" check warned
+            # about above, and the difference matters: a lock file may appear and vanish under a
+            # normal contest, but a DIRECTORY never sits at the lock's path during normal work —
+            # the lock is always a file. So a directory there is an obstacle, not a contest, in any
+            # order of events. It is checked explicitly because the systems disagree about the
+            # exception: Windows reports opening a directory as an access error (already hopeless
+            # by the kind test), while Linux reports it as an ordinary I/O error — indistinguishable
+            # from a neighbour holding the lock. Without this, a Linux session waits out the full
+            # limit, blames a neighbour that does not exist, and then picks a number with no lock at
+            # all. Caught by this repository's own CI, on Linux, where the development machine could
+            # never have seen it.
+            $hopeless = ($failure -isnot [System.IO.IOException]) -or
+                ($failure -is [System.IO.DirectoryNotFoundException]) -or
+                (Test-Path -LiteralPath $path -PathType Container)
+            if ($hopeless) {
+                throw "couldn't set up the claim registry lock ($path). Reason: $(Get-FailureReason -Failure $_)"
+            }
+        }
+        if ((Get-Date) -ge $deadline) { return $null }
+        if (-not $spoke -and ((Get-Date) - $started).TotalSeconds -ge (Get-RegistryLockSpeakAfterSeconds)) {
+            # A silent wait reads to a human as the tool hanging. Write to the normal output stream,
+            # not the error stream — in this tool, only refusals live there. And not through the
+            # shell's regular output either — that would come back to the caller instead of the lock
+            # handle.
+            $spoke = $true
+            [Console]::Out.WriteLine("Waiting for the claim registry lock: another session is announcing right now ($path). Will wait up to $(Get-RegistryLockWaitSeconds)s.")
+        }
+        # Randomized pause: an identical one would sync sessions into lockstep, and they'd keep
+        # bumping into each other in unison.
+        Start-Sleep -Milliseconds (20 + (Get-Random -Maximum 40))
+    }
+}
+
+function Exit-RegistryLock {
+    param($Handle)
+    # Releasing the lock means closing the handle. The file stays put on purpose — see the write-up
+    # in `Enter-RegistryLock`: deleting it would let a second process in.
+    #
+    # Stay silent on any failure: even if the handle fails to close here, the system will close it
+    # when the process exits, and there's no reason to fail an announcement that already succeeded
+    # over this.
+    if (-not $Handle) { return }
+    try {
+        $Handle.Dispose()
+    } catch {
+        return
+    }
+}
+
+function Write-ClaimFile {
+    param([string]$Path, $Claim)
+    # Write through a temp file next to it: a reader will never see a half-written claim. There's
+    # only one writer for the file (this session itself), so no locks or retries are needed.
+    # The path is cut with plain string ops, for the same reason as on the board: shell parsing dies
+    # outright on a missing drive with a raw English message.
+    $dir = [System.IO.Path]::GetDirectoryName($Path)
+    if ($dir -and -not (Test-Path -LiteralPath $dir -PathType Container)) {
+        New-Item -ItemType Directory -Path $dir -Force | Out-Null
+    }
+    # ‼️ The temp file's name does NOT contain `.json`: the registry listing takes files by that
+    # pattern, and a write cut short would otherwise land in the registry as a scrap — and a scrap
+    # now stops everything that depends on the address. Clean it up on failure too: we don't need
+    # litter in the registry folder.
+    $temp = [System.IO.Path]::ChangeExtension($Path, ".tmp-$PID")
+    try {
+        [System.IO.File]::WriteAllText($temp, ($Claim | ConvertTo-Json -Depth 5), [System.Text.UTF8Encoding]::new($false))
+        [System.IO.File]::Move($temp, $Path, $true)
+    } catch {
+        Remove-Item -LiteralPath $temp -Force -ErrorAction SilentlyContinue
+        throw
+    }
+}
+
+function Update-ClaimSeen {
+    param([string]$Dir, [string]$TreePath)
+    # The "session is active" mark. Called by the delivery hook on every move and has to stay quiet:
+    # a failed mark update is no reason to get in the way of work.
+    try {
+        $path = Get-ClaimPath -Dir $Dir -TreePath $TreePath
+        $claim = Read-ClaimFile -Path $path
+        if (-not $claim) { return }
+        if ([string]$claim.state -eq 'released') { return }
+        $claim.seen_at = (Get-Date).ToString('s')
+        Write-ClaimFile -Path $path -Claim $claim
+    } catch {
+        return
+    }
+}
+
+function Get-ProfilePlansFolder {
+    param([string]$StartDir)
+    # Where wave plans live in THIS project: the `.parallel-streams.md` profile, `## Plans` section,
+    # a path in backticks. Parsed ONCE for the whole toolkit, called by two consumers — the
+    # hint hook (deciding what counts as editing the wave plan) and the selection of places streams
+    # edit jointly. Let them drift apart and the hook would consider one thing "the plan" while the
+    # overlap list means another.
+    #
+    # The heading is matched CASE-INSENSITIVELY: a human writes the profile by hand, and "## plans"
+    # is the same section.
+    #
+    # ‼️ No folder named — answer empty, no defaults tied to one particular project's path. A
+    # hardcoded path would never match in someone else's project: the hook would silently come back
+    # with zero, and the wave plan would land in the overlap list — both indistinguishable from
+    # working correctly.
+    if (-not $StartDir) { $StartDir = $PWD.Path }
+    try {
+        $dir = $StartDir
+        while ($dir) {
+            $profilePath = Join-Path $dir '.parallel-streams.md'
+            if (Test-Path -LiteralPath $profilePath -PathType Leaf) {
+                $text = [System.IO.File]::ReadAllText($profilePath, [System.Text.UTF8Encoding]::new($false))
+                $section = [regex]::Match($text, '(?msi)^##\s+Plans\s*$(.*?)(?=^##\s|\z)')
+                if (-not $section.Success) { return '' }
+                foreach ($found in [regex]::Matches($section.Groups[1].Value, '`([^`]+)`')) {
+                    $value = ($found.Groups[1].Value.Trim() -replace '\\', '/') -replace '^\./', ''
+                    if ($value -match '\s') { continue }
+                    # A file name is never the plans folder: the section also marks up files in backticks.
+                    if ($value -notmatch '/$' -and $value -match '\.[A-Za-z0-9]{1,5}$') { continue }
+                    if (-not $value.EndsWith('/')) { $value += '/' }
+                    return $value
+                }
+                return ''
+            }
+            # We don't climb above the repository root: someone else's project with its own profile starts there.
+            if (Test-Path -LiteralPath (Join-Path $dir '.git')) { break }
+            $dir = Split-Path -Parent $dir
+        }
+    } catch {
+        return ''
+    }
+    return ''
+}
+
+function Get-SharedByDesignPattern {
+    # Places streams edit JOINTLY by design, not by oversight: every session touches the wave plan
+    # (a status line, adding a finding). Counting that as an overlap would make the hint noisy, and a
+    # noisy hint is a useless one.
+    #
+    # The plans folder comes from the same profile parsing the hint hook uses. Empty means the
+    # project has no plans, and therefore no places that are shared by design either: then we filter
+    # out NOTHING. An empty pattern would match any name at all and hide every real overlap at once.
+    $plans = Get-ProfilePlansFolder
+    if (-not $plans) { return '' }
+    return "/$plans"
+}
+
+function Get-TouchedFiles {
+    # Files a stream has already touched: its own branch against the common ancestor with main, plus
+    # anything uncommitted. This shows an overlap with a neighbour BEFORE it turns into a merge
+    # conflict — and, more importantly, before a session offers the owner someone else's task.
+    $files = [System.Collections.Generic.List[string]]::new()
+    try {
+        $base = (& git merge-base HEAD origin/main 2>$null)
+        if ($LASTEXITCODE -eq 0 -and $base) {
+            foreach ($name in @(& git diff --name-only $base.Trim() HEAD 2>$null)) { $files.Add($name) }
+        }
+        foreach ($line in @(& git status --porcelain 2>$null)) {
+            if ($line.Length -le 3) { continue }
+            $name = $line.Substring(3).Trim().Trim('"')
+            # A rename comes as "was -> became": we care about what's there now.
+            if ($name -match ' -> ') { $name = ($name -split ' -> ')[-1].Trim().Trim('"') }
+            $files.Add($name)
+        }
+    } catch {
+        return @()
+    }
+    $shared = Get-SharedByDesignPattern
+    $clean = foreach ($name in $files) {
+        if (-not $name) { continue }
+        $normalized = ($name -replace '\\', '/').Trim().ToLowerInvariant()
+        if (-not $normalized) { continue }
+        # An empty pattern means "no plans in this project": then we filter out nothing, otherwise
+        # it would match any name at all and the touched-files list would come out empty for everyone.
+        if ($shared -and "/$normalized" -like "*$shared*") { continue }
+        $normalized
+    }
+    # A ceiling: this list goes into the claim that every neighbour reads on every move. A sweeping
+    # edit across a thousand files would already overlap within the first couple hundred.
+    return @($clean | Select-Object -Unique | Select-Object -First 200)
+}
+
+function Update-ClaimFiles {
+    param([string]$Dir, [string]$TreePath, [int]$MaxAgeMinutes = 5)
+    # The touched-files list is recomputed no more than once every few minutes: the hook gets called
+    # on EVERY session move, and two git calls per move would be a cost for nothing.
+    try {
+        $path = Get-ClaimPath -Dir $Dir -TreePath $TreePath
+        $claim = Read-ClaimFile -Path $path
+        if (-not $claim) { return }
+        if ([string]$claim.state -eq 'released') { return }
+        $when = [datetime]::MinValue
+        if ($claim.files_at -and [datetime]::TryParse([string]$claim.files_at, [cultureinfo]::InvariantCulture,
+                [System.Globalization.DateTimeStyles]::None, [ref]$when)) {
+            if (((Get-Date) - $when).TotalMinutes -lt $MaxAgeMinutes) { return }
+        }
+        $claim | Add-Member -NotePropertyName files -NotePropertyValue (Get-TouchedFiles) -Force
+        $claim | Add-Member -NotePropertyName files_at -NotePropertyValue ((Get-Date).ToString('s')) -Force
+        Write-ClaimFile -Path $path -Claim $claim
+    } catch {
+        return
+    }
+}
+
+function Get-Overlaps {
+    param($Claims, $MyClaim)
+    # Neighbors editing the same files. Exactly the case the owner has no way to notice: a session
+    # offers them "let's also do this while we're at it," they don't know it's a piece of another
+    # stream, and they say yes. An overlap by file is visible mechanically, in advance.
+    if (-not $MyClaim -or -not $MyClaim.files) { return @() }
+    # Filter out the places shared by design here too, not only when the list was built: the claim
+    # might have been written by an older version of the hook, and then the wave plan would count as
+    # an overlap all over again.
+    $shared = Get-SharedByDesignPattern
+    $mine = [System.Collections.Generic.HashSet[string]]::new()
+    foreach ($name in @($MyClaim.files)) {
+        $text = [string]$name
+        if (-not $text) { continue }
+        if ($shared -and "/$text" -like "*$shared*") { continue }
+        [void]$mine.Add($text)
+    }
+    if ($mine.Count -eq 0) { return @() }
+    $here = ([string]$MyClaim.worktree -replace '\\', '/').TrimEnd('/')
+    $found = [System.Collections.Generic.List[object]]::new()
+    foreach ($claim in $Claims) {
+        if ($claim.State -ne 'live') { continue }
+        if ((([string]$claim.Record.worktree) -replace '\\', '/').TrimEnd('/') -eq $here) { continue }
+        $common = @(@($claim.Record.files) | Where-Object { $_ -and $mine.Contains([string]$_) })
+        if ($common.Count -eq 0) { continue }
+        $found.Add([pscustomobject]@{ Claim = $claim; Files = @($common) })
+    }
+    return @($found)
+}
+
+function Get-StuckRecords {
+    param($Records, $Claims, [string[]]$KnownKeys)
+    # Entries with nowhere to go. Right now NOBODY sees them: there's no recipient, and the sender
+    # already got told it succeeded. The mechanism's silence is indistinguishable from "the neighbour
+    # has nothing to say."
+    $stuck = [System.Collections.Generic.List[object]]::new()
+    $deadline = (Get-Date).AddDays(-(Get-SilentDaysBeforeStuck))
+    foreach ($record in $Records) {
+        $raw = [string]$record.to
+        # An "everyone" entry doesn't land here: it has its own shelf life and its own meaning —
+        # it might simply not have been acted on by everyone yet. An "acknowledged" notice, even
+        # more so: there's no one to chase it down for, and no reason to.
+        if ((Get-StreamKey -Raw $raw) -in @('*', '**')) { continue }
+        if ([string]$record.kind -eq 'ack') { continue }
+        $addressed = @(Find-Claims -Claims $Claims -Raw $raw)
+        $live = @($addressed | Where-Object { $_.State -eq 'live' })
+        if ($live.Count -gt 0) { continue }
+        $when = [datetime]::MinValue
+        $parsed = [datetime]::TryParse([string]$record.at, [cultureinfo]::InvariantCulture,
+            [System.Globalization.DateTimeStyles]::None, [ref]$when)
+        $reason = ''
+        if (@($addressed | Where-Object { $_.State -eq 'released' }).Count -gt 0) {
+            # Released is the one case with nothing left to wait for at all: the session is gone and won't be back.
+            $reason = 'the stream was released'
+        } elseif ($addressed.Count -gt 0) {
+            if ($parsed -and $when -gt $deadline) { continue }
+            $reason = "the stream has been silent since $(Format-Stamp -Raw $addressed[0].Record.seen_at)"
+        } else {
+            if ($parsed -and $when -gt $deadline) { continue }
+            # The keys passed in here are ones that CHECKED IN: a tree by itself doesn't make a
+            # recipient — the session behind it might have closed a week ago, while a finding
+            # addressed by branch name still waits for it.
+            if ((Get-StreamKey -Raw $raw) -in $KnownKeys) { continue }
+            $reason = 'no claim for this stream, and no fresh check-in from the tree either'
+        }
+        $stuck.Add([pscustomobject]@{ Record = $record; Reason = $reason })
+    }
+    return @($stuck)
+}
+
+function Format-Stamp {
+    param($Raw)
+    # A claim's timestamp is stored as a string, but JSON parsing turns it into a date, and then
+    # `[string]` prints it in the system locale's format ("08/21/2026 23:34:13"). We show the human
+    # the same look regardless of which path the value arrived by.
+    if ($Raw -is [datetime]) { return $Raw.ToString('yyyy-MM-dd HH:mm') }
+    $text = [string]$Raw
+    if (-not $text) { return 'no timestamp' }
+    $when = [datetime]::MinValue
+    if ([datetime]::TryParse($text, [cultureinfo]::InvariantCulture,
+            [System.Globalization.DateTimeStyles]::None, [ref]$when)) {
+        return $when.ToString('yyyy-MM-dd HH:mm')
+    }
+    return $text
+}
+
+function Format-ClaimLine {
+    param($Claim)
+    $record = $Claim.Record
+    $name = if ($record.name) { " `"$($record.name)`"" } else { '' }
+    $tasks = if ($record.tasks) { ", tasks $($record.tasks)" } else { '' }
+    # ‼️ We show remembered names. A stream answers to more than just the name it carries now — and
+    # until these names were visible anywhere, a human couldn't notice either that a finding would go
+    # to the old address, or that a name had been taken away from the stream. Names taken away get
+    # marked separately: a finding will NOT arrive at those, because someone else carries or
+    # remembers that name.
+    $kept = @($Claim.Remembered | Where-Object { $_ -in $Claim.Keys })
+    $lost = @($Claim.Silenced)
+    $memory = ''
+    if ($kept.Count -gt 0) { $memory += ", remembers names: $($kept -join ', ')" }
+    if ($lost.Count -gt 0) { $memory += ", names taken away: $($lost -join ', ')" }
+    return "  $($record.wave)/$($record.stream)$name$tasks — $($Claim.State) (checked in $(Format-Stamp -Raw $record.seen_at), branch $($record.branch)$memory)"
+}

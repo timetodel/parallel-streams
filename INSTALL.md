@@ -5,8 +5,9 @@ It is written for you, not for them.** Do not ask the user to run the steps by h
 report the one line they need to type.
 
 The skill is one directory: `skills/parallel-streams/`. It contains `SKILL.md`, a `references/`
-folder, and a `scripts/` folder. All three must be copied together — the skill loads the references
-by relative path and runs the script from `scripts/`.
+folder, a `scripts/` folder, and a `coordination/` folder. Copy the whole directory — the skill
+loads the references by relative path, runs the script from `scripts/`, and points at
+`coordination/` for the channel commands it prints.
 
 ## Step 1 — pick the destination
 
@@ -54,7 +55,20 @@ references/diagram-rules.md
 references/brief-template.md
 references/configuration.md
 scripts/render_map.py
+coordination/README.md
+coordination/install.ps1
+coordination/wave-board.ps1
+coordination/lib/wave-board-lib.ps1
+coordination/lib/git-env-clean.ps1
+coordination/lib/hook-io.ps1
+coordination/hooks/wave-board-deliver.ps1
+coordination/hooks/pretooluse-wave-board-nudge.ps1
+coordination/templates/profile.md
+coordination/templates/profile-coordination.md
 ```
+
+The `coordination/` files are only needed if the user wants the channel (step 3a). The skill itself
+works without them.
 
 ## Step 3 — verify before reporting success
 
@@ -68,6 +82,23 @@ printf '1:\n2: 1\n3: 1\n4: 2, 3\n' | python3 .claude/skills/parallel-streams/scr
 The second command must print a diagram and `render_map: check passed`. If Python is missing, the
 skill still works — say so, and note that diagrams will have to be hand-drawn under the rules in
 `references/diagram-rules.md`.
+
+## Step 3a — the coordination channel, only if asked for
+
+The skill splits the plan; the channel is what lets the running sessions reach each other
+afterwards — send a finding to a live neighbour, close what arrives, ask who owns a task, release
+the stream at the end. It is optional and off until installed. Install it when the user wants
+sessions to coordinate, or when they say several people or sessions work in this repository at
+once:
+
+```
+pwsh .claude/skills/parallel-streams/coordination/install.ps1
+```
+
+It needs PowerShell 7 and a git repository. It reports every change it makes: two hooks in the
+project's settings, the coordination sections in `.parallel-streams.md`, and a short bridge script
+at `scripts/wave-board.ps1`. Check with `-Mode Check`, remove with `-Mode Uninstall`. If PowerShell
+7 is missing, say so plainly — the skill still works, only without the channel.
 
 ## Step 4 — tell the user what to do next
 
@@ -89,6 +120,13 @@ manager involved and nothing to unregister — the skill is a directory, and a n
 directory is the whole update.
 
 ## Uninstall
+
+If the coordination channel was installed, remove it first — that puts the project's settings and
+bridge script back the way they were:
+
+```
+pwsh .claude/skills/parallel-streams/coordination/install.ps1 -Mode Uninstall
+```
 
 ```bash
 rm -rf .claude/skills/parallel-streams

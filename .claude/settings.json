@@ -1,0 +1,51 @@
+{
+  "$schema": "https://json.schemastore.org/claude-code-settings.json",
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "shell": "powershell",
+            "command": "& \"$PWD/skills/parallel-streams/coordination/hooks/wave-board-deliver.ps1\" -Stage Start",
+            "timeout": 20,
+            "statusMessage": "Checking the wave board"
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "shell": "powershell",
+            "command": "& \"$PWD/skills/parallel-streams/coordination/hooks/wave-board-deliver.ps1\" -Stage Prompt",
+            "timeout": 15
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "Write|Edit",
+        "hooks": [
+          {
+            "type": "command",
+            "shell": "powershell",
+            "command": "& \"$PWD/skills/parallel-streams/coordination/hooks/pretooluse-wave-board-nudge.ps1\"",
+            "if": "Edit(docs/plans/**)",
+            "timeout": 20
+          },
+          {
+            "type": "command",
+            "shell": "powershell",
+            "command": "& \"$PWD/skills/parallel-streams/coordination/hooks/pretooluse-wave-board-nudge.ps1\"",
+            "if": "Write(docs/plans/**)",
+            "timeout": 20
+          }
+        ]
+      }
+    ]
+  }
+}

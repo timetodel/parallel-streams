@@ -44,6 +44,27 @@ a bug report — fix the layout, don't relax the check.
 Never weaken `check_diagram` to make a diagram pass. Its entire purpose is to fail loudly on output
 that looks fine and is off by one character.
 
+## Working on the coordination channel
+
+```bash
+python -m pytest skills/parallel-streams/coordination/tests
+```
+
+The channel is PowerShell 7 (`coordination/*.ps1`) with its tests in Python. Those tests run the
+real scripts against a board and a stand-in project they create themselves — they assert behaviour,
+not that files exist, because every failure mode here is silent: a broken channel looks exactly like
+"the neighbour had nothing to say".
+
+Without `pwsh` on PATH the whole suite skips itself and the run still reports green. Check that
+PowerShell is installed before trusting a clean result.
+
+Two rules that are not negotiable:
+
+- **Never weaken a test to make the channel pass.** If a test and the tool disagree, one of them is
+  wrong — decide which, and fix that one.
+- **Anything the installer writes into someone else's project** (their settings, their profile,
+  their `scripts/` folder) needs a test that proves the foreign content survived it, byte for byte.
+
 ## Pull requests
 
 - Small and focused. A PR that changes the skill text *and* the renderer is two PRs.

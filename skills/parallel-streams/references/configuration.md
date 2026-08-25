@@ -23,6 +23,8 @@ comes from a profile file, so the skill itself stays portable.
 | `## Conventions` | Branch naming, commit message language and prefixes | the repository's existing style |
 | `## Settled decisions` | Path to a registry of decisions already closed | none |
 | `## Brief language` | Language to write the briefs in | the language the user is speaking |
+| `## Coordination` | The commands running sessions use to reach each other, copied verbatim into blocks 4 and 9 of every brief | absent — the skill says nothing about coordination |
+| `## Plans` | The folder where wave plans live, backtick-quoted | absent — the channel's nudge guard stays disconnected |
 
 Unknown sections are ignored, so a profile can carry notes for humans too.
 
@@ -81,6 +83,16 @@ recorded there with their reasons.
 ## Brief language
 English.
 ```
+
+## Coordination and Plans
+
+These two sections come from the coordination channel — the optional machinery in
+`coordination/`. Its installer writes both for you, filled in, so they are the one part of the
+profile you should not hand-write: the commands in `## Coordination` are copied verbatim into every
+brief, and a command that drifted from the tool is worse than no command at all.
+
+Leaving both sections out is a supported way to run the skill — it then behaves exactly as it did
+before the channel existed. Installing and removing: `coordination/README.md`.
 
 ## Notes
 
