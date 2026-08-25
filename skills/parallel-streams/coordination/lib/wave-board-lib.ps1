@@ -1567,8 +1567,21 @@ function Enter-RegistryLock {
             # ordinary contest gets mistaken for an obstacle.
             $failure = $_.Exception
             while ($failure.InnerException) { $failure = $failure.InnerException }
+            #
+            # ‼️ The directory check below is NOT the racy "is the file still there" check warned
+            # about above, and the difference matters: a lock file may appear and vanish under a
+            # normal contest, but a DIRECTORY never sits at the lock's path during normal work —
+            # the lock is always a file. So a directory there is an obstacle, not a contest, in any
+            # order of events. It is checked explicitly because the systems disagree about the
+            # exception: Windows reports opening a directory as an access error (already hopeless
+            # by the kind test), while Linux reports it as an ordinary I/O error — indistinguishable
+            # from a neighbour holding the lock. Without this, a Linux session waits out the full
+            # limit, blames a neighbour that does not exist, and then picks a number with no lock at
+            # all. Caught by this repository's own CI, on Linux, where the development machine could
+            # never have seen it.
             $hopeless = ($failure -isnot [System.IO.IOException]) -or
-                ($failure -is [System.IO.DirectoryNotFoundException])
+                ($failure -is [System.IO.DirectoryNotFoundException]) -or
+                (Test-Path -LiteralPath $path -PathType Container)
             if ($hopeless) {
                 throw "couldn't set up the claim registry lock ($path). Reason: $(Get-FailureReason -Failure $_)"
             }
