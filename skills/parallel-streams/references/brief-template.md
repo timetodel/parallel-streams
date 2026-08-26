@@ -38,9 +38,13 @@ file and need one part of it.
 
 Delegate the writing too. Each task under *What to do* goes to an implementation subagent, which
 writes the code and its tests in its own context and hands back a summary; one reviewing subagent
-then reads the finished task and returns everything it found as one list. That list goes back to an
-implementation subagent in a single round, and you accept the result from its report — the reviewer
-is called once per task, not once per round of fixes. Start a fresh subagent for each task rather
+then reads the finished task **against this brief** and returns one list: for each point of the
+task, whether it was done, done differently, or missed, plus anything it noticed on the way. It
+reads the brief, the implementer's report, and only the parts of the code it needs to answer that.
+Reading the whole diff hunting for logic bugs is not its job — that is the review gate in block 7,
+which is built for it and never sees this brief. That list goes back to an implementation subagent
+in a single round, and you accept the result from its report — the reviewer is called once per task,
+not once per round of fixes. Start a fresh subagent for each task rather
 than waking one you used earlier: waking it re-sends its whole accumulated conversation, so the
 fifth wake-up pays for the first four again.
 [+ when this stream is two or three small tasks of the same kind: «This stream is short and
@@ -125,8 +129,9 @@ briefs named only research kept its research subagents and lost its implementers
 stream wrote hundreds of lines by hand, and all of that code travelled through the chat in front of
 the person who does not read code, instead of staying inside a subagent's context. Naming only half
 of the delegation reads as permission for the other half. Delegated writing also buys a second pair
-of eyes for free: the implementer, the reviewer and the session accepting the result are three
-different workers, and no one is reviewing their own code.
+reader on the work: the implementer, the reviewer and the session accepting the result are three
+different subagents, and the reviewer reads the brief without having formed the implementer's
+picture of what it asked for.
 
 Delegate: each task in the brief, as one implementation subagent plus a separate reviewing subagent,
 and every round of fixes after the review. Do not delegate: an edit small enough that writing the
@@ -166,6 +171,19 @@ the earlier ones and a late finding means redoing whatever was built on the mist
 stream, where a single reviewer at the end would have to hold several unrelated kinds of work at
 once. Judge by the stream, and write the answer into the brief: left unsaid, the brief reads as
 task-by-task for a two-task stream too.
+
+**The reviewing subagent checks the brief, not the logic.** Two subagents of the same model do not
+catch each other's blind spots: same engine, same reasoning, one pass, and nothing weighs the
+reviewer's findings before they turn into another round of fixes. What the reviewer does have is a
+position the implementer cannot take — it never formed a picture of what the brief meant, so it
+reads the words that are there instead of the intent it remembers. That makes it good at exactly one
+thing: whether the finished work matches what was asked. Point missed, point solved differently, a
+test that asserts nothing, a fork in block 8 decided on its own. Hunting logic bugs it is both weak
+and expensive — it would have to read the whole diff, which costs what the gate costs, and its noise
+buys real rounds of fixes. Keeping it to the brief is also what makes it cheap: brief, report, and
+only the code it needs to answer. And it answers the one question the gate cannot — the gate sees
+the diff from outside and has never read the brief, so "they forgot the third point" is a sentence
+only this reviewer will ever say.
 
 **Delegation is not escalation.** A research subagent is one worker answering one question, started
 by the session on its own. Escalation (block 6) is a deeper, more expensive mode the person has to

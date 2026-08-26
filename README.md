@@ -129,8 +129,8 @@ without asking. Ask only about the decisions listed below.
 
 Delegate the reading — sweeps, prior art, broad searches go to a subagent, so you get a few lines
 back instead of a dozen files parked in this session's context. Delegate the writing too: a fresh
-implementation subagent per task, one reviewing subagent per finished task, its findings back in a
-single round of fixes. Research, mechanical work and review lists on the cheap fast tier; new logic
+implementation subagent per task, one reviewing subagent per finished task — reading it against
+this brief, not hunting for logic bugs — its findings back in a single round of fixes. Research, mechanical work and review lists on the cheap fast tier; new logic
 on the session's own; review never below the session's tier.
 
 Stream 2 is adding endpoints in the same area. Different files, but rebase before you open the PR.

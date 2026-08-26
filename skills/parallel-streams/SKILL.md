@@ -3,7 +3,7 @@ name: parallel-streams
 description: Split an approved plan into parallel work streams that different agent sessions can run at the same time without merge conflicts or duplicated work. Produces a dependency map (table plus diagram) and one self-contained brief per stream, ready to paste into a fresh session. Use when asked to "split the plan into streams", "parallelize this plan", "what can I run in parallel", "hand this plan to several agents", or "show me the stream map".
 ---
 
-<!-- parallel-streams 1.6.1 — https://github.com/timetodel/parallel-streams
+<!-- parallel-streams 1.7.0 — https://github.com/timetodel/parallel-streams
      Shipped as a skill: this directory is the whole thing. Update by copying a newer
      copy of it over this one; changes are listed in the repository's CHANGELOG.md.
      Project rules come from the profile `.parallel-streams.md` in the repository root.
@@ -153,7 +153,8 @@ the exact shape is in *Output format* below. Fixed block order, nothing skipped,
    coordination channel if the profile has one (the announcement is what makes this session
    reachable at all, and it is worthless after the fact — put it before any edit); delegate reading
    and research to subagents instead of doing it inline, and delegate each task's implementation the
-   same way, with one subagent reviewing the finished task — once per task, not once per round of
+   same way, with one subagent reviewing the finished task against the brief — whether what was
+   asked got done, not a hunt for logic bugs, which is the gate's job — once per task, not once per round of
    fixes, or once at the end of the whole stream when the stream is two or three small tasks of the
    same kind — and a fresh subagent per task rather than an earlier one woken again, at the model tiers
    from the profile; the session handles branch, commits, pull request, and merge on its own, and
@@ -190,6 +191,7 @@ Map:
 Each brief:
 
 - [ ] delegation line present — research *and* implementation to subagents, with the model tiers,
+      the reviewing subagent reading the finished task against the brief rather than hunting bugs,
       one reviewer per finished task — or one for the whole stream, when it is two or three small
       tasks of the same kind — and a fresh subagent per task?
 - [ ] explicit escalation line — yes or no, with a reason?
