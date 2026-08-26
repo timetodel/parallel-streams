@@ -60,8 +60,12 @@ without asking. Ask only about the decisions listed below.
 
 Delegate the reading. Sweeps, prior art, consumer lists, broad searches — anything that ends in a
 summary rather than an edit — go to a subagent, so the answer comes back as a few lines instead of
-a dozen files parked in this session's context. Research runs on the cheap fast tier; delegated
-implementation on this session's tier; review never below the tier that wrote the code.
+a dozen files parked in this session's context.
+
+Delegate the writing too. Each task below goes to a fresh implementation subagent; one reviewing
+subagent then reads the finished task and returns everything it found as one list, which goes back
+in a single round of fixes. Research, mechanical work and working through a review list run on the
+cheap fast tier; new logic on this session's tier; review never below this session's tier.
 
 ## What to do
 1. Add the `workspaces` table and the `workspace_members` table, with the role column carrying
@@ -81,6 +85,11 @@ The migration runs against production data later, so a reviewer sees it before i
   follow-up that makes it required after the backfill? That choice changes what the migration in
   stream 8 has to do.
 Plain language, decision first, code after.
+
+This brief can be wrong. See a flaw in it — a step that cannot work, an instruction the code
+contradicts, a task already done — say so before you start; objecting costs you nothing, including
+when it overturns something I wrote. In every report, mark what you verified by reading or running
+it apart from what you are assuming.
 
 ## Done when
 - [ ] migration applies and rolls back cleanly on a copy of the schema
@@ -109,8 +118,12 @@ without asking. Ask only about the decisions listed below.
 
 Delegate the reading. Sweeps, prior art, consumer lists, broad searches — anything that ends in a
 summary rather than an edit — go to a subagent, so the answer comes back as a few lines instead of
-a dozen files parked in this session's context. Research runs on the cheap fast tier; delegated
-implementation on this session's tier; review never below the tier that wrote the code.
+a dozen files parked in this session's context.
+
+Delegate the writing too. Each task below goes to a fresh implementation subagent; one reviewing
+subagent then reads the finished task and returns everything it found as one list, which goes back
+in a single round of fixes. Research, mechanical work and working through a review list run on the
+cheap fast tier; new logic on this session's tier; review never below this session's tier.
 
 Stream 2 is adding endpoints in the same area of the codebase. Different files, but rebase before
 you open the pull request.
@@ -137,6 +150,11 @@ This stream is access control — run the security review as well.
   before the check is written.
 - Exact wording of the message a member sees when an action is above their role.
 Plain language, decision first, code after.
+
+This brief can be wrong. See a flaw in it — a step that cannot work, an instruction the code
+contradicts, a task already done — say so before you start; objecting costs you nothing, including
+when it overturns something I wrote. In every report, mark what you verified by reading or running
+it apart from what you are assuming.
 
 ## Done when
 - [ ] every workspace-scoped route resolves a membership before the handler runs
@@ -167,8 +185,12 @@ without asking. Ask only about the decisions listed below.
 
 Delegate the reading. Sweeps, prior art, consumer lists, broad searches — anything that ends in a
 summary rather than an edit — go to a subagent, so the answer comes back as a few lines instead of
-a dozen files parked in this session's context. Research runs on the cheap fast tier; delegated
-implementation on this session's tier; review never below the tier that wrote the code.
+a dozen files parked in this session's context.
+
+Delegate the writing too. Each task below goes to a fresh implementation subagent; one reviewing
+subagent then reads the finished task and returns everything it found as one list, which goes back
+in a single round of fixes. Research, mechanical work and working through a review list run on the
+cheap fast tier; new logic on this session's tier; review never below this session's tier.
 
 ## What to do
 1. Count active seats daily and prorate a seat added mid-cycle.
@@ -190,6 +212,11 @@ This stream touches billing — run the security review as well.
   they accept.
 - Whether the invoice estimate is shown to admins or to the owner alone.
 Plain language, decision first, code after.
+
+This brief can be wrong. See a flaw in it — a step that cannot work, an instruction the code
+contradicts, a task already done — say so before you start; objecting costs you nothing, including
+when it overturns something I wrote. In every report, mark what you verified by reading or running
+it apart from what you are assuming.
 
 ## Done when
 - [ ] proration verified against a worked example, including a mid-cycle join and removal

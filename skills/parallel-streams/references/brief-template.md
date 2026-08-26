@@ -37,16 +37,21 @@ which is re-sent on every step until the stream ends. Read directly only when yo
 file and need one part of it.
 
 Delegate the writing too. Each task under *What to do* goes to an implementation subagent, which
-writes the code and its tests in its own context and hands back a summary; a second subagent then
-reviews that work against the task before you accept it, and each round of fixes is delegated the
-same way. You stay the conductor: you hold the plan, talk to the person, and run the branch,
-commits, pull request and merge. Write code with your own hands only for a change small enough that
-briefing a subagent would cost more than the edit.
+writes the code and its tests in its own context and hands back a summary; one reviewing subagent
+then reads the finished task and returns everything it found as one list. That list goes back to an
+implementation subagent in a single round, and you accept the result from its report — the reviewer
+is called once per task, not once per round of fixes. Start a fresh subagent for each task rather
+than waking one you used earlier: waking it re-sends its whole accumulated conversation, so the
+fifth wake-up pays for the first four again. You stay the conductor: you hold the plan, talk to the
+person, and run the branch, commits, pull request and merge. Write code with your own hands only for
+a change small enough that briefing a subagent would cost more than the edit.
 
 Model tier: research and summarising — the cheap fast one; a mechanical task, where a worked
-example sits next to it and the job is "do the same for this case" — the cheap fast one too; a
-task with new logic — the tier this session runs on; review, audit, or diagnosing a failure — no
-weaker than the tier this session runs on, even when the cheap tier wrote the code.
+example sits next to it and the job is "do the same for this case" — the cheap fast one too;
+working through a review list against code that already exists — the cheap fast one as well, unless
+a finding reopens a design choice; a task with new logic — the tier this session runs on; review,
+audit, or diagnosing a failure — no weaker than the tier this session runs on, even when the cheap
+tier wrote the code.
 
 [+ merge-risk note when applicable: «Stream 3 is working in this package too — rebase before you
 open the pull request.»]
@@ -71,6 +76,11 @@ run a security review as well.»]
 - [concrete fork 2, if any]
 - [exact user-visible wording, if this stream produces any]
 Plain language, decision first, code after.
+
+This brief can be wrong. See a flaw in it — a step that cannot work, an instruction the code
+contradicts, a task already done — say so before you start; objecting costs you nothing, including
+when it overturns something I wrote. In every report, mark what you verified by reading or running
+it apart from what you are assuming.
 
 ## Done when
 - [ ] tests pass
@@ -134,6 +144,16 @@ end up running the same class of work at three different tiers.
 When unsure whether a task is mechanical, take the session tier: quality outranks the saving.
 Never review on the cheap tier — a cheap implementer is safe precisely because a stronger model
 checks the work.
+
+**Delegation has a shape, and the wrong shape costs more than the work it replaces.** Observed
+2026-08-26: a wave spent most of its budget on machinery rather than on code. The reviewer was
+called again after every round of fixes instead of once per finished task, which roughly doubled the
+count on its own; the same subagents were woken five times each, re-sending their entire accumulated
+conversation every time; rounds of fixes ran on the session's own tier although working through a
+review list is mechanical; and findings went back one at a time, each opening its own round. None of
+that was written down anywhere, so every session invented its own shape — and the expensive shape is
+the intuitive one. Hence the three rules above: one reviewer per finished task, a fresh subagent per
+task, the whole list of fixes in one round on the cheap tier.
 
 **Delegation is not escalation.** A research subagent is one worker answering one question, started
 by the session on its own. Escalation (block 6) is a deeper, more expensive mode the person has to
@@ -207,3 +227,25 @@ Generic advice is not a fork. "Discuss the architecture with me" is noise; "the 
 whether the retry counter is per-item or per-batch — that changes the storage shape" is a fork.
 
 If a stream genuinely has none, write "No open forks — the plan settles everything in this stream."
+
+**The brief itself is one of the things that can be wrong.** The list above raises the forks the
+plan left open; the paragraph under it raises defects in the brief, which is a different thing and
+does not happen on its own. A brief reads as settled — it was written by whoever is paying for the
+work, it arrives before any of it, and disagreeing looks like refusing to start. Observed
+2026-08-24: one session that had been given the permission explicitly stopped four wrong conclusions
+in a single evening, two of them instructions from the person who wrote its brief.
+
+Three parts, and dropping any one of them ends it:
+
+- **The invitation arrives before the work.** Afterwards the session has sunk cost in the wrong
+  path, and an objection means throwing away what it just built.
+- **The promise names the expensive case.** "Say if something is unclear" reads as covering typos.
+  What has to be free is the objection that overturns an instruction — that is the one nobody
+  raises unpaid.
+- **Reports separate verified from assumed.** Otherwise neither side can tell which claims carry
+  weight, and an objection is just an opinion against an instruction. Marking the assumption is also
+  what makes a session catch its own error before building on it.
+
+One refusal undoes all three. Answering "just do it" to a well-founded objection ends the practice:
+the next one never arrives, and its absence is silent. The signal that it is working is errors
+caught *before* the action — an error caught afterwards always reads as an excuse, and often is one.
