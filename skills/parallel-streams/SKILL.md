@@ -3,7 +3,7 @@ name: parallel-streams
 description: Split an approved plan into parallel work streams that different agent sessions can run at the same time without merge conflicts or duplicated work. Produces a dependency map (table plus diagram) and one self-contained brief per stream, ready to paste into a fresh session. Use when asked to "split the plan into streams", "parallelize this plan", "what can I run in parallel", "hand this plan to several agents", or "show me the stream map".
 ---
 
-<!-- parallel-streams 1.6.0 — https://github.com/timetodel/parallel-streams
+<!-- parallel-streams 1.6.1 — https://github.com/timetodel/parallel-streams
      Shipped as a skill: this directory is the whole thing. Update by copying a newer
      copy of it over this one; changes are listed in the repository's CHANGELOG.md.
      Project rules come from the profile `.parallel-streams.md` in the repository root.
@@ -154,7 +154,8 @@ the exact shape is in *Output format* below. Fixed block order, nothing skipped,
    reachable at all, and it is worthless after the fact — put it before any edit); delegate reading
    and research to subagents instead of doing it inline, and delegate each task's implementation the
    same way, with one subagent reviewing the finished task — once per task, not once per round of
-   fixes — and a fresh subagent per task rather than an earlier one woken again, at the model tiers
+   fixes, or once at the end of the whole stream when the stream is two or three small tasks of the
+   same kind — and a fresh subagent per task rather than an earlier one woken again, at the model tiers
    from the profile; the session handles branch, commits, pull request, and merge on its own, and
    only asks about the decisions in block 8. When the channel exists, this block also carries: how a finding reaches a live
    neighbour, that arriving records must be closed, and — before proposing any work outside this
@@ -189,7 +190,8 @@ Map:
 Each brief:
 
 - [ ] delegation line present — research *and* implementation to subagents, with the model tiers,
-      one reviewer per finished task, and a fresh subagent per task?
+      one reviewer per finished task — or one for the whole stream, when it is two or three small
+      tasks of the same kind — and a fresh subagent per task?
 - [ ] explicit escalation line — yes or no, with a reason?
 - [ ] explicit review line — a gate, or `none` with its reason plus the line that restores the gate
       if the diff turns out to touch code?
