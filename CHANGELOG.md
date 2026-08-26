@@ -3,6 +3,36 @@
 All notable changes to this project are documented here.
 This project follows [Semantic Versioning](https://semver.org/).
 
+## [1.6.0] — 2026-08-26
+
+### Added
+
+- **Every brief now invites the session to object to the brief itself, before it starts.** A brief
+  reads as settled: written by whoever is paying, delivered before any of the work, and disagreeing
+  with it looks like refusing to start — so a session that spots a step which cannot work builds
+  around it silently. Block 8 now carries a standing invitation to say so first, explicitly free of
+  cost even when the objection overturns an instruction, together with the requirement to mark what
+  was verified apart from what is assumed in every report. Observed 2026-08-24: one session given
+  that permission stopped four wrong conclusions in a single evening, two of them instructions from
+  the person who wrote its brief. All three parts are load-bearing, and one refusal to hear an
+  objection ends the practice silently.
+
+### Changed
+
+- **Delegation now has a stated shape, because the intuitive one is the expensive one.** The brief
+  named who writes and who reviews but never how many of them, and sessions filled the gap by taste.
+  Observed 2026-08-26: a wave spent most of its budget on machinery rather than code — the reviewer
+  re-called after every round of fixes instead of once per finished task, the same subagents woken
+  five times each with their whole accumulated conversation re-sent every time, and findings handed
+  back one at a time so each opened its own round. The brief now states all three: one reviewer per
+  finished task, a fresh subagent per task, the review's findings back in a single round.
+- **Working through a review list is a cheap-tier job.** The tier table covered new logic and
+  mechanical tasks but said nothing about fixing what a review found, so rounds of fixes inherited
+  the session's own tier — the most expensive way to apply a list of corrections to code that
+  already exists. Unless a finding reopens a design choice, that work is mechanical.
+- **The worked example and the README brief match the current skill again.** Both still showed the
+  model tiers from 1.1.0, which 1.4.1 had replaced.
+
 ## [1.5.0] — 2026-08-25
 
 ### Added

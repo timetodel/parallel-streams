@@ -128,8 +128,10 @@ they overwrite each other's checkout. Branch, commits, pull request, and merge a
 without asking. Ask only about the decisions listed below.
 
 Delegate the reading — sweeps, prior art, broad searches go to a subagent, so you get a few lines
-back instead of a dozen files parked in this session's context. Research and mechanical tasks on
-the cheap fast tier; new logic on the session's own; review never below the session's tier.
+back instead of a dozen files parked in this session's context. Delegate the writing too: a fresh
+implementation subagent per task, one reviewing subagent per finished task, its findings back in a
+single round of fixes. Research, mechanical work and review lists on the cheap fast tier; new logic
+on the session's own; review never below the session's tier.
 
 Stream 2 is adding endpoints in the same area. Different files, but rebase before you open the PR.
 
@@ -147,6 +149,12 @@ Run the project's review gate at high depth. This stream is access control — s
 ## Decide with me before implementing
 - Phase 3 leaves open whether removing the last owner is blocked or promotes the oldest admin.
 - Exact wording of the message a member sees when an action is above their role.
+Plain language, decision first, code after.
+
+This brief can be wrong. See a flaw in it — a step that cannot work, an instruction the code
+contradicts, a task already done — say so before you start; objecting costs you nothing, including
+when it overturns something I wrote. In every report, mark what you verified by reading or running
+it apart from what you are assuming.
 
 ## Done when
 - [ ] every workspace-scoped route resolves a membership before the handler runs
@@ -319,6 +327,22 @@ research subagent and ran no implementers at all, hand-writing hundreds of lines
 past the person the stream reports to. So the brief names both halves, and names them as permission:
 no session should have to ask whether it may look something up or hand a task to an implementer. It
 also fixes the model tier per kind of work, so neighbouring sessions don't each pick by taste.
+
+It fixes the *shape* too, because the intuitive shape is the expensive one: one reviewer per
+finished task rather than per round of fixes, a fresh subagent per task rather than an old one woken
+again with its whole conversation re-sent, and the review's findings handled in one round instead of
+one at a time. A wave that invented its own shape spent most of a day's budget on machinery rather
+than on code.
+
+**Why does the brief invite the session to object to it?**
+Because a brief reads as settled — it was written by whoever is paying, it arrives before any of the
+work, and disagreeing with it looks like refusing to start. So a session that spots a step which
+cannot work tends to build around it silently. The brief now says the opposite out loud, and says
+it before the work rather than after: objecting is free, including when it overturns an instruction.
+It comes with the other half of the deal — every report marks what was verified apart from what is
+assumed, which is what turns an objection into something checkable instead of an opinion. One
+session given that permission stopped four wrong conclusions in a single evening, two of them
+instructions from the person who wrote its brief.
 
 **Why must every brief say something about escalation and review?**
 Because those are the two lines that were always meant to be there and were always the first to be
