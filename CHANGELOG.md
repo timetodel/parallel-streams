@@ -3,6 +3,19 @@
 All notable changes to this project are documented here.
 This project follows [Semantic Versioning](https://semver.org/).
 
+## [1.6.1] — 2026-08-26
+
+### Changed
+
+- **A short, uniform stream is now reviewed once at the end instead of task by task.** 1.6.0 named
+  one reviewer per finished task and left it at that, so a stream of two small tasks of the same
+  kind paid for the same machinery as a stream of eight. Two or three small tasks of one kind get
+  read in one sitting anyway, and a finding in the first has almost nothing built on top of it yet;
+  task-by-task review earns its cost on a long stream, where later tasks stand on earlier ones and a
+  late finding means redoing what was built on the mistake, and on a mixed stream, where one
+  reviewer at the end would have to hold several unrelated kinds of work at once. The brief now
+  carries the answer explicitly — left unsaid, it reads as task-by-task for a two-task stream too.
+
 ## [1.6.0] — 2026-08-26
 
 ### Added

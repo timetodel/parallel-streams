@@ -42,7 +42,11 @@ then reads the finished task and returns everything it found as one list. That l
 implementation subagent in a single round, and you accept the result from its report — the reviewer
 is called once per task, not once per round of fixes. Start a fresh subagent for each task rather
 than waking one you used earlier: waking it re-sends its whole accumulated conversation, so the
-fifth wake-up pays for the first four again. You stay the conductor: you hold the plan, talk to the
+fifth wake-up pays for the first four again.
+[+ when this stream is two or three small tasks of the same kind: «This stream is short and
+ uniform — one reviewing subagent reads the whole stream once at the end, instead of task by
+ task.»]
+You stay the conductor: you hold the plan, talk to the
 person, and run the branch, commits, pull request and merge. Write code with your own hands only for
 a change small enough that briefing a subagent would cost more than the edit.
 
@@ -154,6 +158,14 @@ review list is mechanical; and findings went back one at a time, each opening it
 that was written down anywhere, so every session invented its own shape — and the expensive shape is
 the intuitive one. Hence the three rules above: one reviewer per finished task, a fresh subagent per
 task, the whole list of fixes in one round on the cheap tier.
+
+**A short, uniform stream is reviewed once at the end.** Two or three small tasks of the same kind
+get read in one sitting anyway, and a finding in the first of them has almost nothing built on top
+of it yet. Reviewing task by task earns its cost on a long stream, where the later tasks stand on
+the earlier ones and a late finding means redoing whatever was built on the mistake — and on a mixed
+stream, where a single reviewer at the end would have to hold several unrelated kinds of work at
+once. Judge by the stream, and write the answer into the brief: left unsaid, the brief reads as
+task-by-task for a two-task stream too.
 
 **Delegation is not escalation.** A research subagent is one worker answering one question, started
 by the session on its own. Escalation (block 6) is a deeper, more expensive mode the person has to
