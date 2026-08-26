@@ -3,6 +3,22 @@
 All notable changes to this project are documented here.
 This project follows [Semantic Versioning](https://semver.org/).
 
+## [1.7.0] — 2026-08-26
+
+### Changed
+
+- **The reviewing subagent now reads the finished task against the brief instead of hunting for
+  logic bugs.** Two subagents of the same model do not catch each other's blind spots: same engine,
+  same reasoning, one pass, and nothing weighs the reviewer's findings before they turn into another
+  round of fixes. What the reviewer does have is a position the implementer cannot take — it never
+  formed a picture of what the brief meant, so it reads the words that are there instead of the
+  intent it remembers. That makes it good at one thing: whether the finished work matches what was
+  asked — point missed, point solved differently, a test that asserts nothing, a fork in block 8
+  decided unilaterally. It is also the one question the review gate can never answer, because the
+  gate sees the diff from outside and has never read the brief. Keeping the reviewer to the brief is
+  what makes it cheap, too: brief, implementer's report, and only the code needed to answer, instead
+  of the whole diff at the gate's price.
+
 ## [1.6.1] — 2026-08-26
 
 ### Changed
