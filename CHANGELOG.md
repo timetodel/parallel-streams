@@ -3,6 +3,34 @@
 All notable changes to this project are documented here.
 This project follows [Semantic Versioning](https://semver.org/).
 
+## [1.8.0] — 2026-08-28
+
+### Added
+
+- **Every brief now settles what reaches the person, not only who does the reading and writing.**
+  A subagent's report is raw material for the session and is never forwarded: not whole, not
+  summarised, not reworded with the code names left in. The other half matters just as much —
+  subagents are asked for *more* precision, not less, because trimming at the source makes worse
+  decisions while the person still gets a retelling. Observed 2026-08-27: a stream sent a research
+  subagent, got back exactly what it should have — paths, line numbers, exact strings — and pasted
+  all of it into the chat of a person who does not read code. It had broken no rule: the briefs
+  named the delegation and said nothing about its output, which reads as "show everything you
+  receive".
+- **Three moments, and nothing between them.** One line per task before it starts (no permission
+  asked, no answer expected) is the only point where the person can say "not that" before an hour
+  is spent. A fork question must stand on its own — conversations get compacted, and whatever the
+  question leaned on is gone by the time it is read. A summary at the end and one after the review
+  gate, both ending in actions rather than findings: what changed, then either nothing needed or a
+  numbered list of what the person does. No running status: the work is already visible moving.
+- **Translating is not hiding**, said out loud in the brief, because a session told "no details"
+  starts smoothing over bad news. Specifics a decision needs — how long, what breaks, where the
+  risk sits, what is still unknown — are given in full, in plain words, and so is everything that
+  went wrong.
+
+### Fixed
+
+- The version badge in the README had been left at 1.5.0 for three releases.
+
 ## [1.7.0] — 2026-08-26
 
 ### Changed
