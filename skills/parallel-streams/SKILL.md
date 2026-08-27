@@ -3,7 +3,7 @@ name: parallel-streams
 description: Split an approved plan into parallel work streams that different agent sessions can run at the same time without merge conflicts or duplicated work. Produces a dependency map (table plus diagram) and one self-contained brief per stream, ready to paste into a fresh session. Use when asked to "split the plan into streams", "parallelize this plan", "what can I run in parallel", "hand this plan to several agents", or "show me the stream map".
 ---
 
-<!-- parallel-streams 1.7.0 — https://github.com/timetodel/parallel-streams
+<!-- parallel-streams 1.8.0 — https://github.com/timetodel/parallel-streams
      Shipped as a skill: this directory is the whole thing. Update by copying a newer
      copy of it over this one; changes are listed in the repository's CHANGELOG.md.
      Project rules come from the profile `.parallel-streams.md` in the repository root.
@@ -161,7 +161,12 @@ the exact shape is in *Output format* below. Fixed block order, nothing skipped,
    only asks about the decisions in block 8. When the channel exists, this block also carries: how a finding reaches a live
    neighbour, that arriving records must be closed, and — before proposing any work outside this
    stream's own tasks — how to ask who owns that task. The person approving cannot know a task was
-   planned for another stream; they will say yes.
+   planned for another stream; they will say yes. This block also settles what reaches the person:
+   a subagent's report is raw material for the session, never text to forward — subagents are asked
+   for maximum precision, and none of it is pasted into the chat, whole, summarised, or reworded
+   with the code names left in. The person hears the session's own words, and only three times: one
+   line per task saying what it is starting, a self-contained question at every fork, and a summary
+   at the end.
 5. **What to do** — the concrete steps from the plan that belong to this stream.
 6. **Escalation** — mandatory line, either the trigger and the reason, or "not needed" and why.
 7. **Review** — mandatory line: which review gate runs before the merge, or `none` with its reason
@@ -194,6 +199,9 @@ Each brief:
       the reviewing subagent reading the finished task against the brief rather than hunting bugs,
       one reviewer per finished task — or one for the whole stream, when it is two or three small
       tasks of the same kind — and a fresh subagent per task?
+- [ ] reporting line present — subagent reports stay inside the session, subagents are still asked
+      for maximum precision, and the person gets the session's own words: a line per task, a
+      self-contained question at each fork, a summary at the end?
 - [ ] explicit escalation line — yes or no, with a reason?
 - [ ] explicit review line — a gate, or `none` with its reason plus the line that restores the gate
       if the diff turns out to touch code?

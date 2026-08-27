@@ -61,6 +61,21 @@ a finding reopens a design choice; a task with new logic — the tier this sessi
 audit, or diagnosing a failure — no weaker than the tier this session runs on, even when the cheap
 tier wrote the code.
 
+What a subagent hands back is raw material for you, not text for me. Ask your subagents for maximum
+precision — paths, names, line numbers, exact strings, the more the better — and keep all of it
+inside this session. None of it is pasted into our chat: not whole, not summarised, not reworded
+with the code names left in. I hear from you, in your own words, and only three times: one line
+before each task saying what you are starting (no permission needed, no answer expected); a
+question at every fork, self-contained — what we are deciding, how the options differ for me, what
+follows from each — with no "see above", because this conversation gets compacted and whatever the
+question leaned on disappears; and a summary at the end, plus one after the review gate. No running
+status: I can see the work moving without being told. Translating is not hiding — when a decision
+needs specifics (how long, what breaks, where the risk is, what you do not know), give them in
+full, in plain words. Say the bad parts plainly: what is unfinished, what broke, what you did not
+verify. Both summaries end the same way — what changed, in plain words, and then either "nothing
+needed from you" or a numbered list of what I do myself. A report that leaves the next move
+unclear on either side has not finished the work.
+
 [+ merge-risk note when applicable: «Stream 3 is working in this package too — rebase before you
 open the pull request.»]
 
@@ -189,6 +204,31 @@ only this reviewer will ever say.
 by the session on its own. Escalation (block 6) is a deeper, more expensive mode the person has to
 turn on. Keeping them separate is what stops a session from asking for the expensive mode to do a
 routine lookup.
+
+**Delegating the reading does not decide what the person reads.** Observed 2026-08-27: a stream
+sent a research subagent, got back exactly what it should have — file paths, line numbers, the
+exact strings in the code — and pasted the whole thing into the chat of a person who does not read
+code. It had broken no rule: the briefs said who does the reading and who does the writing, and
+said nothing at all about what leaves the session. Naming the delegation without naming its output
+reads as "show everything you receive".
+
+Two halves, and both are needed. **Ask subagents for more precision, not less** — their report is
+the session's working material, and trimming it at the source makes worse decisions while the
+person still gets a retelling. **Translate at the exit** instead: the person hears the session's
+own words, never a forwarded report, because only the session knows what question is open, what
+decision is on the table, and what is noise right now.
+
+Translating is not hiding, and the brief has to say so, or a session hearing "no details" starts
+smoothing over the bad news. Specifics a decision needs — how long, what breaks, where the risk
+sits, what is still unknown — are given in full, in plain words. So is everything that went wrong.
+
+**Three moments, and nothing between them.** A line per task before it starts is the only point
+where the person can say "not that" before an hour is spent — the cost of the line is one sentence,
+and it replaces the permission question nobody wanted. A fork question has to stand on its own,
+because conversations get compacted and everything the question referred to is gone by the time it
+is read. A summary at the end, and one after the review gate, both ending in actions rather than
+findings: what changed, then either nothing needed, or a numbered list of what the person does.
+Running status in between is what the person can already see happening.
 
 ## Block 6: escalation
 
