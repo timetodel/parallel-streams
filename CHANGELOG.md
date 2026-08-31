@@ -3,6 +3,35 @@
 All notable changes to this project are documented here.
 This project follows [Semantic Versioning](https://semver.org/).
 
+## [1.10.0] — 2026-08-31
+
+### Added
+
+- **Escalation is now a span, not a trigger.** The map's escalation column names where the deeper
+  mode starts *and* where it ends — "steps 3-4", "whole stream" — so the reader knows in advance how
+  long the expensive mode runs.
+- **Every brief that asks for the mode also asks for it back off.** Block 6 carries two requests:
+  turn it on before the span, and — the moment the last flagged step is done — **stop**, ask in a
+  line of its own for the mode to be turned off, and continue only after the answer. A stream that
+  needs the mode from first step to last puts the off request at the top of its final summary.
+- **Off is a stop, not a remark.** The brief template, the profile field, the profile templates and
+  the self-check all say it: mentioning the mode inside a report does not end it. Both escalation
+  requests are named as fork questions, so a session honouring "write at three moments" does not
+  swallow them as status.
+
+### Why
+
+Observed 2026-08-31, in the project this skill was built in. The person turned the expensive mode on
+when a stream asked, the stream did the flagged work — and then kept running in that mode through
+sequential implementation, mechanical edits and the merge chore, because nothing had ever told it to
+ask for the mode back off. No rule was broken: every brief said how to ask for the mode, none said a
+word about ending it. The switch is manual in both directions, and only one of them was written
+down.
+
+The asymmetry decides the default. A session stopped for an answer spends nothing; a session
+carrying on in the deeper mode spends on every step it takes. So the rule is stop, and the person
+never has to track the mode themselves.
+
 ## [1.9.0] — 2026-08-31
 
 ### Added

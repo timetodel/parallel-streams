@@ -34,9 +34,12 @@ apply — every line here is repeated into every brief, so keep it short.
      code. Fix the tiers here so neighbouring sessions don't each pick by taste. -->
 
 ## Escalation
-<!-- What this project calls the deeper, more expensive mode, and how a session asks for it.
-     Example: the session asks in a separate message and waits — it never starts a flagged step
-     without it. -->
+<!-- What this project calls the deeper, more expensive mode, and how a session asks for it — and
+     for it to be turned off again. Example: the session asks in a separate message and waits — it
+     never starts a flagged step without it; when the flagged steps are done it stops, asks in a
+     message of its own for the mode to be turned off, and continues after the answer. Nothing
+     turns it off on its own, so a brief that names only the trigger leaves it running over the
+     routine work that follows. -->
 
 ## Merge
 <!-- Who merges, squash or rebase, whether CI must be green first. -->
