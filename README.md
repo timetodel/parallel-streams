@@ -35,6 +35,13 @@ agent:
 
 ---
 
+## Russian version
+
+A full Russian translation of the skill, its references and both templates lives in
+[`localization/ru/`](localization/ru/) — install that directory instead of the English one when the
+sessions talk to their owner in Russian. Section headings in the profile stay English either way;
+the skill looks them up by name. The coordination channel is Russian by origin there, not translated.
+
 ## Install
 
 ### 1. Ask your agent (no commands to remember)

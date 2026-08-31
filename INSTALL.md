@@ -22,6 +22,12 @@ the user says they want it everywhere.
 
 On Windows the personal path is `%USERPROFILE%\.claude\skills\parallel-streams\`.
 
+## Step 1a — Russian projects
+
+If the sessions in this project talk to their owner in Russian, copy `localization/ru/parallel-streams`
+instead of `skills/parallel-streams` in the next step — same version, same layout, translated. Profile
+section headings stay English in both. Everything else in these instructions is unchanged.
+
 ## Step 2 — copy the skill directory
 
 If git is available (project scope — run from the repository root):

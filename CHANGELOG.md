@@ -22,6 +22,12 @@ This project follows [Semantic Versioning](https://semver.org/).
   profile is current, both state the rule plainly — and sessions break it anyway. The answer is
   never the skill's version; it is what those particular sessions actually read.
 
+- **A full Russian translation**, in `localization/ru/` — the skill, all four references, the brief
+  template and the profile template. Install that directory instead of the English one for projects
+  whose sessions talk to their owner in Russian. Profile section headings stay English in both, since
+  the skill looks them up by name; the coordination channel there is Russian by origin rather than
+  translated, and the diagram renderer is shared.
+
 ### Why
 
 Observed 2026-08-31, in the project this skill was built in. 1.8.0 had settled that a subagent's
