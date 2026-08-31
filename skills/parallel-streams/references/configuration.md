@@ -23,6 +23,7 @@ comes from a profile file, so the skill itself stays portable.
 | `## Conventions` | Branch naming, commit message language and prefixes | the repository's existing style |
 | `## Settled decisions` | Path to a registry of decisions already closed | none |
 | `## Brief language` | Language to write the briefs in | the language the user is speaking |
+| `## Persistent rules` | The file every session in this project loads on start (`CLAUDE.md`, `AGENTS.md`, …), which must carry the rules that hold even when a task did not come from this skill | absent — the skill says so once in the summary and offers the block in `references/persistent-rules.md` |
 | `## Coordination` | The commands running sessions use to reach each other, copied verbatim into blocks 4 and 9 of every brief | absent — the skill says nothing about coordination |
 | `## Plans` | The folder where wave plans live, backtick-quoted | absent — the channel's nudge guard stays disconnected |
 
@@ -80,6 +81,12 @@ Branch: `feat/<topic>` or `fix/<topic>`. Commits: imperative mood, conventional 
 `docs/decisions/INDEX.md` — check before proposing an architectural change; rejected options are
 recorded there with their reasons.
 
+## Persistent rules
+`CLAUDE.md` in the repository root. It carries what must hold however a task arrived — who the
+person is and what they do not read, that a subagent's report never reaches them unedited, and the
+few moments a session writes at. This profile repeats those rules for the briefs; the two are kept
+identical, and `CLAUDE.md` wins if they ever drift.
+
 ## Brief language
 English.
 ```
@@ -93,6 +100,15 @@ brief, and a command that drifted from the tool is worse than no command at all.
 
 Leaving both sections out is a supported way to run the skill — it then behaves exactly as it did
 before the channel existed. Installing and removing: `coordination/README.md`.
+
+## Why a profile is not enough on its own
+
+A profile reaches a session through a brief, and a brief reaches exactly the sessions this skill
+cut. A task typed by hand into a chat, a plan someone wrote themselves, a session opened tomorrow
+for one small fix — none of them ever load the profile. Rules that must survive that gap belong in
+the persistent rules file as well, and the plan carries them a third time for the sessions that
+open a plan and nothing else. What goes where, the block to paste, and the failure that produced
+this section: `persistent-rules.md`.
 
 ## Notes
 

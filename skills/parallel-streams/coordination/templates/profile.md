@@ -60,6 +60,15 @@ comments in the project's language, identifiers in English.
 
 <the file with closed decisions, if one exists; opened before any architectural proposal>
 
+## Persistent rules
+
+The file every session here loads on start (`CLAUDE.md`, `AGENTS.md`, …). It carries the rules that
+must hold even when a task did not come from this skill: who the person is and what they do not
+read, that a subagent's report is never forwarded to them, the few moments a session writes at.
+This profile repeats them for the briefs; the two say the same thing, and that file wins if they
+drift. Block to paste there:
+`.claude/skills/parallel-streams/references/persistent-rules.md`.
+
 ## Brief language
 
 English.

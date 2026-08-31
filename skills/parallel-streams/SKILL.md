@@ -3,7 +3,7 @@ name: parallel-streams
 description: Split an approved plan into parallel work streams that different agent sessions can run at the same time without merge conflicts or duplicated work. Produces a dependency map (table plus diagram) and one self-contained brief per stream, ready to paste into a fresh session. Use when asked to "split the plan into streams", "parallelize this plan", "what can I run in parallel", "hand this plan to several agents", or "show me the stream map".
 ---
 
-<!-- parallel-streams 1.8.0 — https://github.com/timetodel/parallel-streams
+<!-- parallel-streams 1.9.0 — https://github.com/timetodel/parallel-streams
      Shipped as a skill: this directory is the whole thing. Update by copying a newer
      copy of it over this one; changes are listed in the repository's CHANGELOG.md.
      Project rules come from the profile `.parallel-streams.md` in the repository root.
@@ -31,6 +31,18 @@ isolation by git worktree, one reviewable pull request per stream, tests via the
 documented command, review before merge. Details and the full field list:
 `references/configuration.md`.
 
+**Persistent rules.** The profile's `## Persistent rules` section names the file this project's
+sessions load at the start of every session — `CLAUDE.md`, `AGENTS.md`, or whatever this harness
+reads. Rules that have to hold whether or not a session was briefed by this skill — how the person
+is spoken to, what a subagent's report may turn into, when the session writes at all — belong in
+that file, not only in the profile: a session working from a task typed by hand into a chat never
+opens the profile, and never opens this skill either.
+
+Check it before writing briefs. Named and present — nothing to do. Named but missing, or not named
+at all — say so once in the summary, in one line, and offer the ready-made block in
+`references/persistent-rules.md`. Do not write into that file uninvited, and do not stay quiet about
+it either: silence here is indistinguishable from "this project has it covered".
+
 **Coordination channel.** If the profile has a `## Coordination` section, the project has a way for
 running sessions to reach each other — sessions cannot see each other's context, and a plan edited
 after a session started never reaches it. Copy those commands verbatim into blocks 4 and 9 of every
@@ -52,6 +64,15 @@ installed into a project: `coordination/README.md`.
 
 Open the file and read all of it — every phase, every step. Not from memory, not from a summary.
 A dependency you did not read is a merge conflict you will hit later.
+
+**If the plan sits in the folder named by `## Plans`, it is a rules carrier too.** A brief is
+pasted once; the plan is the document a session opens for itself, and a task re-cut by hand from
+the plan carries only what the plan carries. Look for a section holding the rules that apply to
+every stream. Missing — say so in the summary and offer to add it, built from the profile. Observed
+2026-08-31: a wave plan written by hand had no such section, the skill and the profile were both
+current and both said a subagent's report is never forwarded, and every session in that wave pasted
+its subagents' reports — paths, tables of files, lines of configuration — to a person who does not
+read code. Nothing was violating a rule; the rule was simply nowhere those sessions could see it.
 
 ## Step 2. Find dependencies between streams
 
@@ -215,6 +236,10 @@ Each brief:
 
 Delivery:
 
+- [ ] persistent rules file from the profile checked — present, or its absence said once in the
+      summary with the ready-made block offered?
+- [ ] plan in the `## Plans` folder carries a rules-for-every-stream section — or its absence said
+      once, with the offer to add it?
 - [ ] map and briefs printed in this reply, copyable without opening a file?
 - [ ] every brief under a heading naming its launch moment — `start now`, or the streams it waits for?
 
@@ -226,7 +251,9 @@ The map and the briefs are printed in this reply. They are the answer itself, no
 written beside it: the person copies each brief out of the window already in front of them, into a
 new session, without opening a file first.
 
-1. One-paragraph summary: how many streams, why this split, and whether a profile was found.
+1. One-paragraph summary: how many streams, why this split, whether a profile was found, and —
+   only when something is missing — that the persistent rules file or the plan's rules section
+   is not there.
 2. The table.
 3. The diagram, plus the state line if the plan is partly done.
 4. One block per stream, in stream order, each under a heading of the form `Stream N — start now`

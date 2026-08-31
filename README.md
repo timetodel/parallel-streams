@@ -5,7 +5,7 @@
 [![tests](https://github.com/timetodel/parallel-streams/actions/workflows/tests.yml/badge.svg)](https://github.com/timetodel/parallel-streams/actions/workflows/tests.yml)
 [![license](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![skill](https://img.shields.io/badge/Claude%20Code-skill-orange.svg)](https://code.claude.com/docs/en/skills)
-[![version](https://img.shields.io/badge/version-1.8.0-brightgreen.svg)](CHANGELOG.md)
+[![version](https://img.shields.io/badge/version-1.9.0-brightgreen.svg)](CHANGELOG.md)
 
 You open six agent sessions on one repository because the plan is big and the model is fast. An hour
 later two of them have rewritten the same file, a third built a helper the fourth had already
@@ -34,6 +34,13 @@ agent:
 ```
 
 ---
+
+## Russian version
+
+A full Russian translation of the skill, its references and both templates lives in
+[`localization/ru/`](localization/ru/) — install that directory instead of the English one when the
+sessions talk to their owner in Russian. Section headings in the profile stay English either way;
+the skill looks them up by name. The coordination channel is Russian by origin there, not translated.
 
 ## Install
 
@@ -244,6 +251,10 @@ change behaviour may answer `none` with the reason.
 
 ## Security review
 Required for: billing, authentication, permissions, tokens, public network surface.
+
+## Persistent rules
+`CLAUDE.md` — the file every session here loads on start. It carries what must hold however a task
+arrived; this profile repeats it for the briefs.
 ```
 
 Full field list: [configuration.md](skills/parallel-streams/references/configuration.md).
@@ -302,6 +313,30 @@ it lets running sessions reach each other, it does not run them.
 
 **It needs a plan.** Not a perfect one, but something concrete enough to have parts. "Rewrite the
 billing system" doesn't split; a plan with phases, steps, and named artifacts does.
+
+## When the rule is in the skill and sessions break it anyway
+
+The briefs this skill writes reach the sessions it cut, at the moment they are pasted. Nothing else.
+A task typed straight into a chat, a plan someone wrote by hand, a session opened tomorrow to fix
+one thing — none of them load `.parallel-streams.md`, and none of them load this skill. A rule that
+lives only here is not a rule those sessions ever saw, and they will report success without it.
+
+That is why rules come in three carriers, saying one text:
+
+| Carrier | Reaches | Blind spot |
+|---|---|---|
+| The file your harness loads on start (`CLAUDE.md`, `AGENTS.md`) | every session in the project | not task-specific |
+| The plan the sessions work from | anyone who opens the plan, including hand-cut tasks | a session working without a plan |
+| `.parallel-streams.md` → the briefs | sessions this skill briefed | everything else |
+
+Symptom to recognise: the skill is current, the profile is current, both say the rule plainly — and
+sessions still do the thing the rule forbids. Look at what those particular sessions actually read.
+The block to paste, and the failure that produced this section, are in
+`skills/parallel-streams/references/persistent-rules.md`.
+
+Since 1.9.0 the skill checks for this itself: it looks for the file named by `## Persistent rules`
+before writing briefs, checks a plan in the `## Plans` folder for a rules section, and says in one
+line when either is missing. It never writes to those files uninvited.
 
 ## FAQ
 

@@ -3,6 +3,41 @@
 All notable changes to this project are documented here.
 This project follows [Semantic Versioning](https://semver.org/).
 
+## [1.9.0] — 2026-08-31
+
+### Added
+
+- **Rules now have somewhere to live that a brief cannot reach.** New profile section
+  `## Persistent rules` names the file every session in the project loads on start — `CLAUDE.md`,
+  `AGENTS.md`, whatever the harness reads. Before writing briefs the skill checks that file exists,
+  and says in one line when it does not. It never writes there uninvited: it offers a ready block,
+  `references/persistent-rules.md`, and waits.
+- **The plan is treated as a rules carrier too.** When the plan sits in the folder named by
+  `## Plans`, the skill checks it for a section holding the rules that apply to every stream, and
+  offers to add one when it is missing. A brief is pasted once; the plan is what a session opens for
+  itself, and a task re-cut by hand from the plan carries only what the plan carries.
+- **Installation asks about it** (new step 3b), and the closing report tells the user where the
+  rules that must survive outside this skill belong.
+- **A section for the symptom**, in the README and in the new reference: the skill is current, the
+  profile is current, both state the rule plainly — and sessions break it anyway. The answer is
+  never the skill's version; it is what those particular sessions actually read.
+
+- **A full Russian translation**, in `localization/ru/` — the skill, all four references, the brief
+  template and the profile template. Install that directory instead of the English one for projects
+  whose sessions talk to their owner in Russian. Profile section headings stay English in both, since
+  the skill looks them up by name; the coordination channel there is Russian by origin rather than
+  translated, and the diagram renderer is shared.
+
+### Why
+
+Observed 2026-08-31, in the project this skill was built in. 1.8.0 had settled that a subagent's
+report is never forwarded to the person, and both the skill and the profile said so. A wave of nine
+sessions pasted their subagents' reports to a person who does not read code anyway — file paths,
+tables of dependency files, lines of configuration. The wave plan had been written by hand and
+carried no rules section; the repository had no persistent rules file at all. Nothing was disobeying
+a rule: the rule existed in two places, and neither was a place those sessions could see. Three
+carriers, one text — the persistent file, the plan, the profile — is what closes that.
+
 ## [1.8.0] — 2026-08-28
 
 ### Added
