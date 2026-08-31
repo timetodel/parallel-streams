@@ -5,7 +5,7 @@ This project follows [Semantic Versioning](https://semver.org/).
 
 ## [1.9.1] — 2026-08-31
 
-### Added
+### Fixed
 
 - **Escalation is now a span, not a trigger.** The map's escalation column names where the deeper
   mode starts *and* where it ends — "steps 3-4", "whole stream" — so the reader knows in advance how
