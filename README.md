@@ -5,7 +5,7 @@
 [![tests](https://github.com/timetodel/parallel-streams/actions/workflows/tests.yml/badge.svg)](https://github.com/timetodel/parallel-streams/actions/workflows/tests.yml)
 [![license](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![skill](https://img.shields.io/badge/Claude%20Code-skill-orange.svg)](https://code.claude.com/docs/en/skills)
-[![version](https://img.shields.io/badge/version-1.10.0-brightgreen.svg)](CHANGELOG.md)
+[![version](https://img.shields.io/badge/version-1.9.1-brightgreen.svg)](CHANGELOG.md)
 
 You open six agent sessions on one repository because the plan is big and the model is fast. An hour
 later two of them have rewritten the same file, a third built a helper the fourth had already
@@ -394,7 +394,7 @@ is the fix that stuck.
 You do, by hand — which is exactly why the brief has to ask. The mode is a switch: finishing the
 flagged step does not flip it back, so a brief naming only the trigger leaves the expensive mode
 running over the routine work that follows, where it buys nothing and charges on every step.
-Since 1.10.0 escalation is written as a *span*, and the brief carries both of its ends: ask to turn
+Since 1.9.1 escalation is written as a *span*, and the brief carries both of its ends: ask to turn
 the mode on before the span, then stop at the end of it and ask to turn it off. Off is a stop, not a
 remark inside a report — you do not track the mode, and by the time a mention is read the session
 has moved on. Waiting is the cheap side: a stopped session spends nothing.
