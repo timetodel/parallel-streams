@@ -100,6 +100,26 @@ project's settings, the coordination sections in `.parallel-streams.md`, and a s
 at `scripts/wave-board.ps1`. Check with `-Mode Check`, remove with `-Mode Uninstall`. If PowerShell
 7 is missing, say so plainly — the skill still works, only without the channel.
 
+## Step 3b — the persistent rules file
+
+Ask, once, whether this repository has a file every session loads on start — `CLAUDE.md`,
+`AGENTS.md`, or whatever this harness reads. Check for it yourself first; it usually sits in the
+repository root.
+
+**If it exists**, offer to add the block from
+`.claude/skills/parallel-streams/references/persistent-rules.md` — who the person is and what they
+do not read, that a subagent's report is never forwarded to them, the few moments a session writes
+at. Add it only if the user says yes, and adapt the placeholders to this project instead of pasting
+them raw.
+
+**If it does not exist**, say so in one line and offer to create it with that block. Do not create
+it silently.
+
+Why this is a step and not a footnote: a brief reaches one session, once. A task typed by hand into
+a chat, a plan someone wrote themselves, a session opened tomorrow for one small fix — none of
+those ever load the profile or this skill, and a rule they never saw fails quietly, with a
+confident report either way. The full account is in that reference file.
+
 ## Step 4 — tell the user what to do next
 
 Report exactly this, adapted to where you installed it:
@@ -109,9 +129,13 @@ Report exactly this, adapted to where you installed it:
 >
 > `split docs/plans/<your-plan>.md into parallel streams`
 >
-> Optional: drop a `.parallel-streams.md` profile in the repository root so the briefs use this
-> project's test command, review gate, and merge policy. Template:
+> Optional, and worth it: drop a `.parallel-streams.md` profile in the repository root so the
+> briefs use this project's test command, review gate, and merge policy. Template:
 > https://github.com/timetodel/parallel-streams/blob/main/examples/profiles/TEMPLATE.md
+>
+> Also worth doing once: put the rules that must hold for *any* session — not only briefed ones —
+> into the file your harness loads on start (`CLAUDE.md`, `AGENTS.md`). Ready block:
+> `.claude/skills/parallel-streams/references/persistent-rules.md`.
 
 ## Updating later
 
