@@ -18,11 +18,11 @@ Billing and the switcher never touch each other and run side by side. Profile fo
 |---|---|---|---|---|---|
 | 1 | Ship the workspace schema and migration | nothing | 2, 3 | none — direct implementation of an approved model | high |
 | 2 | Expose workspace and member endpoints | 1 | 4, 5 | none — the envelope and the error shape already exist | high |
-| 3 | Enforce workspace roles on every request | 1 | 6, 7 | at the start — prove no path reaches a workspace without a membership check | high + security |
-| 4 | Add the invitation flow | 2 | 6 | before the token check — prove an invitation cannot be replayed or extended | high + security |
+| 3 | Enforce workspace roles on every request | 1 | 6, 7 | whole stream — prove no path reaches a workspace without a membership check | high + security |
+| 4 | Add the invitation flow | 2 | 6 | steps 2-3 — prove an invitation cannot be replayed or extended | high + security |
 | 5 | Add the workspace switcher | 2 | 8 | none — one component against an existing endpoint | medium |
 | 6 | Build the members screen | 3, 4 | 8 | none — assembles behaviour both dependencies already provide | medium |
-| 7 | Charge per seat | 3 | 8 | before proration — money math, and the seat rules disagree between phases 5 and 3 | high + security |
+| 7 | Charge per seat | 3 | 8 | steps 1-2 — money math, and the seat rules disagree between phases 5 and 3 | high + security |
 | 8 | Migrate existing accounts and accept the release | 5, 6, 7 | — | at the start — find every place that assumes an account owns projects directly | high |
 
 Stream 8 lists only 5, 6, and 7: those already wait for the rest, so naming 1-4 again would add
@@ -136,9 +136,10 @@ you open the pull request.
    workspace is not confirmed to an outsider.
 
 ## Escalation
-This stream needs the deeper mode from the start: it is a "prove nothing leaks" job. Every path
-that reaches a workspace has to be enumerated, and a single unchecked route is the whole defect.
-Turn it on and tell me — I will continue.
+This stream needs the deeper mode from the start and keeps it to the last step: it is a "prove
+nothing leaks" job. Every path that reaches a workspace has to be enumerated, and a single unchecked
+route is the whole defect. Turn it on and tell me — I will continue. The span is the whole stream,
+so the request to turn it off comes with my final summary, in a line of its own.
 
 ## Review
 Run the project's review gate at high depth over this stream's changes before the pull request.
@@ -198,9 +199,11 @@ cheap fast tier; new logic on this session's tier; review never below this sessi
 3. Show the seat count and the next invoice estimate on the billing page, owner only.
 
 ## Escalation
-This stream needs the deeper mode before the proration math lands: it is money, and the plan's own
-rules disagree — phase 5 counts "active seats" while phase 3 defines membership states that
-include pending invitations. Turn it on and tell me — I will continue.
+This stream needs the deeper mode over steps 1 and 2, where the proration math lands: it is money,
+and the plan's own rules disagree — phase 5 counts "active seats" while phase 3 defines membership
+states that include pending invitations. Turn it on and tell me — I will continue. Once step 2 is
+done I stop and ask you to turn it off, in a line of its own: step 3 is a page rendering numbers
+that already exist. I go on after you answer.
 
 ## Review
 Run the project's review gate at high depth over this stream's changes before the pull request.

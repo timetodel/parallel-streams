@@ -18,7 +18,7 @@ comes from a profile file, so the skill itself stays portable.
 | `## Review` | Review gate before the pull request, its depths, and whether a stream may answer `none` | a review pass before merge, `none` only for a diff that cannot change behaviour |
 | `## Security review` | Extra pass, and what triggers it | money, access control, secrets, network boundaries |
 | `## Delegation` | What a session hands to a subagent, and the model tier per kind of work | research and each task's implementation to subagents, implementation reviewed by another; cheap tier for research and mechanical tasks, session tier for new logic, never below the session tier for review |
-| `## Escalation` | What this project calls the deeper mode, and how to ask for it | described generically in the brief |
+| `## Escalation` | What this project calls the deeper mode, how a session asks for it — and how it asks for it to be turned off once the flagged steps are done | described generically in the brief; both ends of the span are asked for |
 | `## Merge` | Who merges, squash or rebase, whether CI must be green first | the session merges its own pull request once checks pass |
 | `## Conventions` | Branch naming, commit message language and prefixes | the repository's existing style |
 | `## Settled decisions` | Path to a registry of decisions already closed | none |
@@ -68,7 +68,9 @@ available, never below the tier the session runs on.
 
 ## Escalation
 This project calls it "deep mode". The session asks for it in a separate message and waits for a
-yes — it never starts a flagged step without it.
+yes — it never starts a flagged step without it. It asks for the mode to be turned off the same way:
+the moment the flagged steps are done it stops, asks in a message of its own, and continues only
+after the answer. Nothing turns the mode off on its own.
 
 ## Merge
 The session opens and merges its own pull request once CI is green. Squash merge. Never merge into

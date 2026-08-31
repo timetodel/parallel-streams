@@ -45,7 +45,9 @@ same tier as the session; review and analysis — no weaker than the session's o
 
 ## Escalation
 
-<what this project calls its deeper mode and how a session asks for it>
+<what this project calls its deeper mode, how a session asks for it — and how it asks for the mode
+to be turned off once the flagged steps are done: it stops, asks in a line of its own, and continues
+after the answer, because nothing turns the mode off on its own>
 
 ## Merge
 

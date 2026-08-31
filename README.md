@@ -5,7 +5,7 @@
 [![tests](https://github.com/timetodel/parallel-streams/actions/workflows/tests.yml/badge.svg)](https://github.com/timetodel/parallel-streams/actions/workflows/tests.yml)
 [![license](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![skill](https://img.shields.io/badge/Claude%20Code-skill-orange.svg)](https://code.claude.com/docs/en/skills)
-[![version](https://img.shields.io/badge/version-1.9.0-brightgreen.svg)](CHANGELOG.md)
+[![version](https://img.shields.io/badge/version-1.10.0-brightgreen.svg)](CHANGELOG.md)
 
 You open six agent sessions on one repository because the plan is big and the model is fast. An hour
 later two of them have rewritten the same file, a third built a helper the fourth had already
@@ -100,13 +100,14 @@ without the briefs.
 | Stream | Name | Waits for | Blocks | Escalation | Review |
 |---|---|---|---|---|---|
 | 1 | Ship the workspace schema and migration | nothing | 2, 3 | none — direct implementation of an approved model | high |
-| 3 | Enforce workspace roles on every request | 1 | 6, 7 | at the start — prove no path reaches a workspace without a membership check | high + security |
-| 7 | Charge per seat | 3 | 8 | before proration — money math, and the seat rules disagree between phases | high + security |
+| 3 | Enforce workspace roles on every request | 1 | 6, 7 | whole stream — prove no path reaches a workspace without a membership check | high + security |
+| 7 | Charge per seat | 3 | 8 | steps 1-2 — money math, and the seat rules disagree between phases | high + security |
 
 *"Waits for" and "Blocks" are verified against each other, not eyeballed. Both escalation and
-review are mandatory for every row — `none` with a reason is an answer, a blank is a defect. Review
-depth follows what the stream touches — money and access control at the top, a docs-only diff at
-`none` — never how hard the work felt to write.*
+review are mandatory for every row — `none` with a reason is an answer, a blank is a defect.
+Escalation is written as a span — where the expensive mode starts and where it ends — because
+nothing turns it off on its own. Review depth follows what the stream touches — money and access
+control at the top, a docs-only diff at `none` — never how hard the work felt to write.*
 
 The diagram is **generated and self-verified**, never typed. See [why that matters](#the-diagram-is-generated-not-drawn).
 
@@ -149,6 +150,7 @@ Stream 2 is adding endpoints in the same area. Different files, but rebase befor
 
 ## Escalation
 This stream needs the deeper mode from the start: it is a "prove nothing leaks" job. ...
+The span is the whole stream, so I ask you to turn it off in my final summary, in its own line.
 
 ## Review
 Run the project's review gate at high depth. This stream is access control — security review too.
@@ -241,6 +243,10 @@ One git worktree per stream, branched from a fresh origin/main.
 ## Delegation
 Research and mechanical tasks go to a subagent on the cheap fast tier; new logic on the session's
 own tier; review never below the session's tier.
+
+## Escalation
+"Deep mode". A session asks for it in a message of its own and waits; when the flagged steps are
+done it stops and asks for it to be turned off.
 
 ## Tests
 `npm test` for the package you touched.
@@ -383,6 +389,15 @@ instructions from the person who wrote its brief.
 Because those are the two lines that were always meant to be there and were always the first to be
 dropped. Making them mandatory — including one deliberate repetition in the done-when checklist —
 is the fix that stuck.
+
+**Who turns the expensive mode off?**
+You do, by hand — which is exactly why the brief has to ask. The mode is a switch: finishing the
+flagged step does not flip it back, so a brief naming only the trigger leaves the expensive mode
+running over the routine work that follows, where it buys nothing and charges on every step.
+Since 1.10.0 escalation is written as a *span*, and the brief carries both of its ends: ask to turn
+the mode on before the span, then stop at the end of it and ask to turn it off. Off is a stop, not a
+remark inside a report — you do not track the mode, and by the time a mention is read the session
+has moved on. Waiting is the cheap side: a stopped session spends nothing.
 
 **Does that mean every stream has to be reviewed?**
 The *line* is mandatory, the gate is not. A stream whose diff cannot change behaviour — docs,

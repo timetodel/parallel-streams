@@ -52,6 +52,11 @@ the flagged step without it. Triggers: sweeps where missing one site is the defe
 nothing leaks; forks between architectures with no obviously right answer; reconnaissance into an
 unfamiliar area.
 
+The same switch has to be turned off by hand, so the brief names the span, not just the trigger:
+when the last flagged step is done the session stops, asks the owner to turn the mode off in a line
+of its own, and continues after the answer. The owner does not track the mode, and a session that
+merely mentions it inside a report leaves it burning over the routine work that follows.
+
 ## Merge
 The session opens and merges its own pull request once CI is green. Squash merge. Never commit to
 the trunk directly.

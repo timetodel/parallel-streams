@@ -3,7 +3,7 @@ name: parallel-streams
 description: Split an approved plan into parallel work streams that different agent sessions can run at the same time without merge conflicts or duplicated work. Produces a dependency map (table plus diagram) and one self-contained brief per stream, ready to paste into a fresh session. Use when asked to "split the plan into streams", "parallelize this plan", "what can I run in parallel", "hand this plan to several agents", or "show me the stream map".
 ---
 
-<!-- parallel-streams 1.9.0 — https://github.com/timetodel/parallel-streams
+<!-- parallel-streams 1.10.0 — https://github.com/timetodel/parallel-streams
      Shipped as a skill: this directory is the whole thing. Update by copying a newer
      copy of it over this one; changes are listed in the repository's CHANGELOG.md.
      Project rules come from the profile `.parallel-streams.md` in the repository root.
@@ -107,14 +107,16 @@ Both, always, in this order.
 
 | Stream | Name | Waits for | Blocks | Escalation | Review |
 |---|---|---|---|---|---|
-| 1 | Introduce the capability flag | nothing | 4, 5, 6 | before step 3 — sweep for every call site | high |
+| 1 | Introduce the capability flag | nothing | 4, 5, 6 | steps 3-4 — sweep for every call site | high |
 | 2 | Honest failure when the service is down | nothing | 5 | none | medium |
-| 9 | Guards and acceptance | 5, 6, 7, 8 | — | at the start — full inventory | high + security |
+| 9 | Guards and acceptance | 5, 6, 7, 8 | — | whole stream — full inventory | high + security |
 
 - **Waits for / Blocks** are symmetric: B waits for A ⇔ A blocks B. Verify by comparing both
   columns, not by eye.
-- **Escalation** — *when* to switch that session into a deeper, more expensive mode and what for,
-  or `none`. Never leave it blank.
+- **Escalation** — the *span* of the deeper, more expensive mode: where it starts, where it ends,
+  and what for — "steps 3-4", "whole stream" — or `none`. Never leave it blank. A span, not a point:
+  the mode is switched on by hand and stays on by hand, so a start with no end leaves the expensive
+  mode running over the routine work that follows it.
 - **Review** — the gate from the profile, at a depth set by what the stream touches, never by how
   hard the work felt to write:
 
@@ -187,9 +189,12 @@ the exact shape is in *Output format* below. Fixed block order, nothing skipped,
    for maximum precision, and none of it is pasted into the chat, whole, summarised, or reworded
    with the code names left in. The person hears the session's own words, and only three times: one
    line per task saying what it is starting, a self-contained question at every fork, and a summary
-   at the end.
+   at the end. Asking for the deeper mode — on before its span, off at the end of it — is a fork
+   question, not extra status: both stop the work until they are answered.
 5. **What to do** — the concrete steps from the plan that belong to this stream.
-6. **Escalation** — mandatory line, either the trigger and the reason, or "not needed" and why.
+6. **Escalation** — mandatory. Either "not needed" and why, or two requests: turn it **on**, with
+   the trigger and the span it covers, and — at the end of that span — stop and ask to turn it
+   **off**, because nothing turns it off on its own.
 7. **Review** — mandatory line: which review gate runs before the merge, or `none` with its reason
    and the condition that brings the gate back.
 8. **Decide with me before implementing** — the real forks *from this plan* for this stream, plus
@@ -223,7 +228,8 @@ Each brief:
 - [ ] reporting line present — subagent reports stay inside the session, subagents are still asked
       for maximum precision, and the person gets the session's own words: a line per task, a
       self-contained question at each fork, a summary at the end?
-- [ ] explicit escalation line — yes or no, with a reason?
+- [ ] explicit escalation line — `none` with a reason, or the span plus both of its stops: ask to
+      turn the mode on before the span, stop at its end and ask to turn it off?
 - [ ] explicit review line — a gate, or `none` with its reason plus the line that restores the gate
       if the diff turns out to touch code?
 - [ ] forks are concrete, taken from the plan, not generic advice?

@@ -84,7 +84,10 @@ open the pull request.»]
 2. ...
 
 ## Escalation
-[«This stream needs <deeper mode>: <trigger and why>. Turn it on and tell me — I will continue.»
+[«This stream needs <deeper mode> over <span — which steps>: <trigger and why>. Turn it on and tell
+ me — I will continue.»
+ AND «The moment <the last flagged step> is done I stop and ask you to turn it off, in a line of its
+ own — what comes after it is <the routine work>. I continue once you answer.»
  OR «Not needed: <reason>.»]
 
 ## Review
@@ -228,7 +231,9 @@ and it replaces the permission question nobody wanted. A fork question has to st
 because conversations get compacted and everything the question referred to is gone by the time it
 is read. A summary at the end, and one after the review gate, both ending in actions rather than
 findings: what changed, then either nothing needed, or a numbered list of what the person does.
-Running status in between is what the person can already see happening.
+Running status in between is what the person can already see happening. The two escalation
+requests — on before the span, off at its end — are fork questions and belong in this list: each
+one stops the work until it is answered, and neither counts as status.
 
 ## Block 6: escalation
 
@@ -256,6 +261,32 @@ The wording differs by place:
 
 The mode belongs to the executing session, not to the one writing the briefs. The brief must tell
 that session to ask up front and wait, rather than starting the flagged step without it.
+
+### Escalation is a span, and the brief states both of its ends
+
+The mode is turned on by hand and it stays on by hand — finishing the flagged step does not turn it
+off. A brief that names only the trigger therefore leaves the expensive mode running over everything
+that follows: sequential implementation against a settled plan, mechanical edits, the release chore.
+There it buys nothing and charges on every step.
+
+So block 6 carries two requests, not one:
+
+- **on** — before the span begins: the trigger, which steps it covers, and a wait for the answer;
+- **off** — the moment the last flagged step is finished: the session **stops**, asks in a line of
+  its own, and goes on only after the answer.
+
+**Off is a stop, not a remark.** Mentioning it inside a report does not work — the person does not
+track the mode, a sentence in the middle of a paragraph is not a request, and the session has
+already moved on by the time it is read. Observed 2026-08-31: sessions asked for the deeper mode and
+got it, then ran the rest of the stream in it. No rule was broken; every brief said how to turn the
+mode on and none of them said a word about turning it off.
+
+**Waiting is the cheap side of the asymmetry.** A session stopped for an answer spends nothing. A
+session carrying on in the deeper mode spends on every step it takes. When in doubt, stop.
+
+A stream that needs the mode from its first step to its last still states both ends: the request to
+turn it off then belongs to the final summary — its own line, at the top, not folded into "what
+changed".
 
 ## Block 7: review
 
