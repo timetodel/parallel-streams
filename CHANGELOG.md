@@ -3,7 +3,7 @@
 All notable changes to this project are documented here.
 This project follows [Semantic Versioning](https://semver.org/).
 
-## [1.10.0] — 2026-08-31
+## [1.9.1] — 2026-08-31
 
 ### Added
 
