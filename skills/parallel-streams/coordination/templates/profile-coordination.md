@@ -2,13 +2,18 @@
 
 Coordination channel between sessions. Five commands, folded into every task brief.
 
-- **Announce — the first action after the worktree is created, before any edit:**
+- **Announce — before any edit, from the folder you'll be working in:**
   `pwsh scripts/wave-board.ps1 -Mode Claim -Stream <stream number> -StreamName "<name from the plan>" -Tasks "<task numbers>" [-Wave <wave>] [-Plan <plan file>]`.
   Without a claim, the stream is indistinguishable from outside as "not opened yet", and findings
   get addressed to it by branch name — which is already different by the middle of the wave. The wave
   and stream number can be left unnamed: the wave is taken from the plan's file name, or, lacking one,
   from work already running nearby or from today's date; the number handed out is the next free one.
   The claim prints back a map of neighbours: whose streams are nearby and which tasks belong to whom.
+  Moved into your own worktree — announce again from there under the SAME address: the stream
+  travels with it, inbox and old names included. One unclosed claim per folder, one leading record
+  per address: announcing under a different address from an occupied folder, and announcing under an
+  address another folder's claim already holds, are both refused before they get recorded, and the
+  refusal prints ready-made commands, whole lines.
 - **A finding for a live neighbour:**
   `pwsh scripts/wave-board.ps1 -Mode Add -To <wave/stream> -Title "<one line>" -Where "<where the full text is>"`.
   The address is the stream number in the plan (`wave6/3`), not the branch name. `*` — every stream in

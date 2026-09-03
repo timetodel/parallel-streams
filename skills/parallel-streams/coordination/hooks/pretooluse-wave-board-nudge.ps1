@@ -40,7 +40,9 @@ $ErrorActionPreference = 'Stop'
 $MaxNames = 8
 
 function Get-StateDir {
-    $dir = Join-Path $PWD '.claude/.cache'
+    # By the tree root, not the current folder: the reminder is promised once per session, and
+    # it would otherwise come back again with every change of folder.
+    $dir = Join-Path (Get-TreeRoot) '.claude/.cache'
     if (-not (Test-Path $dir)) { New-Item -ItemType Directory -Path $dir -Force | Out-Null }
     return $dir
 }
@@ -50,12 +52,15 @@ function Get-WaveStreams {
     # The wave's worktrees, sorted by liveness: sessions that have marked themselves go in one pile,
     # silent worktrees in another. The repo's main folder is not a stream, so we don't offer it
     # either.
-    $here = ($PWD.Path -replace '\\', '/').TrimEnd('/').ToLowerInvariant()
+    # We recognize ourselves by the tree's ROOT: from a subdirectory a session would fail to
+    # recognize itself in the list, and would end up suggesting the person address a finding to
+    # themselves.
+    $here = Get-FolderKey -Path (Get-TreeRoot)
     $alive = [System.Collections.Generic.List[string]]::new()
     $silent = [System.Collections.Generic.List[string]]::new()
     foreach ($tree in (Get-Worktrees)) {
         if ($tree.path -notmatch '/\.claude/worktrees/[^/]+$') { continue }
-        if ($tree.path.ToLowerInvariant() -eq $here) { continue }
+        if ((Get-FolderKey -Path $tree.path) -eq $here) { continue }
         $name = if ($tree.branch) { $tree.branch } else { Split-Path -Leaf $tree.path }
         if ($WaveMarker -and $name -notmatch $WaveMarker -and $tree.path -notmatch $WaveMarker) { continue }
         # We do NOT drop a silent worktree from the list: a session started before this hook existed

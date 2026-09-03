@@ -36,10 +36,31 @@ from pathlib import Path
 
 import pytest
 
-# Файл лежит в .claude/skills/parallel-streams/coordination/tests/ — до корня репозитория пять
-# уровней вверх (tests -> coordination -> parallel-streams -> skills -> .claude -> корень).
-REPO_ROOT = Path(__file__).resolve().parents[5]
-COORDINATION_DIR = REPO_ROOT / ".claude" / "skills" / "parallel-streams" / "coordination"
+# Комплект лежит не только здесь: ещё в пяти копиях, и у каждой своя приставка пути до папки
+# coordination (например, в публичном репозитории — localization/ru/parallel-streams/coordination
+# и skills/parallel-streams/coordination, вовсе без .claude/skills/ этого проекта). Прежний счёт
+# уровней вверх (parents[5]) был зашитой приставкой именно этого проекта: в чужой копии он утыкался
+# не в ту папку, установщик не находился, и весь набор падал красным. Папка tests лежит ВНУТРИ
+# coordination всегда и везде, поэтому саму папку комплекта берём от файла проверки — на один
+# уровень вверх, без счёта приставок.
+COORDINATION_DIR = Path(__file__).resolve().parent.parent
+
+
+def _find_repo_root(start: Path) -> Path:
+    """Корень репозитория — первая папка вверх по дереву, где заведён `.git`.
+
+    Нужен как рабочая папка для установщика и для сверки с настоящими файлами этого проекта
+    (REAL_SETTINGS, REAL_BRIDGE ниже). Счёт уровней вверх был бы снова зашитой приставкой — у
+    разных копий комплекта разная глубина до корня; ищем маркер `.git`, а не считаем папки. Не
+    нашли — запасной вариант: прежний счёт уровней от файла проверки.
+    """
+    for candidate in start.parents:
+        if (candidate / ".git").exists():
+            return candidate
+    return start.parents[5]
+
+
+REPO_ROOT = _find_repo_root(Path(__file__).resolve())
 INSTALLER = COORDINATION_DIR / "install.ps1"
 NUDGE = COORDINATION_DIR / "hooks" / "pretooluse-wave-board-nudge.ps1"
 REAL_SETTINGS = REPO_ROOT / ".claude" / "settings.json"

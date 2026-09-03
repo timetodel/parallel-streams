@@ -3,6 +3,56 @@
 All notable changes to this project are documented here.
 This project follows [Semantic Versioning](https://semver.org/).
 
+## [1.10.0] — 2026-09-04
+
+### Fixed
+
+- **A claim can no longer erase a live stream.** Announcing a *different* stream from a folder that
+  already holds an open claim is refused **before a single byte is written**, and so is announcing
+  an address that an open claim of *another* folder already leads. Both refusals name the rival's
+  state, whether its folder is still on disk, and every way out as a whole line you can copy. Three
+  observed incidents drove this: on 2026-08-31 a stream vanished from the board when a second stream
+  was announced from the same shared folder — its tasks looked untaken, findings were never
+  addressed to it, and its own release closed somebody else's record; a session that moved to its
+  own worktree left the address doubled, so which session a finding reached was decided by the order
+  of a directory listing; and a bare re-announcement moved a stream into a wave named after today's
+  date.
+
+- **Moving a stream to another folder is a first-class move, not a collision.** Announce the same
+  address from the new folder with `-TakeOver`: the address, the inbox and the branch names the
+  stream is remembered by all travel with it, while the abandoned record in the old folder goes
+  quiet — it stops leading the address, stops receiving findings, and says so when that session
+  tries to release it. The rival's claim file is never touched, so an older copy of the kit in a
+  neighbouring worktree still reads it exactly as it did yesterday.
+
+- **A move survives the folder being reused.** Each claim now remembers the moves it made, so a
+  folder taken by the next stream no longer resurrects the record it had superseded. A chain of
+  moves A→B→C leaves exactly one leader, and the session that lost the address is told where the
+  address really went — the *end* of the chain, not the middle folder that has since moved on.
+
+- **A succession edge acts by time, not by topology.** The edge does not apply once it is *proven*
+  that the loser's claim began after the moment of the move. This closes the return ring (two
+  sessions handing an address back and forth), the chain above, and the case where an address is
+  honestly released and the original folder announces on it again.
+
+- **A claim that is superseded the moment it is written says so, and exits non-zero.** A plain
+  success would read as "announced, working" to a session that does not exist from the outside.
+
+- **Every printed way out works.** The take-over key is only suggested where there is somebody to
+  take the address from; where no record leads it any more, the session is told to announce under a
+  free number instead.
+
+### Changed
+
+- **The rule is stated once, everywhere:** one open claim per folder and one leading record per
+  address. The brief template, the profile templates, the profile field descriptions and the
+  channel's README all carry that wording, together with the sentence that a move keeps the stream.
+
+- **The project-side fix this kit briefly carried in one repository is removed.** It refused a bare
+  re-announcement of the same stream and offered a force key that overwrote another stream's claim —
+  the overwriting session inherited the victim's branch names and its mail. Both are gone: a bare
+  re-announcement passes and keeps its address, and no force key exists anywhere in the tool.
+
 ## [1.9.1] — 2026-08-31
 
 ### Fixed

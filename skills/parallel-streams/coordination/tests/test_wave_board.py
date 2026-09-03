@@ -30,22 +30,49 @@ trees and used to skip itself in exactly the state that exposed the defect.
 
 from __future__ import annotations
 
+import ast
 import json
 import os
 import re
 import shutil
 import subprocess
 import time
+from collections.abc import Iterator
+from dataclasses import dataclass
 from datetime import datetime, timedelta
 from pathlib import Path
 
 import pytest
 
-# The file lives in skills/parallel-streams/coordination/tests/ — the repository root is four levels
-# up (tests -> coordination -> parallel-streams -> skills -> root).
-REPO_ROOT = Path(__file__).resolve().parents[4]
+# The toolkit doesn't live only here: there are five more copies, and each has its own path prefix
+# down to the coordination folder (in the public repository, for one —
+# localization/ru/parallel-streams/coordination and skills/parallel-streams/coordination, with no
+# .claude/skills/ of this project at all). The old count of levels up (parents[4]) was a hardcoded
+# prefix of this one project: in another copy it landed in the wrong folder, the tool wasn't found,
+# and the whole suite went red without even starting — nobody was guarding the declared source of
+# truth. The tests folder lives INSIDE coordination always and everywhere, so the toolkit's own
+# folder is taken from the check's file — one level up, with no prefixes counted.
+COORDINATION_DIR = Path(__file__).resolve().parent.parent
+
+
+def _find_repo_root(start: Path) -> Path:
+    """The repository root is the first folder up the tree that has a `.git` in it.
+
+    It is needed not for finding the toolkit itself (that comes off the check's file, see
+    COORDINATION_DIR above), but as the working folder for running the tool and for the checks tied
+    to the make-up of THIS PARTICULAR project (Claude Code's settings, the waves profile). Copies of
+    the toolkit sit at different depths from the root, so counting levels here would again be a
+    hardcoded prefix — we look for the `.git` marker instead of counting folders. Not found (an
+    archive with no history, say) — the fallback is the old count of levels from the check's file.
+    """
+    for candidate in start.parents:
+        if (candidate / ".git").exists():
+            return candidate
+    return start.parents[4]
+
+
+REPO_ROOT = _find_repo_root(Path(__file__).resolve())
 SETTINGS = REPO_ROOT / ".claude" / "settings.json"
-COORDINATION_DIR = REPO_ROOT / "skills" / "parallel-streams" / "coordination"
 HOOKS_DIR = COORDINATION_DIR / "hooks"
 TOOL = COORDINATION_DIR / "wave-board.ps1"
 DELIVER = HOOKS_DIR / "wave-board-deliver.ps1"
@@ -56,6 +83,17 @@ needs_pwsh = pytest.mark.skipif(not pwsh, reason="pwsh not found — nothing to 
 
 
 def settings() -> dict:
+    """Claude Code's settings for THIS PARTICULAR project — read by the checks of the guards wired here.
+
+    In another copy of the toolkit there may be no such file at all (the installer hasn't wired the
+    guards in there yet) — then there is nothing to check against, and that has to be said with a
+    skip rather than by dropping the check on an uncaught filesystem exception.
+    """
+    if not SETTINGS.exists():
+        pytest.skip(
+            f"this copy has no {SETTINGS} — Claude Code's settings for this project aren't set up, "
+            "there's nothing to check the guards' wiring against"
+        )
     return json.loads(SETTINGS.read_text(encoding="utf-8"))
 
 
@@ -1495,6 +1533,848 @@ def test_show_counts_stale_records_of_the_asked_wave_only(tmp_path: Path) -> Non
 # ─────────────────────────────────────────────────────────────────────────────────────────────
 
 
+# ─────────────────────────────────────────────────────────────────────────────────────────────
+# The registry AS A WHOLE: one read of every claim and four assertions over them.
+#
+# The suite's helpers used to walk the directory and take the FIRST record that matched by worktree
+# folder, silently assuming there was only one match. While every folder had exactly one claim in
+# the registry, that added up. Once superseded records appeared — the ones whose address another
+# folder took — the first one to turn up stopped being the one being asked about: the suite would
+# start pinning down the behaviour of a silenced record and miss the live one, silently and
+# differently from run to run (nobody ever promised an order for a directory listing). Hence the
+# rule: a helper takes the record that is NOT closed, and on an ambiguity it fails out loud — a
+# silent choice here is the very defect the suite is there to catch.
+#
+# Beyond that, the whole-registry invariants live here. Before them not a single check in the suite
+# looked at the registry as a whole: an edit to a tab's key could leave a ghost in it and fail no
+# test at all. They are taken in the TAIL of every check (the `registry_invariants` fixture below),
+# not as a separate test: a separate test would pin down one artificial scene, while what's needed
+# is a watch over every announcing and releasing scenario — including ones nobody has written yet.
+# ─────────────────────────────────────────────────────────────────────────────────────────────
+
+# The succession field: the address's new owner names, in ITS OWN claim, the worktree folder that
+# address was taken from. The mechanism writes it — but only where a takeover really happened:
+# previous-version claims don't carry it at all, and a missing field reads as "there was no
+# takeover", not as corruption.
+#
+# Next to the field the mechanism writes the MOMENT of the takeover (`taken_at`): it, and it alone,
+# decides whether a takeover edge applies. A claim that began LATER than that moment isn't silenced
+# by the edge — otherwise the previous folder could never announce again on the freed address, and
+# returning an address by the same key would silence both sides at once.
+#
+# ‼️ The field name here and in the mechanism must match. Let them drift and the invariants stop
+# seeing takeovers and go quiet in the very place they were built for: two records of one address
+# start counting as lawful, and a silenced record as live.
+TAKEN_FROM_FIELD = "taken_from"
+
+# The moment of the takeover — the second half of the same point of agreement: without it a takeover
+# edge can't be told from an eternal one, and the suite would drift from the mechanism in exactly the
+# place where the mechanism stopped silencing fresh claims.
+TAKEN_AT_FIELD = "taken_at"
+
+# The list of this claim's PAST takeovers — the third half of the same point of agreement. The memory
+# of a takeover lives in the taking folder's claim, and a folder has ONE claim: the moment that same
+# folder took on the next stream, its file was rewritten, the edge vanished — and the abandoned record
+# of the previous folder became the leader again, silently at that. The list carries the folder's
+# previous claim's takeovers over into the new one, and each of its entries carries ITS OWN address:
+# a past takeover's is not the one the claim has now.
+#
+# Inside a list entry live the same two names as the current takeover has (folder, moment), plus the
+# wave and number of the address it was taken at.
+PAST_TAKEOVERS_FIELD = "past_takeovers"
+
+# The "who released it" trace in a record closed BY ADDRESS. Releasing your own doesn't write it —
+# there the releaser and the owner are one and the same tab; here an outsider closed the record, and
+# without the trace releasing an orphan would be indistinguishable from an honest release by the tab.
+RELEASED_FROM_FIELD = "released_from"
+
+
+def registry_dir(board: Path) -> Path:
+    """This board's claim directory — the same place the tool itself looks for it."""
+    return board.parent / "streams"
+
+
+def folder_key(path: object) -> str:
+    """The worktree folder in one shape: forward slashes, no trailing one, letter case ignored."""
+    return str(path or "").replace("\\", "/").rstrip("/").lower()
+
+
+def moment_of(raw: object) -> datetime | None:
+    """A time out of a claim field; nothing honestly means "we don't know", not "the dawn of time".
+
+    The difference matters: the decision whether a takeover edge applies rests on it. Let the suite
+    invent a value and it would answer differently from the mechanism, pinning down the wrong thing.
+    """
+    try:
+        return datetime.fromisoformat(str(raw))
+    except (TypeError, ValueError):
+        return None
+
+
+def read_claim_json(path: Path) -> dict[str, object] | None:
+    """Parses a claim file; unreadable and unparseable give "no record", not a crash.
+
+    The encodings tried are the ones the tool tolerates: a claim arrives in UTF-16 too, and with a
+    byte order mark. Corruption (an empty file, one cut off halfway, a claim of another version) and
+    a file held by a neighbour are lawful states of the suite — it sets them up deliberately; helpers
+    must not fall over on them, and corruption has its own checks in the suite.
+    """
+    try:
+        raw = path.read_bytes()
+    except OSError:
+        return None
+    for encoding in ("utf-8-sig", "utf-16"):
+        try:
+            parsed = json.loads(raw.decode(encoding))
+        except (UnicodeDecodeError, ValueError):
+            continue
+        return parsed if isinstance(parsed, dict) else None
+    return None
+
+
+@dataclass(frozen=True)
+class Takeover:
+    """One takeover of an address: at WHICH address, from whose folder and when it was taken.
+
+    ‼️ The address is kept in the takeover itself, not read off the claim as it stands now: the claim
+    may have moved to another number since, or taken on the next stream, while the edge is still
+    about the address it was taken at.
+    """
+
+    wave: str
+    stream: str
+    taken_from: str
+    taken_at: datetime | None
+
+    @property
+    def address(self) -> str:
+        return f"{self.wave}/{self.stream}".lower()
+
+
+@dataclass
+class ClaimRecord:
+    """One parsed claim of the registry: its file and its fields."""
+
+    file: Path
+    fields: dict[str, object]
+
+    @property
+    def worktree(self) -> str:
+        return folder_key(self.fields.get("worktree"))
+
+    @property
+    def address(self) -> str:
+        """The stream address — the way neighbours will call it."""
+        return f"{self.fields.get('wave', '')}/{self.fields.get('stream', '')}".lower()
+
+    @property
+    def addressed(self) -> bool:
+        """Whether the record has an address at all: another version's claim may have neither."""
+        return bool(self.fields.get("wave")) and bool(self.fields.get("stream"))
+
+    @property
+    def released(self) -> bool:
+        return str(self.fields.get("state", "")) == "released"
+
+    @property
+    def taken_from(self) -> str:
+        """The folder this claim took the address from; empty — there was no takeover."""
+        return folder_key(self.fields.get(TAKEN_FROM_FIELD))
+
+    @property
+    def taken_at(self) -> datetime | None:
+        """The moment of the takeover; empty — a previous-version claim, it carries no moment."""
+        return moment_of(self.fields.get(TAKEN_AT_FIELD))
+
+    @property
+    def claimed_at(self) -> datetime | None:
+        """The moment of announcing; empty — the claim was written by hand or its time won't parse."""
+        return moment_of(self.fields.get("claimed_at"))
+
+    @property
+    def takeovers(self) -> list[Takeover]:
+        """EVERY takeover of this record: the current one and each past one from the list.
+
+        ‼️ The parsing must match the mechanism word for word. Duplicates of ONE takeover (the same
+        address from the same folder) collapse, keeping the later one by time: an earlier moment
+        silences less than it should — a victim's claim filed between two takeovers would slip out
+        from under the edge. An unknown moment counts as the latest: an edge without a moment applies
+        unconditionally. But takeovers of one address from DIFFERENT folders never collapse: those
+        are different edges, and losing any of them resurrects its own victim.
+        """
+        moves: list[Takeover] = []
+        if self.taken_from:
+            moves.append(
+                Takeover(
+                    wave=str(self.fields.get("wave", "")),
+                    stream=str(self.fields.get("stream", "")),
+                    taken_from=self.taken_from,
+                    taken_at=self.taken_at,
+                )
+            )
+        listed = self.fields.get(PAST_TAKEOVERS_FIELD)
+        for past in listed if isinstance(listed, list) else []:
+            if not isinstance(past, dict):
+                continue
+            moves.append(
+                Takeover(
+                    wave=str(past.get("wave", "")),
+                    stream=str(past.get("stream", "")),
+                    taken_from=folder_key(past.get(TAKEN_FROM_FIELD)),
+                    taken_at=moment_of(past.get(TAKEN_AT_FIELD)),
+                )
+            )
+        found: dict[tuple[str, str], Takeover] = {}
+        for move in moves:
+            # A takeover with no address is not a takeover: there's nothing to silence by it, and
+            # two addressless neighbours would meet on an "address" made of two blanks.
+            if not move.wave or not move.stream or not move.taken_from:
+                continue
+            key = (move.address, move.taken_from)
+            known = found.get(key)
+            if known is not None and (known.taken_at or datetime.max) >= (
+                move.taken_at or datetime.max
+            ):
+                continue
+            found[key] = move
+        return list(found.values())
+
+
+def read_registry(folder: Path) -> list[ClaimRecord]:
+    """The whole registry at once, in a stable order of file names."""
+    records: list[ClaimRecord] = []
+    try:
+        files = sorted(folder.glob("*.json"))
+    except OSError:
+        return records
+    for path in files:
+        fields = read_claim_json(path)
+        if fields is not None:
+            records.append(ClaimRecord(file=path, fields=fields))
+    return records
+
+
+def names_of(records: list[ClaimRecord]) -> str:
+    """Records on one line: by file name and folder the owner will find them in the registry."""
+    return ", ".join(sorted(f"{record.file.name} (folder {record.worktree})" for record in records))
+
+
+def supersessions(records: list[ClaimRecord]) -> tuple[set[int], list[str]]:
+    """Who in the registry is silenced by a takeover — and everything that doesn't add up in them.
+
+    ‼️ The parsing must match the mechanism word for word: let it drift and the suite starts pinning
+    down behaviour the mechanism doesn't have, and staying quiet where the mechanism raises alarm.
+
+    An edge runs from the claim that took the address to the claim it was taken from: the claim names
+    another folder, and both share one address. The edge applies BY TIME: it fails to apply exactly
+    when it is PROVEN that the victim's claim began LATER than the moment of the takeover. The
+    takeover itself has no moment (a claim of an unreleased interim version doesn't carry one) — then
+    the moment the taking record was ANNOUNCED is used, exactly as the mechanism does. If there's no
+    such moment either, or the victim's announcing time is unknown, the edge applies: not knowing must
+    not resurrect a ghost.
+
+    Mutual edges (a return ring that fitted inside one second) are separated by the full ordering key
+    — announcing time, and on a tie the tree's path: the edge of the SENIOR record survives. The same
+    rule settles a dispute over a stream number, and it is the same for every tab.
+
+    ‼️ Records with NO address take no part in takeovers at all — just as the mechanism skips them.
+    Otherwise two addressless neighbours meet on an "address" made of two blanks, and the suite sees
+    an edge that isn't there.
+
+    ‼️ A RELEASED claim holds a takeover just as an open one does. The suite used to skip it ("the tab
+    is gone, so there's nobody to take it from"), and that was its own mistake: the stream moved,
+    honestly finished the work and released — while the abandoned record in the previous folder became
+    the leader again and kept the address alive. The suite would then call such a scene a number
+    issued twice, even though the records are linked by a takeover. A takeover is an event in an
+    ADDRESS'S history, and releasing doesn't undo it.
+    """
+    order = [(record.claimed_at or datetime.max, record.worktree) for record in records]
+    # ‼️ The moment is taken from THE TAKEOVER ITSELF, not from the claim's current fields: the same
+    # record's past takeover happened at another time and was about another address.
+    drawn = {
+        (i, j): at
+        for i, j, at in succession_edges(records)
+        if not (at and records[j].claimed_at) or records[j].claimed_at <= at
+    }
+
+    taken_by: dict[int, tuple[int, datetime | None]] = {}
+    for (i, j), at in sorted(drawn.items(), key=lambda edge: edge[0]):
+        if (j, i) in drawn and order[i] > order[j]:
+            continue
+        known = taken_by.get(j)
+        if known is not None:
+            # Several takers — we call the last one the leader: the address is with them now. An
+            # unknown moment counts as the latest, just as the mechanism has it.
+            rival = (known[1] or datetime.max, records[known[0]].worktree)
+            if rival >= (at or datetime.max, records[i].worktree):
+                continue
+        taken_by[j] = (i, at)
+    superseded = set(taken_by)
+
+    faults: list[str] = []
+    for address, group in sorted(by_address(records).items()):
+        here = {index for index, _ in group}
+        if not here or not here <= superseded:
+            continue
+        # ‼️ A CIRCLE is when an address's records silence EACH OTHER: every one of them was silenced
+        # by a record of that same address, itself silenced. The condition used to be just "every
+        # record of the address is silenced", and back then that did mean a circle: only a neighbour
+        # on the same address could silence an address's last record. With the memory of takeovers
+        # that stopped being true — a record of ANOTHER address silences too (the folder took the
+        # address, then took on the next stream) — and the assertion started shouting "circle" at the
+        # most common lawful scene, the very one the change was made for. The scene "the address has
+        # no leader left" has its own, fifth assertion, and it calls it by its proper name.
+        if any(taken_by[index][0] not in here for index in here):
+            continue
+        faults.append(
+            f"the takeover of address {address} runs in a circle — the records silence each other, "
+            f"and not one leader is left: {names_of([record for _, record in group])}"
+        )
+    for j in sorted(superseded):
+        alive = [records[i] for i, loser in drawn if loser == j and i not in superseded]
+        if len(alive) > 1:
+            faults.append(
+                f"address {records[j].address} was taken from folder {records[j].worktree} twice "
+                f"over ({names_of(alive)}) — which of these records leads, the registry doesn't say"
+            )
+    return superseded, faults
+
+
+def by_address(records: list[ClaimRecord]) -> dict[str, list[tuple[int, ClaimRecord]]]:
+    """Records by address — only those that have an address at all."""
+    grouped: dict[str, list[tuple[int, ClaimRecord]]] = {}
+    for index, record in enumerate(records):
+        if record.addressed:
+            grouped.setdefault(record.address, []).append((index, record))
+    return grouped
+
+
+def succession_edges(records: list[ClaimRecord]) -> list[tuple[int, int, datetime | None]]:
+    """Takeover edges: who took an address from whom and WHEN — one per takeover per record.
+
+    ‼️ An edge is built for every takeover — the current one and each past one — and the address is
+    taken from THE TAKEOVER ITSELF. Otherwise the memory of a takeover lives exactly until the day
+    that same folder is taken for the next stream: a folder has one claim file, it gets rewritten,
+    and the abandoned record of the previous folder becomes the leader again.
+
+    ‼️ A takeover with no moment — we take the moment the taking record was ANNOUNCED, exactly as the
+    mechanism does. An unconditional edge locked the address behind the victim forever: however many
+    times it announced again, the edge silenced each of its fresh claims, and the way out printed for
+    it didn't work. Only an unreleased interim version could write a succession field with no moment,
+    and it wrote both fields at the very same instant of announcing — so nothing is lost by the
+    substitution.
+    """
+    found: list[tuple[int, int, datetime | None]] = []
+    for i, taker in enumerate(records):
+        for move in taker.takeovers:
+            at = move.taken_at if move.taken_at is not None else taker.claimed_at
+            for j, loser in enumerate(records):
+                if i == j or loser.worktree != move.taken_from or loser.address != move.address:
+                    continue
+                found.append((i, j, at))
+    return found
+
+
+def held_addresses(record: ClaimRecord) -> set[str]:
+    """Addresses this record ever held: the current one and each one it took before.
+
+    They're needed for an address's HISTORY, not for silencing. A folder gets reused: a record that
+    once took an address may be running a different stream today — but it hasn't gone anywhere from
+    that address's history, and without it a chain of takeovers snaps right in the middle.
+    """
+    found = {record.address} if record.addressed else set()
+    return found | {move.address for move in record.takeovers}
+
+
+def succession_links(records: list[ClaimRecord]) -> set[tuple[int, int]]:
+    """Pairs "taker — victim": a claim names another worktree folder, and both share one address.
+
+    ‼️ Time isn't asked about here at all, and that's no oversight. Whether an edge applies is a
+    separate question (`supersessions` settles it), while the LINK between the records stays forever:
+    it is what tells one stream's history apart from one number issued to two different streams.
+
+    ‼️ And for the same reason the victim is recognized here BY ITS WHOLE HISTORY of addresses, not by
+    its current one: the middle folder of an A→B→C chain may have taken on another stream since, and
+    C's link to A would otherwise snap — the suite would call one number issued twice where this is
+    one history.
+    """
+    links: set[tuple[int, int]] = set()
+    for i, taker in enumerate(records):
+        for move in taker.takeovers:
+            for j, loser in enumerate(records):
+                if i == j or loser.worktree != move.taken_from:
+                    continue
+                if move.address not in held_addresses(loser):
+                    continue
+                links.add((i, j))
+    return links
+
+
+def succession_roots(records: list[ClaimRecord], links: set[tuple[int, int]]) -> dict[int, int]:
+    """Each record's succession group root. Groups are counted over the WHOLE registry.
+
+    ‼️ Over the whole one, not over the records of a single address: two records of an address may be
+    linked THROUGH a third that is running a different stream today (the middle folder of a chain of
+    takeovers, having taken on the next job). Were we to count groups within an address, such a chain
+    would fall into two — and the suite would call one number issued twice where this is one history
+    of one stream.
+    """
+    parent = {index: index for index in range(len(records))}
+
+    def root(index: int) -> int:
+        while parent[index] != index:
+            parent[index] = parent[parent[index]]
+            index = parent[index]
+        return index
+
+    for taker, loser in sorted(links):
+        parent[root(taker)] = root(loser)
+    return {index: root(index) for index in parent}
+
+
+def registry_faults(folder: Path) -> list[str]:
+    """Five assertions about the registry as a whole — one line per violation.
+
+    1. No more than one LEADING record per address (a leader is one that is neither closed nor
+       superseded). Two leaders mean who gets a finding is decided by the directory listing's order.
+    2. No more than one unclosed claim per worktree folder: the second one either erased the first or
+       doubles that folder's stream as seen from outside.
+    3. Every superseded record has exactly one superseding record, and the takeover doesn't run in a
+       circle: a circle is when every record of the address is silenced and each was silenced by a
+       record of THAT SAME address.
+       ‼️ The superseding record may itself be superseded: an A→B→C chain of takeovers is lawful, both
+       A and B are silenced in it, and one C leads. And ‼️ "every record of the address is silenced" is
+       NOT in itself a circle: a record of another address silences too — the folder took the address,
+       then took on the next stream. The fifth assertion speaks about that scene, and by its own name.
+    4. No number ever taken in a wave gets issued a second time — neither after a release nor after a
+       takeover: every record of one address must be ONE stream, linked by takeovers.
+    5. An address that has claims open in their own files has at least one LEADING record. Zero
+       leaders with live files is a tab that doesn't exist from the outside: it believes it is running
+       the stream, while accepting a finding for that address will refuse.
+
+    Records with neither an address nor a worktree folder don't count: that's what a claim of another
+    version looks like, and it isn't treated as corruption — that is settled separately in a decision.
+    """
+    records = read_registry(folder)
+    superseded, faults = supersessions(records)
+
+    leading: dict[str, list[ClaimRecord]] = {}
+    per_folder: dict[str, list[ClaimRecord]] = {}
+    for i, record in enumerate(records):
+        if record.worktree and not record.released:
+            per_folder.setdefault(record.worktree, []).append(record)
+        if record.addressed and i not in superseded and not record.released:
+            leading.setdefault(record.address, []).append(record)
+
+    doubled: set[str] = set()
+    for address, found in sorted(leading.items()):
+        if len(found) > 1:
+            doubled.add(address)
+            faults.append(
+                f"address {address} is led by {len(found)} records at once ({names_of(found)}) — "
+                "which of them a finding reaches is decided by the directory listing's order"
+            )
+    # ‼️ The mirror trouble of the same kind: an address has records open in their own files, and not
+    # one leader. That's what a tab that doesn't exist from the outside looks like: its file is open,
+    # it believes it is running the stream, while accepting a finding for that address will refuse and
+    # the delivery hook will bring nothing. Nobody guarded this with a watch of its own: a takeover
+    # circle is only caught when ALL the address's records are silenced, and the moment one of them is
+    # released the scene went through in silence.
+    for address, group in sorted(by_address(records).items()):
+        if address in leading:
+            continue
+        orphans = [record for _, record in group if not record.released]
+        if orphans:
+            faults.append(
+                f"address {address} has no leading record left, and there are unclosed claims "
+                f"({names_of(orphans)}) — those tabs don't exist from the outside"
+            )
+    for here, found in sorted(per_folder.items()):
+        if len(found) > 1:
+            faults.append(
+                f"folder {here} has {len(found)} unclosed claims at once ({names_of(found)}) — "
+                "that folder's stream is doubled as seen from outside"
+            )
+    # ‼️ A number taken in a wave doesn't get issued a second time. Records of one address linked by
+    # succession are ONE stream's history: a move, a chain of moves, an address returned by the same
+    # key, and the previous folder announcing on an honestly released address. The link is looked at
+    # here WITHOUT time: whether the edge still applies is a separate question, while the link stays
+    # forever. Two unlinked groups on one address are exactly two different streams with one name.
+    roots = succession_roots(records, succession_links(records))
+    for address, group in sorted(by_address(records).items()):
+        if address in doubled:
+            continue
+        if len({roots[index] for index, _ in group}) > 1:
+            faults.append(
+                f"number {address} was issued twice ({names_of([record for _, record in group])}): "
+                "the records aren't linked by a takeover, so these are two streams with one address"
+            )
+    return faults
+
+
+def assert_registry_invariants(board: Path) -> None:
+    """Takes this board's registry invariants. Lists ALL violations, not the first one it meets."""
+    folder = registry_dir(board)
+    faults = registry_faults(folder)
+    assert not faults, "the claim registry contradicts itself ({}):\n  • {}".format(
+        folder, "\n  • ".join(faults)
+    )
+
+
+class RegistryWatch:
+    """The registry watch in a check's tail — and an explicit refusal of it, named by its reason."""
+
+    def __init__(self) -> None:
+        self.waived = ""
+
+    def waive(self, reason: str) -> None:
+        """Waives the watch for THIS check. The reason is spelled out: no silent skipping."""
+        self.waived = reason
+
+
+@pytest.fixture(autouse=True)
+def registry_invariants(tmp_path: Path) -> Iterator[RegistryWatch]:
+    """The registry invariants are taken in the tail of EVERY check, not as a separate test.
+
+    A separate test would pin down one artificial scene. What's needed instead is a watch over every
+    announcing and releasing scenario — including the ones that get written after this change — or a
+    future change will leave a ghost in the registry and fail no test at all. So the check runs by
+    itself, over every registry set up inside the test's temporary folder, and there's no need to add
+    it to a new scenario.
+
+    There is exactly one way to opt out: ask for this fixture and say the reason out loud —
+    `registry_invariants.waive("why")`. There is no silent skip: a broken invariant must be either
+    fixed or named.
+    """
+    watch = RegistryWatch()
+    yield watch
+    if watch.waived:
+        return
+    for folder in sorted(tmp_path.rglob("streams")):
+        if folder.is_dir():
+            assert_registry_invariants(folder.parent / "board.jsonl")
+
+
+# ‼️ The ONE ledger of waivers of the registry watch: check name → why the guard is off.
+#
+# It exists because the previous ledger lived as a comment on one of the checks and was WRONG: the
+# comment insisted this was "the only place in the suite where the invariant is deliberately off",
+# and there were six such places. The whole discipline of waivers rests on that bookkeeping — wrong
+# bookkeeping is worse than none: the reader believes the comment and doesn't go looking at the rest.
+#
+# There are three kinds of place, and they must not be confused.
+#   • Checks of SCENARIOS where the registry is deliberately contradictory and the mechanism is what's
+#     under test. All of them assemble a doubled address BY HAND (`put_claim`) — that's what the
+#     legacy of defect 1 looks like in a registry the change is being rolled out onto. The mechanism
+#     itself can no longer double an address: the folder rule refuses BEFORE writing. Nor does the
+#     mechanism take the legacy apart silently — display shouts about it in a loud line, and it is the
+#     take-over key that clears it, by a human's decision.
+#   • Checks of THE GUARD ITSELF: they assemble registries by hand and ask whether it catches them.
+#     Waiving the watch there is needed for good — otherwise the guard would fall over on its own
+#     laboratory scenes.
+#   • Scenes where an address ENDED with no leading record, and that is the right outcome: the stream
+#     moved and in the new folder released or moved on further, while the abandoned record of the
+#     previous folder stayed open. The invariant "an address has a leading record" is deliberately
+#     waived there — it exists precisely so that such scenes can't be set up SILENTLY; what's checked
+#     is exactly that they are spoken about out loud: display shouts, accepting a finding refuses,
+#     announcing doesn't report plain success.
+#
+# The list is checked by machine (a check below), so it can no longer go stale in silence.
+WAIVED_SCENES: dict[str, str] = {
+    # Scenarios: the registry is contradictory on purpose, the mechanism is what's under test.
+    "test_show_keeps_one_order_on_the_same_registry": (
+        "the invariant \"one leading record per address\": two records of one address are assembled "
+        "by hand as the legacy of a defect — the completeness of display's order is checked on them"
+    ),
+    "test_show_shouts_about_a_doubled_address": (
+        "the invariant \"one leading record per address\": the doubling is assembled by hand — what's "
+        "checked is that display shouts about it instead of staying quiet"
+    ),
+    "test_adding_a_finding_to_a_doubled_address_says_it_may_reach_the_wrong_tab": (
+        "the invariant \"one leading record per address\": the doubling is assembled by hand as the "
+        "legacy of a defect — what's checked is that accepting a finding shouts too, not just display"
+    ),
+    "test_a_reclaim_that_names_only_the_wave_keeps_its_seniority": (
+        "the invariant \"one leading record per address\": the rival for the same number is assembled "
+        "by hand, and what's checked is exactly that the tab does NOT give the address up. The folder "
+        "rule deliberately doesn't separate this pair: the number here is INHERITED from the tab's own "
+        "previous record, that is, it stays issued, and the folder rule doesn't extend to an issued "
+        "number — there a number may move, and the yield ring settles the dispute"
+    ),
+    # Checks of the guard itself: the registries are assembled by hand, the guard is the subject.
+    "test_registry_invariants_catch_a_doubled_address": (
+        "the watch is off entirely: the registry is contradictory on purpose, the guard is the subject"
+    ),
+    "test_registry_invariants_catch_every_broken_shape": (
+        "the watch is off entirely: the registries are contradictory on purpose, the guard is the subject"
+    ),
+    "test_registry_invariants_pass_the_registries_the_tool_really_makes": (
+        "the watch is off entirely: the registries are assembled by hand, what's checked is the "
+        "guard's silence on lawful ones"
+    ),
+    "test_registry_invariants_catch_an_address_without_a_leader": (
+        "the watch is off entirely: the registry is contradictory on purpose, the guard is the subject"
+    ),
+    "test_show_shouts_about_an_address_left_without_a_leader": (
+        "the watch is off entirely: the registry is assembled by hand as exactly that scene — what's "
+        "checked is that display shouts about it"
+    ),
+    # Scenes of an address's lawful end: no leading record is left, and that is the outcome checked.
+    "test_a_finding_for_a_released_stream_is_refused_even_after_the_address_moved": (
+        "the invariant \"an address has a leading record\": the stream moved and honestly released in "
+        "the new folder, while the abandoned record of the previous folder stayed open — what's "
+        "checked is that a finding for such an address is refused"
+    ),
+    "test_a_move_outlives_the_folder_taken_by_the_next_stream": (
+        "the invariant \"an address has a leading record\": the stream moved, released, and the folder "
+        "was taken for the next one — what's checked is that the previous folder's ghost doesn't "
+        "become the leader"
+    ),
+    "test_the_answer_names_the_folder_where_the_address_really_went": (
+        "the invariant \"an address has a leading record\": the stream moved along a chain and ended "
+        "in the last folder — what's checked is which folder gets named to the victim"
+    ),
+    "test_a_dead_end_is_never_printed_as_the_way_out": (
+        "the invariant \"an address has a leading record\": the stream moved and ended there — what's "
+        "checked is that the way out printed to the victim works, instead of advising a key with "
+        "nothing left to take"
+    ),
+    "test_the_invariant_never_calls_a_lawful_move_a_circle": (
+        "the watch is off entirely: the registry is assembled by hand as exactly that scene — the "
+        "guard is the subject, and what's checked is by what NAME it calls the scene"
+    ),
+    "test_the_older_copy_keeps_the_memory_of_past_moves_it_does_not_understand": (
+        "the invariant \"an address has a leading record\": the same scene of an address's lawful end "
+        "— what's checked is that a move by an older copy of the toolkit doesn't erase the memory"
+    ),
+}
+
+
+def test_every_waiver_of_the_registry_watch_is_listed_in_the_ledger() -> None:
+    """The ledger of waivers is checked by machine: the list above must match the suite's code.
+
+    It used to be a comment, and the comment lied: it named one place, and there were six. A comment
+    goes stale in silence — the reader believes it and doesn't go recounting — and the whole
+    discipline rests on that bookkeeping: waiving an invariant is allowed as long as it is named and
+    explained.
+
+    So the list became the only one, and the reconciliation became mechanical: add a waiver and fail
+    to write it down (or write one down and then drop the waiver) — the check fails and names the
+    discrepancy by name.
+    """
+    tree = ast.parse(Path(__file__).read_text(encoding="utf-8"))
+    waived: set[str] = set()
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.FunctionDef) or not node.name.startswith("test_"):
+            continue
+        for inner in ast.walk(node):
+            if (
+                isinstance(inner, ast.Call)
+                and isinstance(inner.func, ast.Attribute)
+                and inner.func.attr == "waive"
+                and isinstance(inner.func.value, ast.Name)
+                and inner.func.value.id == "registry_invariants"
+            ):
+                waived.add(node.name)
+
+    listed = set(WAIVED_SCENES)
+    assert waived == listed, (
+        "the ledger of waivers has drifted from the suite's code — bookkeeping you can't trust is "
+        "worse than none.\n  waived but not listed: {}\n  listed but never waived: {}"
+    ).format(sorted(waived - listed) or "none", sorted(listed - waived) or "none")
+
+
+def put_claim(folder: Path, file_name: str, **fields: object) -> Path:
+    """Puts a claim of the given shape into the registry — that's how a scene the tool won't make gets
+    assembled.
+
+    The FILE's name is given first and positionally: the claim itself also has a "stream name" field,
+    and were they called the same, the second would become impossible to express.
+    """
+    folder.mkdir(parents=True, exist_ok=True)
+    path = folder / f"{file_name}.json"
+    path.write_text(json.dumps(fields, ensure_ascii=False), encoding="utf-8")
+    return path
+
+
+def open_claim(
+    worktree: str, wave: str = "wave9", stream: str = "3", **extra: object
+) -> dict[str, object]:
+    """The fields of an unclosed claim — a blank for artificial registry scenes."""
+    return {"wave": wave, "stream": stream, "worktree": worktree, "state": "open", **extra}
+
+
+def test_registry_invariants_catch_a_doubled_address(
+    tmp_path: Path, registry_invariants: RegistryWatch
+) -> None:
+    """Two leading records of one address — the guard must FAIL and name the address.
+
+    This is the proof of the guard itself: without it, it could go green in silence on any registry,
+    and the whole idea of invariants would come down to lines of code that guard nothing.
+    """
+    registry_invariants.waive("the registry is contradictory on purpose — the guard is under test")
+    board = tmp_path / "board.jsonl"
+    folder = registry_dir(board)
+    put_claim(folder, "first", **open_claim(str(tmp_path / "first")))
+    put_claim(folder, "second", **open_claim(str(tmp_path / "second")))
+
+    with pytest.raises(AssertionError) as fault:
+        assert_registry_invariants(board)
+    assert "wave9/3" in str(fault.value), (
+        f"the guard failed but didn't name the doubled address — nowhere to look for it: {fault.value}"
+    )
+
+
+def test_registry_invariants_catch_every_broken_shape(
+    tmp_path: Path, registry_invariants: RegistryWatch
+) -> None:
+    """The other three assertions guard too, instead of just being listed.
+
+    The scenes are assembled by hand: the tool doesn't make registries like these today — that's the
+    point, the guard is set up against a change that starts making them.
+    """
+    registry_invariants.waive("the registries are contradictory on purpose — the guard is under test")
+    scenes: dict[str, dict[str, dict[str, object]]] = {
+        "two unclosed claims of one folder": {
+            "first": open_claim("d:/tree", stream="3"),
+            "second": open_claim("d:/tree", stream="4"),
+        },
+        "the number was issued a second time after a release": {
+            "released": open_claim("d:/first", state="released"),
+            "new": open_claim("d:/second"),
+        },
+        "the address was taken from one folder twice": {
+            "previous": open_claim("d:/first"),
+            "one": open_claim("d:/second", taken_from="d:/first"),
+            "another": open_claim("d:/third", taken_from="d:/first"),
+        },
+        # ‼️ A circle of THREE records, not of two: a mutual pair is separated by the time rule itself
+        # (the senior record's edge survives), and it is lawful — that's the ring of an address being
+        # returned. But a circle where each one took from the next leaves the address with no leading
+        # record at all: findings for it reach nobody, and staying quiet about that is not allowed.
+        "the takeover runs in a circle of three": {
+            "one": open_claim("d:/first", taken_from="d:/third"),
+            "another": open_claim("d:/second", taken_from="d:/first"),
+            "third": open_claim("d:/third", taken_from="d:/second"),
+        },
+    }
+    for number, (scene, claims) in enumerate(scenes.items(), start=1):
+        # A scene's name won't do as a path: it has a colon in it, and Windows won't make that folder.
+        board = tmp_path / f"scene-{number}" / "board.jsonl"
+        for name, fields in claims.items():
+            put_claim(registry_dir(board), name, **fields)
+        assert registry_faults(registry_dir(board)), (
+            f"the guard stayed quiet on the scene \"{scene}\" — the registry contradicts itself while "
+            "the check goes green"
+        )
+
+
+def test_registry_invariants_pass_the_registries_the_tool_really_makes(
+    tmp_path: Path, registry_invariants: RegistryWatch
+) -> None:
+    """And the other side: on lawful registries the guard stays quiet instead of failing the work.
+
+    A false alarm here costs more than a miss: it would fire in the tail of somebody else's check, and
+    whoever wrote that check — and has nothing to do with the registry — would have to sort it out.
+    """
+    registry_invariants.waive("the registries are assembled by hand — the guard is under test, not the mechanism")
+    scenes: dict[str, dict[str, dict[str, object]]] = {
+        "claims of the current shape, no succession field at all": {
+            "one": open_claim("d:/first"),
+            "another": open_claim("d:/second", stream="4"),
+        },
+        "the stream was released, the number stayed with it": {
+            "released": open_claim("d:/first", state="released"),
+        },
+        "a move: the address was taken, the previous record silenced": {
+            "previous": open_claim("d:/first"),
+            "new": open_claim("d:/second", taken_from="d:/first"),
+        },
+        "the folder was taken for another stream after the move": {
+            "previous": open_claim("d:/first", stream="7"),
+            "new": open_claim("d:/second", taken_from="d:/first"),
+        },
+        # The ring of return: both records took the address from each other. Seniority separates them
+        # — one leader is left, and this is a lawful scenario, printed by the mechanism itself.
+        "the address was returned by the same key": {
+            "one": open_claim("d:/first", taken_from="d:/second"),
+            "another": open_claim("d:/second", taken_from="d:/first"),
+        },
+        # A chain of moves: both the first and the second are silenced, the third leads.
+        "moved twice in a row": {
+            "first": open_claim("d:/first"),
+            "second": open_claim("d:/second", taken_from="d:/first"),
+            "third": open_claim("d:/third", taken_from="d:/second"),
+        },
+        # The address was honestly released, and the PREVIOUS folder announced on it again: its claim
+        # began later than the takeover, so the old edge doesn't apply to it and nothing silences it.
+        "the previous folder announced on the freed address": {
+            "moved": open_claim(
+                "d:/second",
+                state="released",
+                taken_from="d:/first",
+                taken_at=hours_ago(2),
+            ),
+            "new": open_claim("d:/first", claimed_at=hours_ago(1)),
+        },
+        "a claim of another version, with no folder and no address": {
+            "stranger": {"state": "open"},
+            "ours": open_claim("d:/first"),
+        },
+    }
+    for number, (scene, claims) in enumerate(scenes.items(), start=1):
+        board = tmp_path / f"scene-{number}" / "board.jsonl"
+        for name, fields in claims.items():
+            put_claim(registry_dir(board), name, **fields)
+        faults = registry_faults(registry_dir(board))
+        assert not faults, f"a false alarm on the lawful scene \"{scene}\": {faults}"
+
+
+def claim_of(board: Path, worktree: Path, *, only_open: bool) -> ClaimRecord:
+    """The named tab's claim — exactly the one the check is asking about.
+
+    ‼️ We don't take the first record that happens to match by folder. There may be several matches,
+    and a silent choice would pin down the behaviour of a silenced record without noticing the live
+    one. An ambiguity is a failure out loud: it means the mechanism left a ghost in the registry, and
+    that's a finding, not an obstacle to the check.
+
+    `only_open` — for when the live record is exactly what's wanted: editing a claim's fields,
+    stripping a field, reading the address. A closed one must not be handed over there: the check is
+    asking about the stream being run right now. Without it (asking for the claim file) an unclosed
+    one still wins, but failing that the single closed one is handed over — the suite deliberately
+    goes to a RELEASED stream's file too.
+    """
+    records = read_registry(registry_dir(board))
+    superseded, _ = supersessions(records)
+    here = folder_key(worktree)
+    mine = [(i, record) for i, record in enumerate(records) if record.worktree == here]
+    live = [record for i, record in mine if not record.released and i not in superseded]
+    if len(live) > 1:
+        raise AssertionError(
+            f"folder {here} has {len(live)} unclosed claims at once ({names_of(live)}) — "
+            "which of them the check means is not for the suite to decide"
+        )
+    if live:
+        return live[0]
+    closed = [record for _, record in mine]
+    if only_open:
+        found = f"; there are closed records: {names_of(closed)}" if closed else ""
+        raise AssertionError(f"no unclosed claim for {here} in the registry{found}")
+    if not closed:
+        raise AssertionError(f"no claim for {here} in the registry")
+    if len(closed) > 1:
+        raise AssertionError(
+            f"folder {here} has {len(closed)} closed claims at once ({names_of(closed)}) — "
+            "which of them the check means is not for the suite to decide"
+        )
+    return closed[0]
+
+
+def write_claim(record: ClaimRecord) -> None:
+    """Puts an edited claim back into the very file it was read from."""
+    record.file.write_text(json.dumps(record.fields, ensure_ascii=False), encoding="utf-8")
+
+
 def claim(board: Path, cwd: Path, wave: str, stream: str, *extra: str) -> str:
     """Announces a stream for the tab working in folder `cwd`.
 
@@ -1793,21 +2673,17 @@ def test_stream_address_is_not_confused_with_a_branch_name(tmp_path: Path) -> No
 
 
 def patch_claim(board: Path, worktree: Path, **fields: object) -> None:
-    """Patches the named tab's claim — sets what the test can't compute on its own.
+    """Patches a tab's UNCLOSED claim — sets what the test can't compute on its own.
 
     The list of touched files comes from git in the real tool, and test folders aren't repositories:
     substitute the list by hand and set a fresh timestamp so the guard doesn't recompute it.
+
+    ‼️ The record is picked by `claim_of`, not by the first match on the folder: patching a silenced
+    record would pin down a ghost's behaviour, and the check would go green on a broken mechanism.
     """
-    registry = board.parent / "streams"
-    here = str(worktree).replace("\\", "/").rstrip("/")
-    for path in registry.glob("*.json"):
-        claim = json.loads(path.read_text(encoding="utf-8"))
-        if str(claim.get("worktree", "")).replace("\\", "/").rstrip("/") != here:
-            continue
-        claim.update(fields)
-        path.write_text(json.dumps(claim, ensure_ascii=False), encoding="utf-8")
-        return
-    raise AssertionError(f"no claim for {worktree} in the registry")
+    record = claim_of(board, worktree, only_open=True)
+    record.fields.update(fields)
+    write_claim(record)
 
 
 @needs_pwsh
@@ -1974,17 +2850,10 @@ def said(text: str) -> list[str]:
 
 
 def strip_claim_field(board: Path, worktree: Path, field: str) -> None:
-    """Removes a field from a claim — what a claim filed by an earlier version of the tool looks like."""
-    registry = board.parent / "streams"
-    here = str(worktree).replace("\\", "/").rstrip("/")
-    for path in registry.glob("*.json"):
-        record = json.loads(path.read_text(encoding="utf-8"))
-        if str(record.get("worktree", "")).replace("\\", "/").rstrip("/") != here:
-            continue
-        record.pop(field, None)
-        path.write_text(json.dumps(record, ensure_ascii=False), encoding="utf-8")
-        return
-    raise AssertionError(f"no claim for {worktree} in the registry")
+    """Removes a field from an UNCLOSED claim — what a claim filed by an earlier version looks like."""
+    record = claim_of(board, worktree, only_open=True)
+    record.fields.pop(field, None)
+    write_claim(record)
 
 
 @needs_pwsh
@@ -2306,28 +3175,19 @@ def test_a_finding_for_a_released_stream_without_a_plan_goes_to_the_owner(tmp_pa
 
 
 def claim_file_of(board: Path, worktree: Path) -> Path:
-    """The named tab's claim file in the registry.
+    """The named tab's claim file: the unclosed one, and failing that the single closed one.
 
-    Skips a file it can't decode as UTF-8 or parse as JSON: a neighbouring claim in the registry may
-    deliberately be written in an unusual encoding (a separate check for that), and looking up one
-    particular tab's file must not choke on a file that isn't the one being looked for.
+    The closed one is handed over because the suite deliberately goes to a RELEASED stream's file
+    too — holding it open, corrupting it, deleting it. But as long as the folder has a live record,
+    it is always that one that's meant.
     """
-    registry = board.parent / "streams"
-    here = str(worktree).replace("\\", "/").rstrip("/")
-    for path in registry.glob("*.json"):
-        try:
-            record = json.loads(path.read_text(encoding="utf-8"))
-        except (UnicodeDecodeError, json.JSONDecodeError):
-            continue
-        if str(record.get("worktree", "")).replace("\\", "/").rstrip("/") == here:
-            return path
-    raise AssertionError(f"no claim for {worktree} in the registry")
+    return claim_of(board, worktree, only_open=False).file
 
 
 def address_of(board: Path, worktree: Path) -> str:
-    """The stream address the tab announced for itself — the way neighbours will call it."""
-    record = json.loads(claim_file_of(board, worktree).read_text(encoding="utf-8"))
-    return f"{record['wave']}/{record['stream']}"
+    """The address of the stream the tab is running NOW — the way neighbours will call it."""
+    fields = claim_of(board, worktree, only_open=True).fields
+    return f"{fields['wave']}/{fields['stream']}"
 
 
 @needs_pwsh
@@ -3691,25 +4551,43 @@ def test_a_number_taken_by_a_neighbour_is_given_up_after_the_claim_is_written(
 
 
 @needs_pwsh
-def test_a_number_from_the_plan_is_never_moved(tmp_path: Path) -> None:
+def test_a_number_from_the_plan_is_never_moved_and_never_doubled(tmp_path: Path) -> None:
     """A number from the plan is the stream's name, findings are addressed by it: it can't be moved,
-    only reported.
+    and doubling it is worse still.
 
-    A takeover of a tab does happen deliberately (the first one closed without releasing), and a
-    human resolves that kind of dispute.
+    This check used to pin down TODAY'S behaviour — the second tab got the same address, the warning
+    was printed AFTER the write, and the address was led by two live claims. That was defect 1
+    exactly: who gets a finding was decided by the directory listing's order. Now there is a refusal
+    BEFORE the write in its place, with one explicit way out — the take-over key; the behaviour
+    pinned down before is overturned deliberately.
+
+    The number still can't be moved: it is named in the plan and findings are addressed by it — so
+    the second tab doesn't "move on to the next free one", it gets refused, and a human settles the
+    dispute.
     """
     board = tmp_path / "board.jsonl"
     first = tmp_path / "wave9-first"
     second = tmp_path / "wave9-second"
+    second.mkdir()
     claim(board, first, "wave9", "3")
-    out = claim(board, second, "wave9", "3")
+    denied = tool(board, "-Mode", "Claim", "-Wave", "wave9", "-Stream", "3", cwd=second)
 
-    assert address_of(board, second) == "wave9/3", (
-        f"a named number got shifted — the plan's address moved on its own: {out!r}"
+    assert denied.returncode != 0, (
+        f"the second tab got the same address — the address is led by two again: {denied.stdout!r}"
     )
-    assert "has an open claim on this same stream" in out, (
-        f"nothing was said about two claims on one number: {out!r}"
+    assert "Another worktree has an open claim on this same stream" not in denied.stdout, (
+        f"the warning AFTER the write came back instead of a refusal BEFORE it: {denied.stdout!r}"
     )
+    assert not list(registry_dir(board).glob("*wave9-second*")), (
+        "the second tab's claim got written after all — the refusal doesn't come before the write"
+    )
+    assert address_of(board, first) == "wave9/3", (
+        "a named number got shifted — the plan's address moved on its own"
+    )
+    # The way out of the refusal is one, explicit and named: a takeover does happen deliberately (the
+    # first tab was closed without releasing), and a human settles that dispute, not the mechanism.
+    taken = claim(board, second, "wave9", "3", "-TakeOver")
+    assert address_of(board, second) == "wave9/3", f"the take-over key didn't hand the address over: {taken!r}"
 
 
 @needs_pwsh
@@ -3840,4 +4718,3318 @@ def test_a_wave_with_mixed_claims_is_judged_by_its_first_claim(
     second = context_text(run_deliver(board, wave_repo, "Start", "s-mixed-named"))
     assert "Wave Loose Ends" in second, (
         f"a wave founded by a named claim was declared plan-less because of a neighbouring claim: {second!r}"
+    )
+
+
+# ─────────────────────────────────────────────────────────────────────────────────────────────
+# A session's key is the ROOT of its worktree, not whatever folder it happened to be started in.
+
+
+def subfolder_of(tab: Path) -> Path:
+    """A subfolder of a worktree — a session is very often started from exactly such a place."""
+    deep = tab / "docs" / "deep"
+    deep.mkdir(parents=True, exist_ok=True)
+    return deep
+
+
+@needs_pwsh
+@needs_git
+def test_a_claim_and_its_release_meet_whatever_subfolder_the_tab_started_in(tmp_path: Path) -> None:
+    """Claimed from the tree root, released from a subfolder — it is one and the same claim.
+
+    A session's key used to be the current folder, and these two commands then diverged by key:
+    release didn't find its own claim and answered "nothing to release" WITH A SUCCESS CODE. The
+    session closed, and the neighbours went on addressing findings to a stream they believed alive —
+    the most expensive loss this mechanism has, because the sender is told it succeeded.
+
+    The reverse is checked too: a claim filed from a subfolder must also land in the ROOT's claim,
+    or the registry would gain a second file on the same tree and the stream would double outside.
+    """
+    real_worktrees(tmp_path, {"tab": "tab-branch"})
+    board = tmp_path / "board.jsonl"
+    tab = tmp_path / "tab"
+    deep = subfolder_of(tab)
+
+    claim(board, tab, "wave9", "3", "-StreamName", "Session key")
+    given = release(board, deep)
+
+    assert given.returncode == 0, f"release from a subfolder fell over: {given.stderr!r}"
+    assert "Stream wave9/3 released." in given.stdout, (
+        f"release from a subfolder didn't find the claim filed from the root: {given.stdout!r}"
+    )
+    records = read_registry(registry_dir(board))
+    assert len(records) == 1, (
+        f"claim files started on one tree: {len(records)} — from outside the stream is doubled"
+    )
+    assert records[0].released, "the claim stayed open even though release reported success"
+    assert records[0].worktree == folder_key(tab), (
+        f"the claim records not the tree root but {records[0].worktree}: under that key neither "
+        "release nor the neighbours will find it"
+    )
+
+    # The reverse: claiming from a subfolder and releasing from the root. A different number — the
+    # previous one is taken in this wave already, and a taken number can't be issued twice.
+    claim(board, deep, "wave9", "7", "-StreamName", "Reverse")
+    back = release(board, tab)
+    assert back.returncode == 0, f"release from the root fell over: {back.stderr!r}"
+    assert "Stream wave9/7 released." in back.stdout, (
+        f"release from the root didn't find the claim filed from a subfolder: {back.stdout!r}"
+    )
+    assert len(read_registry(registry_dir(board))) == 1, (
+        "a claim filed from a subfolder started a second claim on the same tree"
+    )
+
+
+@needs_pwsh
+@needs_git
+def test_a_tab_started_in_a_subfolder_is_seen_alive_by_its_neighbours(tmp_path: Path) -> None:
+    """A session works from a subfolder — the neighbours still see it as alive.
+
+    The liveness beacon is written by the delivery hook, and it is looked for along the paths git
+    names. Were the writer to address the current folder, the two would part whenever work runs
+    from a subfolder: a live session looks abandoned, and a finding goes into "Wave Loose Ends"
+    past the very human sitting at the screen.
+    """
+    real_worktrees(tmp_path, {"tab": "alpha", "neighbour": "beta"})
+    board = tmp_path / "board.jsonl"
+    tab = tmp_path / "tab"
+    deep = subfolder_of(tab)
+
+    assert run_deliver(board, deep, "Prompt", "s-subfolder").strip() == "", (
+        "the delivery hook spoke up where there is nothing to show"
+    )
+    assert (tab / BEACON).exists(), (
+        "the beacon didn't land in the tree root — worktree parsing looks for it exactly there"
+    )
+    assert not (deep / BEACON).exists(), "the beacon stayed in the subfolder, where no one reads it"
+
+    seen = run_tool(
+        board,
+        "-Mode",
+        "Add",
+        "-To",
+        "alpha",
+        "-Title",
+        "to a live neighbour",
+        cwd=tmp_path / "neighbour",
+        known=True,
+    )
+    assert "checked in recently" in seen, (
+        f"the neighbour thinks a session working from a subfolder is abandoned: {seen!r}"
+    )
+
+
+@needs_pwsh
+@needs_git
+def test_a_claim_filed_by_the_older_version_from_a_subfolder_is_still_released(
+    tmp_path: Path,
+) -> None:
+    """A claim filed by the older version from a subfolder is found by release's second route.
+
+    A claim's file name is derived from the path, so such claims are keyed by the subfolder, while
+    today's key is the tree root. By file name one's own claim isn't found, and without a second
+    route the change would orphan exactly the streams it is made for.
+
+    The file name here is deliberately not the canonical one: release must search by the worktree
+    folder recorded IN the claim, not by the file name. This is reading, not a move — the record is
+    edited in place, and not a single file is created or deleted.
+    """
+    real_worktrees(tmp_path, {"tab": "orphan-branch"})
+    board = tmp_path / "board.jsonl"
+    tab = tmp_path / "tab"
+    deep = subfolder_of(tab)
+    orphan = put_claim(
+        registry_dir(board),
+        "older-version-claim",
+        **open_claim(str(deep), wave="wave9", stream="4"),
+    )
+
+    given = release(board, deep)
+
+    assert given.returncode == 0, f"release fell over: {given.stderr!r}"
+    assert "Stream wave9/4 released." in given.stdout, (
+        f"release didn't find the older version's claim and orphaned the stream: {given.stdout!r}"
+    )
+    fields = read_claim_json(orphan)
+    assert fields is not None and fields.get("state") == "released", (
+        f"release wrote into the wrong file — the older version's claim stayed open: {fields!r}"
+    )
+    assert len(read_registry(registry_dir(board))) == 1, (
+        "release started a new claim file instead of writing into the one it found"
+    )
+
+
+@needs_pwsh
+def test_when_git_cannot_name_the_tree_root_claim_and_release_refuse_aloud(tmp_path: Path) -> None:
+    """git doesn't answer — claim and release refuse aloud, the delivery hook works on.
+
+    A silent fallback to the current folder would change the session's IDENTITY, and the blow would
+    land in the worst place: release would stop finding its own claim and would exit with success.
+    For a tolerant reader the same fallback is harmless — a miss there costs one invisible line,
+    not a stream.
+
+    The scene: the repository marker is in place, but git can say nothing about it. That is exactly
+    the fork where a fallback is dangerous; where there is no repository at all there is no tree
+    either — the current folder is then the session's only identity, and there is nothing for the
+    keys to diverge from.
+    """
+    board = tmp_path / "board.jsonl"
+    tab = tmp_path / "tab"
+    tab.mkdir()
+    (tab / ".git").write_text("gitdir: Q:/no-such-path/.git", encoding="utf-8")
+
+    denied = tool(board, "-Mode", "Claim", "-Wave", "wave9", "-Stream", "5", cwd=tab)
+    assert denied.returncode != 0, (
+        f"the claim went through with an unknown session key: {denied.stdout!r}"
+    )
+    assert "couldn't work out the worktree root" in denied.stderr, (
+        f"the refusal didn't name a reason: {denied.stderr!r}"
+    )
+    assert not list(registry_dir(board).glob("*.json")), (
+        "the claim landed after all — under a key by which nobody will find it later"
+    )
+
+    refused = release(board, tab)
+    assert refused.returncode != 0, f"release reported success blindly: {refused.stdout!r}"
+    assert "couldn't work out the worktree root" in refused.stderr, (
+        f"release didn't name the reason for its refusal: {refused.stderr!r}"
+    )
+
+    assert run_deliver(board, tab, "Prompt", "s-silent-git").strip() == "", (
+        "the delivery hook spoke up where there is nothing to show"
+    )
+    assert (tab / BEACON).exists(), (
+        "the delivery hook fell silent because of git — it is told to work off the current folder, "
+        "and to do it quietly"
+    )
+
+
+@needs_pwsh
+@needs_git
+def test_release_closes_the_claim_of_the_very_folder_it_was_run_from(tmp_path: Path) -> None:
+    """Stand in exactly a record's folder — THAT record is released, not the tree root's one.
+
+    The reviewer's scene in full. Two records in the registry: a live one filed from the tree root,
+    and a ghost whose worktree folder is a subfolder of that same tree (that is how the older
+    version's claims lie). Display prints the folder FROM THE RECORD and advises "release the spare
+    one by standing in exactly its folder" — and the human does just that.
+
+    While release first resolved the folder up to the tree ROOT, that single printed way out was
+    not merely unworkable but harmful: from the ghost's folder the LIVE record got closed, the
+    ghost stayed open and went on holding the address, and the human was told it had succeeded.
+    Reproduced on a live scene.
+
+    The reverse (a session in a subfolder, its own record at the root) must meanwhile keep working
+    as before — it is checked separately, in the same place where a claim from the root meets a
+    release from a subfolder.
+    """
+    real_worktrees(tmp_path, {"tab": "tab-branch"})
+    board = tmp_path / "board.jsonl"
+    tab = tmp_path / "tab"
+    deep = subfolder_of(tab)
+
+    claim(board, tab, "wave9", "3", "-StreamName", "Live stream")
+    live = claim_of(board, tab, only_open=True)
+    live_before = live.file.read_bytes()
+    ghost = put_claim(
+        registry_dir(board),
+        "ghost-from-subfolder",
+        **open_claim(str(deep), wave="wave9", stream="4", name="Ghost", seen_at=now_minus(3)),
+    )
+
+    given = release(board, deep)
+
+    assert given.returncode == 0, f"release from the ghost's folder fell over: {given.stderr!r}"
+    assert "Stream wave9/4 released." in given.stdout, (
+        "release closed the wrong record: the human stood in the ghost's folder, yet the root's "
+        f"stream was released — the ghost went on holding the address: {given.stdout!r}"
+    )
+    assert (read_claim_json(ghost) or {}).get("state") == "released", (
+        f"the ghost stayed open: {read_claim_json(ghost)!r}"
+    )
+    assert live.file.read_bytes() == live_before, (
+        "the root's live record changed — it was released instead of the ghost, and the session "
+        "will never learn of it"
+    )
+
+    # ‼️ Release must name WHAT it closed: the address, the name and the worktree folder. While only
+    # the address was printed, a swapped record was not visible to the human at all.
+    assert "Ghost" in given.stdout, (
+        f"release didn't name the closed claim — a swapped record isn't visible: {given.stdout!r}"
+    )
+    assert folder_key(deep) in folder_key(given.stdout), (
+        f"release didn't name the worktree folder of the claim it closed: {given.stdout!r}"
+    )
+
+
+# ─────────────────────────────────────────────────────────────────────────────────────────────
+# "Not visible" is not "not there". The probe answering "is there a repository here at all" knows
+# THREE answers, and the third ("couldn't tell") is a refusal in strict mode, not a quiet fallback.
+
+MARKER_STAND = """param([string]$Lib, [string]$StartDir, [string]$Marker)
+[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+. $Lib
+if ($StartDir) {
+    (Get-RepoMarkerState -StartDir $StartDir).Kind
+    exit 0
+}
+# We substitute the probe's answer. The scene "the drive dropped out from under a running process"
+# can't be built on a live machine: a process can't have its current folder taken away, and it
+# can't be started in one that doesn't exist. The probe itself is checked by the neighbouring test,
+# on a genuinely dead path; what is checked here is the FORK that rests on its answer.
+function Get-RepoMarkerState {
+    param([string]$StartDir)
+    return [pscustomobject]@{ Kind = $Marker; Reason = 'substituted by the check' }
+}
+try { "strict: $(Get-TreeRoot -Strict)" } catch { "strict refused: $($_.Exception.Message)" }
+"tolerant: $(Get-TreeRoot)"
+"""
+
+
+def dead_folder_path() -> Path:
+    """A folder on a drive this machine does NOT have — an unreachable path all the way through.
+
+    The letter is picked the same way as for the dead board: a hard-wired one may turn out to be
+    live, and the scene would silently change its meaning.
+    """
+    return dead_board_path().parent / "tab"
+
+
+def marker_stand(tmp_path: Path) -> Path:
+    """A stand that dot-sources the library: there is no other way to reach the probe itself."""
+    stand = tmp_path / "marker-stand.ps1"
+    stand.write_text(MARKER_STAND, encoding="utf-8")
+    return stand
+
+
+def ask_marker(stand: Path, start: Path) -> str:
+    assert pwsh
+    done = subprocess.run(
+        [
+            pwsh,
+            "-NoProfile",
+            "-File",
+            str(stand),
+            "-Lib",
+            str(COORDINATION_DIR / "lib" / "wave-board-lib.ps1"),
+            "-StartDir",
+            str(start),
+        ],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        timeout=60,
+    )
+    assert done.returncode == 0, done.stderr
+    return done.stdout.strip()
+
+
+def ask_tree_root(stand: Path, cwd: Path, marker: str) -> str:
+    """What the strict and tolerant readers of the session key answer to a substituted probe."""
+    assert pwsh
+    done = subprocess.run(
+        [
+            pwsh,
+            "-NoProfile",
+            "-File",
+            str(stand),
+            "-Lib",
+            str(COORDINATION_DIR / "lib" / "wave-board-lib.ps1"),
+            "-Marker",
+            marker,
+        ],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        cwd=str(cwd),
+        timeout=60,
+    )
+    assert done.returncode == 0, done.stderr
+    return done.stdout
+
+
+@needs_pwsh
+@needs_git
+def test_the_repo_marker_tells_apart_no_repo_from_cannot_tell(tmp_path: Path) -> None:
+    """Three answers instead of two: marker found, marker definitely absent, couldn't tell.
+
+    There used to be two answers, and an unreachable path (a dropped drive, a vanished network
+    share) was passed off as "there is no repository here". The difference between them is
+    load-bearing: "no" lets a session work by the current folder, because there is no tree and
+    nothing for the keys to diverge from, while "not visible" grants no such licence — a tree may
+    be there, and a silent fallback would change the session's IDENTITY.
+    """
+    real_worktrees(tmp_path, {"tab": "tab-branch"})
+    stand = marker_stand(tmp_path)
+    plain = tmp_path / "no-repo"
+    plain.mkdir()
+
+    assert ask_marker(stand, plain) == "none", "a folder outside a repository wasn't called 'no'"
+    assert ask_marker(stand, tmp_path / "tab") == "found", (
+        "the repository marker wasn't found inside a worktree"
+    )
+    assert ask_marker(stand, dead_folder_path()) == "unknown", (
+        "an unreachable path was passed off as 'there is no repository here' — and that is a "
+        "licence for a session to change its own identity silently"
+    )
+
+
+@needs_pwsh
+def test_an_unreadable_marker_refuses_aloud_to_the_strict_and_stays_silent_for_the_rest(
+    tmp_path: Path,
+) -> None:
+    """A "couldn't tell" answer refuses aloud where a stream's fate hangs on the key.
+
+    Claim and release read a session's key strictly: their silent fallback to the current folder
+    hits the most expensive place — release stops finding its own claim and exits with SUCCESS. For
+    the hook and display the same fallback is harmless, a miss there costs one invisible line, and
+    refusing them is not allowed.
+
+    The answer "there is no repository here at all" must meanwhile stay quiet for both: there is no
+    tree, so there is nothing for the keys to diverge from — otherwise the toolkit would stop
+    working everywhere a plain folder stands in place of a repository.
+    """
+    stand = marker_stand(tmp_path)
+    plain = tmp_path / "no-repo"
+    plain.mkdir()
+
+    unknown = ask_tree_root(stand, plain, "unknown")
+    assert "strict refused" in unknown, (
+        f"on 'couldn't tell' the strict reader changed the session's identity silently: {unknown!r}"
+    )
+    assert "not seeing something is not the same" in unknown and "substituted by the check" in unknown, (
+        "the refusal named neither the substance nor the reason — the human has nothing to go and "
+        f"sort it out with: {unknown!r}"
+    )
+    assert "tolerant: " in unknown, (
+        f"the tolerant reader refused too — the delivery hook is required to be mute: {unknown!r}"
+    )
+
+    none = ask_tree_root(stand, plain, "none")
+    assert "strict refused" not in none and "strict: " in none, (
+        f"where there is no repository at all the strict reader refused for nothing: {none!r}"
+    )
+
+
+@needs_pwsh
+@needs_git
+def test_a_worktree_written_in_another_case_is_still_the_same_folder(tmp_path: Path) -> None:
+    """The worktree folder recorded in a claim is compared with the session key WITHOUT case.
+
+    ‼️ Honestly: against the code from before this change the check is GREEN — the shell compares
+    strings case-insensitively by itself, and all five comparisons silently inherited that. It is
+    added not as proof of a fix but as a guard for a property that stopped resting on the shell's
+    default: normalizing the worktree folder is now ONE for the whole toolkit and folds case
+    EXPLICITLY, because the same key is used by ordering (which compares strings byte by byte) and
+    by sets, where the shell's convention doesn't hold.
+
+    Let the session key part from the recorded folder by so much as the case of the drive letter,
+    and the session would count its own claim as a rival, lose its memory of former branch names,
+    and fail to recognize itself in the display.
+    """
+    real_worktrees(tmp_path, {"tab": "tab-branch"})
+    board = tmp_path / "board.jsonl"
+    tab = tmp_path / "tab"
+
+    claim(board, tab, "wave9", "3", "-StreamName", "Letter case")
+
+    def spell_loudly() -> None:
+        """Rewrites the claim's worktree folder in another case — as another source might have."""
+        record = claim_of(board, tab, only_open=True)
+        record.fields["worktree"] = str(record.fields["worktree"]).upper()
+        write_claim(record)
+
+    spell_loudly()
+    again = claim(board, tab, "wave9", "3", "-StreamName", "Letter case")
+    assert "has an open claim on this same stream" not in again, (
+        f"the session counted its own claim as a rival: {again!r}"
+    )
+    assert len(read_registry(registry_dir(board))) == 1, (
+        "the claim started a second one — the recorded folder wasn't recognized as its own"
+    )
+
+    spell_loudly()
+    listed = run_tool(board, "-Mode", "Streams", cwd=tab)
+    assert "this is you" in listed, f"the session didn't see itself in the display: {listed!r}"
+
+    spell_loudly()
+    given = release(board, tab)
+    assert "Stream wave9/3 released." in given.stdout, (
+        f"release didn't find its own claim because of case: {given.stdout!r} / {given.stderr!r}"
+    )
+
+
+# ─────────────────────────────────────────────────────────────────────────────────────────────
+# Visibility: the worktree folder in the display, the "this is you" mark, a full ordering of lines,
+# a loud line about a doubled address. Without it both of the coming refusals ("folder taken",
+# "address taken") are unworkable: they name SOMEONE ELSE'S worktree folder to the human, and today
+# there is nowhere for them to see it.
+
+
+def shown_streams(text: str) -> list[str]:
+    """The stream lines of the display — in the order they were printed.
+
+    A stream line starts with two spaces; the note under a loud line starts with three, and it
+    doesn't belong to the ordering.
+    """
+    return [
+        line for line in text.splitlines() if line.startswith("  ") and not line.startswith("   ")
+    ]
+
+
+def stream_line_of(text: str, folder: Path) -> str:
+    """The display line belonging to EXACTLY this worktree folder.
+
+    Picking it out by the path occurring anywhere won't do: a superseded record names on the same
+    line the folder the address WENT TO — and a neighbour's line would be found along with one's
+    own. So we check exactly the folder the line calls its own.
+    """
+    wanted = folder_key(folder)
+    found = [
+        line
+        for line in shown_streams(text)
+        if (named := re.search(r", folder ([^,)]+)", line)) and folder_key(named.group(1)) == wanted
+    ]
+    assert len(found) == 1, f"display lines for folder {folder}: {len(found)}, not one: {text!r}"
+    return found[0]
+
+
+def shown_folders(text: str) -> list[str]:
+    """The worktree folders named by the stream lines — in the same order."""
+    found: list[str] = []
+    for line in shown_streams(text):
+        folder = re.search(r", folder ([^,)]+)", line)
+        if folder:
+            found.append(folder_key(folder.group(1)))
+    return found
+
+
+@needs_pwsh
+def test_show_keeps_one_order_on_the_same_registry(
+    tmp_path: Path, registry_invariants: RegistryWatch
+) -> None:
+    """Two runs of the display on one registry give ONE order of lines, and that order is full.
+
+    Display used to sort only by wave and stream number. Two records on one address don't happen in
+    a sound registry — but the change ships onto a dirty one, where such pairs already lie as a
+    legacy of the "a takeover doubles the address" defect. On them the sort key ran out, and the
+    order was decided by the directory listing: a human couldn't compare two runs by eye, while
+    decisions about such a pair are made by accepting a finding.
+
+    The scene is built so that the directory listing ARGUES with the right order: the later claim's
+    file is named earlier alphabetically than the earlier claim's. Had they agreed, the check would
+    have gone green silently on an unsorted display too.
+    """
+    registry_invariants.waive(
+        "two open records on one address are assembled deliberately: this is the legacy of the "
+        "defect for whose sake the ordering is being made full"
+    )
+    board = tmp_path / "board.jsonl"
+    folder = registry_dir(board)
+    late = tmp_path / "late"
+    early = tmp_path / "early"
+    put_claim(
+        folder,
+        "aa-late",
+        **open_claim(str(late), wave="wave9", stream="3", claimed_at="2026-09-02T18:00:00"),
+    )
+    put_claim(
+        folder,
+        "zz-early",
+        **open_claim(str(early), wave="wave9", stream="3", claimed_at="2026-09-01T09:00:00"),
+    )
+    put_claim(
+        folder,
+        "mm-other-number",
+        **open_claim(str(tmp_path / "other"), wave="wave9", stream="1"),
+    )
+
+    first = run_tool(board, "-Mode", "Streams")
+    second = run_tool(board, "-Mode", "Streams")
+
+    assert shown_streams(first) == shown_streams(second), (
+        "two runs of the display on one registry gave a different order of lines — they can't be "
+        "compared by eye"
+    )
+    assert shown_folders(first) == [
+        folder_key(tmp_path / "other"),
+        folder_key(early),
+        folder_key(late),
+    ], (
+        "the display doesn't go by the full key (wave, number, time of claim, path): the order of "
+        f"two records on one address is decided by the directory listing — {shown_streams(first)!r}"
+    )
+
+
+@needs_pwsh
+@needs_git
+def test_show_prints_the_worktree_and_marks_your_own(tmp_path: Path) -> None:
+    """A stream line names the worktree folder and marks your own record.
+
+    Both refusals name someone else's folder to the human. While the display printed only the
+    address, the name and the branch, there was nowhere to find that folder — that is, the refusal
+    was unworkable: a human could neither recognize themselves in it nor see whether it is alive.
+    """
+    real_worktrees(tmp_path, {"tab": "alpha"})
+    board = tmp_path / "board.jsonl"
+    tab = tmp_path / "tab"
+    gone = tmp_path / "vanished"
+    claim(board, tab, "wave9", "3", "-StreamName", "Visibility")
+    put_claim(registry_dir(board), "theirs", **open_claim(str(gone), wave="wave9", stream="8"))
+
+    listed = run_tool(board, "-Mode", "Streams", cwd=tab)
+
+    mine = [line for line in shown_streams(listed) if line.startswith("  wave9/3")]
+    theirs = [line for line in shown_streams(listed) if line.startswith("  wave9/8")]
+    assert len(mine) == 1 and len(theirs) == 1, f"the display didn't name both streams: {listed!r}"
+    assert folder_key(tab) in folder_key(mine[0]), (
+        f"your own line didn't name the worktree folder — the refusal is unworkable: {mine[0]!r}"
+    )
+    assert "this is you" in mine[0], (
+        f"your own record isn't marked — a human won't tell it from someone else's: {mine[0]!r}"
+    )
+    assert folder_key(gone) in folder_key(theirs[0]), (
+        f"someone else's line didn't name the worktree folder: {theirs[0]!r}"
+    )
+    assert "this is you" not in theirs[0], f"someone else's record is marked yours: {theirs[0]!r}"
+    assert "folder is gone" in theirs[0], (
+        f"the record's folder isn't on disk, and the evidence for it isn't printed: {theirs[0]!r}"
+    )
+    assert "folder is gone" not in mine[0], f"a live folder was declared vanished: {mine[0]!r}"
+
+
+@needs_pwsh
+def test_show_shouts_about_a_doubled_address(
+    tmp_path: Path, registry_invariants: RegistryWatch
+) -> None:
+    """A doubled address is said aloud on a line of its own, with both worktree folders.
+
+    Two similar-looking lines in a list a human will scroll straight past; decisions about such a
+    pair, meanwhile, are made by accepting a finding, and made by the order of a directory listing.
+    So the doubling is spoken of loudly and with evidence: both folders are named, and there is
+    somewhere to go and sort it out.
+    """
+    registry_invariants.waive(
+        "a doubled address is assembled deliberately — we check that the display shouts about it "
+        "rather than staying quiet"
+    )
+    board = tmp_path / "board.jsonl"
+    folder = registry_dir(board)
+    first = tmp_path / "first"
+    second = tmp_path / "second"
+    put_claim(folder, "one", **open_claim(str(first), wave="wave9", stream="3"))
+    put_claim(folder, "another", **open_claim(str(second), wave="wave9", stream="3"))
+
+    listed = run_tool(board, "-Mode", "Streams")
+
+    loud = [line for line in listed.splitlines() if line.startswith("‼️")]
+    assert len(loud) == 1, f"the display didn't say the doubled address aloud: {listed!r}"
+    assert "wave9/3" in loud[0], f"the loud line didn't name the doubled address: {loud[0]!r}"
+    assert folder_key(first) in folder_key(loud[0]) and folder_key(second) in folder_key(loud[0]), (
+        f"the loud line didn't name both worktree folders — nowhere to go and look: {loud[0]!r}"
+    )
+
+    # ‼️ And the main thing: the loud line must not vanish on an EMPTY filter by task. It was counted
+    # before the filter even earlier, but printed after it — that is, it disappeared in exactly the
+    # most dangerous answer. "No one has taken the task" reads as licence to take that piece up,
+    # while at that very moment two records are running it at once, and who gets a finding is
+    # decided by the order of the directory listing.
+    empty = run_tool(board, "-Mode", "Streams", "-Task", "42")
+    assert "isn't claimed by any stream" in empty, (
+        f"the scene is built wrong — the filter by task found something: {empty!r}"
+    )
+    still_loud = [line for line in empty.splitlines() if line.startswith("‼️")]
+    assert len(still_loud) == 1 and "wave9/3" in still_loud[0], (
+        "the answer 'no one has taken the task' says nothing at all about the doubled address — "
+        f"and that is exactly a licence to take up a piece that two are running: {empty!r}"
+    )
+
+    # And the other side: on a sound registry the display is quiet, not shouting for nothing.
+    calm = tmp_path / "calm" / "board.jsonl"
+    put_claim(registry_dir(calm), "one", **open_claim(str(first), wave="wave9", stream="3"))
+    quiet = [
+        line for line in run_tool(calm, "-Mode", "Streams").splitlines() if line.startswith("‼️")
+    ]
+    assert not quiet, "the display shouts about doubling where one record falls on the address"
+
+
+@needs_pwsh
+@needs_git
+def test_a_claim_filed_by_the_older_version_from_a_subfolder_still_gets_its_mail(
+    tmp_path: Path,
+) -> None:
+    """An older version's claim from a subfolder is found not only by release but by the hook too.
+
+    A session's key is now the worktree root, while such claims lie under a subfolder's key.
+    Release looks for them by a second route (the worktree folder recorded in the claim), whereas
+    the delivery hook read only the canonical key — and out came the worst of all possible things:
+    accepting a finding takes it with a cheerful "a session is running that stream, it will get
+    there on its own", and it never reaches the session. The hook takes the stream address FROM its
+    own claim: without it, it doesn't know what the stream is called.
+
+    ‼️ The expectation about the file staying unchanged is INVERTED here deliberately. The check used
+    to pin down that the hook doesn't touch a claim found by the second route by a single byte —
+    and along with that it pinned down its eternal silence: the liveness mark and the list of
+    touched files were set by the hook only under the canonical key, and such a claim's key is a
+    different one. A day later it landed in the owner's summary of what is stuck, and the
+    neighbours stopped counting the session alive — that is, a finding would go into "Wave Loose
+    Ends" past the very human sitting at the screen.
+
+    It is safe for exactly this reason: the second route searches by an EXACT match of the worktree
+    folder, which means the record it finds belongs to this very session and the file gains no
+    second writer. The general ban on writing into SOMEONE ELSE'S claim file stands, and it is
+    checked here as well that the hook still doesn't CREATE files: the file name stays the same,
+    and no second one shows up in the registry.
+    """
+    real_worktrees(tmp_path, {"tab": "orphan-branch"})
+    board = tmp_path / "board.jsonl"
+    tab = tmp_path / "tab"
+    deep = subfolder_of(tab)
+    orphan = put_claim(
+        registry_dir(board),
+        "older-version-claim",
+        **open_claim(str(deep), wave="wave9", stream="4", seen_at=now_minus(3)),
+    )
+    before = read_claim_json(orphan) or {}
+
+    add(board, "wave9/4", "a finding for the address", cwd=tmp_path)
+    brought = run_deliver(board, deep, "Start", "s-orphan-from-subfolder")
+
+    assert "a finding for the address" in brought, (
+        "a finding taken with the report 'it will get there on its own' never reached the session: "
+        f"the delivery hook didn't find the older version's claim — {brought!r}"
+    )
+    records = read_registry(registry_dir(board))
+    assert len(records) == 1, (
+        "the delivery hook started a second file in the registry — creating files stays forbidden "
+        "to it after the change too"
+    )
+    assert records[0].file == orphan, (
+        f"the hook moved the claim into another file ({records[0].file.name}) — it is only allowed "
+        "to write into the one it found"
+    )
+    after = read_claim_json(orphan) or {}
+    assert str(after.get("seen_at", "")) > str(before.get("seen_at", "")), (
+        "the liveness mark wasn't updated: the older version's claim gets its mail but from outside "
+        f"looks silent — in a day it goes to the summary of what's stuck ({before=}, {after=})"
+    )
+    assert after.get("state") == "open" and after.get("wave") == "wave9", (
+        f"the hook rewrote the claim instead of marking it: {after!r}"
+    )
+
+
+# ─────────────────────────────────────────────────────────────────────────────────────────────
+# The folder rule: one worktree folder holds no more than ONE unclosed claim.
+#
+# There is physically one claim per folder — its name is derived from the path. So announcing another
+# stream from a taken folder does not "argue", it ERASES the previous entry silently, with a success
+# code: the previous stream's tasks look untaken, no one addresses findings to it, and its own release
+# at the end closes someone else's entry. That is how stream 9 of wave 5 vanished without a trace in a
+# neighbouring project on 31.08.2026.
+#
+# Hence the place of the refusal — BEFORE writing. A warning AFTER is pointless here: there is nothing
+# left to erase.
+
+
+def tool_source() -> str:
+    """The tool's own text — the ABSENCE of a switch is checked against it, not just behaviour."""
+    return TOOL.read_text(encoding="utf-8")
+
+
+def tool_switches() -> set[str]:
+    """The tool's switches, as declared in its own parameter block."""
+    source = tool_source()
+    start = source.index("\nparam(")
+    return set(re.findall(r"\[switch\]\$(\w+)", source[start : source.index("\n)", start)]))
+
+
+def claim_block() -> str:
+    """The text of the announcing block — from its own heading to the release heading."""
+    source = tool_source()
+    start = source.index("\n    'Claim' {")
+    return source[start : source.index("\n    'Release' {", start)]
+
+
+def folder_taken_refusal(
+    board: Path, tab: Path, *, address: str, name: str, tasks: str, branch: str, state: str
+) -> list[str]:
+    """The folder rule's refusal WHOLE — in the very lines the decision promises.
+
+    Checked WHOLE, and not by the address occurring in it: half the refusal's work is three ways out
+    with the values already filled in. Had we checked the address alone, the refusal could have stayed
+    a dead end (the session is told "you may not" and not told what to do), and the check would not
+    have noticed.
+    """
+    kept = claim_of(board, tab, only_open=True)
+    wave = str(kept.fields.get("wave", ""))
+    stream = str(kept.fields.get("stream", ""))
+    stamp = datetime.fromisoformat(str(kept.fields["claimed_at"])).strftime("%Y-%m-%d %H:%M")
+    return [
+        f'this worktree folder already holds a different stream: {wave}/{stream} "{name}", '
+        f"tasks {tasks} — {state}, branch {branch}, claimed {stamp}.",
+        f"There is ONE claim per folder: announcing stream {address} would erase it silently — the "
+        "previous stream's tasks would look untaken, no one would address findings to it, and its "
+        "release at the end would close someone else's entry.",
+        "The previous stream is finished — release it right here: pwsh scripts/wave-board.ps1 "
+        "-Mode Release",
+        "This is that same stream and you're announcing it again — name its address: pwsh "
+        f"scripts/wave-board.ps1 -Mode Claim -Wave {wave} -Stream {stream}",
+        "The work is new — set up a separate worktree and announce from there.",
+    ]
+
+
+@needs_pwsh
+@needs_git
+def test_another_address_from_a_taken_folder_is_refused_before_a_single_byte_is_written(
+    tmp_path: Path,
+) -> None:
+    """Another stream from a taken folder — refused, and the previous claim intact BYTE FOR BYTE.
+
+    Byte for byte, because "the stream was not lost" and "the file was rewritten with the same fields"
+    look alike from outside and cost differently: a rewritten claim loses the moment it was claimed
+    (that is, its seniority in the dispute over the number) and the memory of former branch names, the
+    ones findings still travel to the stream by.
+
+    The refusal has to be actionable: it names the previous stream whole (address, name, tasks, state,
+    branch and the moment it was claimed) and prints THREE ways out as ready-made lines. Otherwise the
+    session hits a non-zero code on its very first action, decides the tool is broken and goes off to
+    work with no claim — and a session invisible from outside is worse than any of the defects the
+    rule fixes.
+    """
+    real_worktrees(tmp_path, {"tab": "taken-folder-branch"})
+    board = tmp_path / "board.jsonl"
+    tab = tmp_path / "tab"
+    claim(board, tab, "wave9", "8", "-StreamName", "Occupier", "-Tasks", "10-13")
+    kept = claim_of(board, tab, only_open=True)
+    before = kept.file.read_bytes()
+    expected = folder_taken_refusal(
+        board,
+        tab,
+        address="wave9/3",
+        name="Occupier",
+        tasks="10-13",
+        branch="taken-folder-branch",
+        state="live",
+    )
+
+    denied = tool(board, "-Mode", "Claim", "-Wave", "wave9", "-Stream", "3", cwd=tab)
+
+    assert denied.returncode != 0, (
+        f"announcing another stream from a taken folder went through: {denied.stdout!r}"
+    )
+    assert kept.file.read_bytes() == before, (
+        "the previous claim's file was touched — and with it went the stream's seniority and the "
+        "memory of the branch names findings still travel to it by"
+    )
+    said_lines = said(denied.stderr)
+    for line in expected:
+        assert line in said_lines, (
+            f"a line of the refusal was reworded or lost: {line!r} — {denied.stderr!r}"
+        )
+    records = read_registry(registry_dir(board))
+    assert len(records) == 1, f"a second entry appeared in the registry: {names_of(records)}"
+    assert records[0].address == "wave9/8" and not records[0].released, (
+        f"the previous stream vanished from the registry or closed itself: {records[0].fields!r}"
+    )
+
+
+@needs_pwsh
+@needs_git
+def test_a_different_wave_with_the_same_stream_number_is_refused_before_a_single_byte_is_written(
+    tmp_path: Path,
+) -> None:
+    """The same stream NUMBER but from a DIFFERENT wave — also refused, previous claim intact byte for byte.
+
+    The neighbouring check above takes the edge "same wave, different number". This one is its mirror:
+    the number is the very same, the wave is different. A stream's address is the pair (wave, number)
+    WHOLE, and either of the two halves can fail to match on its own. Were the rule to check the number
+    alone, forgetting the wave, it would decide that announcing wave B with wave A's number is that
+    same stream announcing again, and it would erase A's claim silently: the same defect of 31.08.2026
+    (see the neighbouring check), only from the other side of the pair.
+    """
+    real_worktrees(tmp_path, {"tab": "taken-folder-other-wave-branch"})
+    board = tmp_path / "board.jsonl"
+    tab = tmp_path / "tab"
+    claim(board, tab, "wave9", "8", "-StreamName", "Occupier", "-Tasks", "10-13")
+    kept = claim_of(board, tab, only_open=True)
+    before = kept.file.read_bytes()
+    expected = folder_taken_refusal(
+        board,
+        tab,
+        address="wave10/8",
+        name="Occupier",
+        tasks="10-13",
+        branch="taken-folder-other-wave-branch",
+        state="live",
+    )
+
+    denied = tool(board, "-Mode", "Claim", "-Wave", "wave10", "-Stream", "8", cwd=tab)
+
+    assert denied.returncode != 0, (
+        f"announcing a different wave with the same stream number from a taken folder went through: {denied.stdout!r}"
+    )
+    assert kept.file.read_bytes() == before, (
+        "the previous claim's file was touched — and with it went the stream's seniority and the "
+        "memory of the branch names findings still travel to it by"
+    )
+    said_lines = said(denied.stderr)
+    for line in expected:
+        assert line in said_lines, (
+            f"a line of the refusal was reworded or lost: {line!r} — {denied.stderr!r}"
+        )
+    records = read_registry(registry_dir(board))
+    assert len(records) == 1, f"a second entry appeared in the registry: {names_of(records)}"
+    assert records[0].address == "wave9/8" and not records[0].released, (
+        f"the previous stream vanished from the registry or closed itself: {records[0].fields!r}"
+    )
+
+
+@needs_pwsh
+@needs_git
+def test_the_same_claim_goes_through_once_the_previous_stream_is_released(tmp_path: Path) -> None:
+    """Release the previous stream, and the same announcement goes through. That is the first way out.
+
+    Without this half the folder rule would be a dead end: the refusal advises releasing the previous
+    stream right here, and if the announcement still does not go through after the release, the advice
+    is a lie. A released claim counts as no obstacle: the session that ran that stream is gone, and
+    the next stream in the same folder is the normal course of work.
+    """
+    real_worktrees(tmp_path, {"tab": "round-trip-branch"})
+    board = tmp_path / "board.jsonl"
+    tab = tmp_path / "tab"
+    claim(board, tab, "wave9", "8", "-StreamName", "Previous", "-Tasks", "10-13")
+    assert (
+        tool(board, "-Mode", "Claim", "-Wave", "wave9", "-Stream", "3", cwd=tab).returncode != 0
+    ), "the check is built wrong: announcing another stream from a taken folder did not refuse"
+
+    assert release(board, tab).returncode == 0, "releasing the previous stream did not go through"
+    passed = claim(board, tab, "wave9", "3", "-StreamName", "Next")
+
+    assert "Stream wave9/3 announced for this session" in passed, (
+        f"after the release the announcement still failed — the way out of the refusal lies: {passed!r}"
+    )
+    assert claim_of(board, tab, only_open=True).address == "wave9/3", (
+        "the new stream did not take the place of the released one"
+    )
+
+
+@needs_pwsh
+@needs_git
+def test_no_key_at_all_lets_a_claim_overwrite_the_stream_that_holds_the_folder(
+    tmp_path: Path,
+) -> None:
+    """There is NO force-overwrite switch in the tool AT ALL — and none must ever appear.
+
+    A neighbouring copy has such a switch, and it is overloaded with a second, harmless meaning
+    (releasing with a non-empty inbox) that the tool itself recommends — hence the habit of hitting it
+    without looking. And destructive it is without any need: releasing the previous stream happens in
+    that very same folder, loses nothing and gives the same outcome. So the whole class is cut out,
+    not the one case.
+
+    It is exactly the ABSENCE that is checked, in four ways at once: the tool has exactly four known
+    switches (a new bypass would have to be declared as a fifth), the announcing block does not
+    mention a force switch (a second meaning cannot be fitted to it unnoticed), the folder rule's
+    refusal prints no switch at all — otherwise the session would take the single printed way out —
+    and the address MOVE switch does not bypass the folder rule either.
+
+    ‼️ That last one is the real protection today. The move switch is the only switch added to
+    announcing after the class of bypasses was cut out, and the temptation to fit it with a second
+    meaning ("erase whatever was lying here while you are at it") is exactly the one that made a
+    neighbour's stream vanish silently. A move takes the ADDRESS away from another folder and writes
+    not one byte into the other file; it does not touch YOUR OWN folder's claim and does not cancel
+    the folder rule.
+    """
+    real_worktrees(tmp_path, {"tab": "no-bypass-branch"})
+    board = tmp_path / "board.jsonl"
+    tab = tmp_path / "tab"
+    claim(board, tab, "wave9", "8", "-StreamName", "Holds the folder", "-Tasks", "10-13")
+    kept = claim_of(board, tab, only_open=True)
+    before = kept.file.read_bytes()
+
+    forced = tool(board, "-Mode", "Claim", "-Wave", "wave9", "-Stream", "3", "-Force", cwd=tab)
+
+    assert forced.returncode != 0, (
+        f"the release-with-a-non-empty-inbox switch worked as a bypass of the folder rule: {forced.stdout!r}"
+    )
+    assert kept.file.read_bytes() == before, "the previous stream's claim was overwritten by a switch"
+    assert tool_switches() == {"AllowUnknownStream", "ForAll", "Force", "TakeOver"}, (
+        f"a new switch appeared in the tool: {sorted(tool_switches())} — if it is a bypass of the "
+        "folder rule, streams will start vanishing silently again"
+    )
+    assert "$Force" not in claim_block(), (
+        "the announcing block mentions the force switch again — a second meaning turns it into a "
+        "switch people hit without looking"
+    )
+    offered = [line for line in said(forced.stderr) if "-Force" in line]
+    assert not offered, f"the refusal offers a switch instead of three harmless ways out: {offered!r}"
+
+    taken = tool(board, "-Mode", "Claim", "-Wave", "wave9", "-Stream", "3", "-TakeOver", cwd=tab)
+
+    assert taken.returncode != 0, (
+        f"the move switch worked as a bypass of the folder rule: {taken.stdout!r}"
+    )
+    assert "this worktree folder already holds a different stream" in taken.stderr, (
+        f"the wrong guard refused — the folder rule was bypassed: {taken.stderr!r}"
+    )
+    assert kept.file.read_bytes() == before, "the previous claim was overwritten by the move switch"
+
+
+@needs_pwsh
+@needs_git
+def test_the_registry_lock_is_free_the_moment_the_folder_rule_refuses(tmp_path: Path) -> None:
+    """After a refusal the registry lock is let go: a neighbouring session announces at once, no wait.
+
+    The refusal comes from under the lock taken for picking a number. Were the tool to leave without
+    letting it go, every neighbouring session would pay half a minute of waiting for someone else's
+    refusal on its very first action — and after the wait it would announce WITHOUT the lock, that is,
+    on a number that could collide with a neighbour's.
+    """
+    real_worktrees(tmp_path, {"tab": "refusal-branch", "neighbour": "neighbour-branch"})
+    board = tmp_path / "board.jsonl"
+    tab = tmp_path / "tab"
+    mate = tmp_path / "neighbour"
+    claim(board, tab, "wave9", "8", "-StreamName", "Occupier", "-Tasks", "10-13")
+    denied = tool(board, "-Mode", "Claim", "-Wave", "wave9", "-Stream", "3", cwd=tab)
+    assert denied.returncode != 0, "the check is built wrong: there was no refusal"
+
+    started = time.monotonic()
+    neighbour = tool(board, "-Mode", "Claim", "-Wave", "wave9", "-Stream", "4", cwd=mate)
+    elapsed = time.monotonic() - started
+
+    assert neighbour.returncode == 0, f"the neighbouring session did not announce: {neighbour.stderr!r}"
+    assert "Waiting for the claim registry lock" not in neighbour.stdout, (
+        f"the neighbour waited on a lock abandoned by the refusal: {neighbour.stdout!r}"
+    )
+    assert "The claim registry lock wasn't handed over" not in neighbour.stdout, (
+        "the neighbour gave up waiting for the lock and picked a number without it — the very case "
+        f"where two streams get one address: {neighbour.stdout!r}"
+    )
+    assert elapsed < 15, (
+        f"the neighbour's announcement took {elapsed:.1f}s against a 30s lock wait limit — it looks "
+        "as if the lock stayed held after the refusal"
+    )
+
+
+@needs_pwsh
+@needs_git
+def test_a_claim_from_a_subfolder_of_a_neighbours_tree_never_erases_their_stream(
+    tmp_path: Path,
+) -> None:
+    """Announcing from a subfolder of SOMEONE ELSE'S tree does not erase the neighbour's claim.
+
+    A session's key is now the worktree root, so announcing from any folder of a neighbour's tree
+    lands on THE SAME key as the neighbour's claim and would overwrite it silently, with a success
+    code. Before, such an announcement made a file of its own and harmed no one — that is, without the
+    folder rule the change of key by itself creates the very defect it fixes.
+
+    The case is not invented: all the project's worktrees lie in one folder, from any of them to any
+    other is exactly one hop, and the rules plainly tell a session to go and look whose piece this is.
+    """
+    real_worktrees(tmp_path, {"neighbour": "neighbour-branch", "tab": "own-branch"})
+    board = tmp_path / "board.jsonl"
+    mate = tmp_path / "neighbour"
+    claim(board, mate, "wave9", "5", "-StreamName", "Neighbour", "-Tasks", "20-22")
+    kept = claim_of(board, mate, only_open=True)
+    before = kept.file.read_bytes()
+
+    denied = tool(board, "-Mode", "Claim", "-Wave", "wave9", "-Stream", "6", cwd=subfolder_of(mate))
+
+    assert denied.returncode != 0, (
+        f"announcing from someone else's subfolder went through — the neighbour's claim is erased: {denied.stdout!r}"
+    )
+    assert kept.file.read_bytes() == before, "the neighbour's claim was overwritten"
+    assert 'wave9/5 "Neighbour", tasks 20-22' in denied.stderr, (
+        f"the refusal did not name the stream that holds this folder: {denied.stderr!r}"
+    )
+    records = read_registry(registry_dir(board))
+    assert len(records) == 1 and records[0].address == "wave9/5", (
+        f"the registry changed although the announcement was refused: {names_of(records)}"
+    )
+
+
+@needs_pwsh
+@needs_git
+def test_a_claim_of_the_older_version_from_a_subfolder_is_written_back_in_place(
+    tmp_path: Path,
+) -> None:
+    """An older version's claim from a subfolder plus an announcement on the same address give ONE entry.
+
+    A claim's file name is derived from the path, and for such claims the key is the subfolder, while
+    the canonical key today is the tree root. Without a second route the announcement made a SECOND
+    open entry of the same stream alongside it: the tool printed the session a warning that it was
+    arguing with itself, and wrote the second entry anyway, with a success code. Which of them a
+    finding would then reach was decided by the directory listing — and that is the very defect the
+    whole change was undertaken for.
+
+    The second route is the one release and the delivery hook already use: an exact match on the
+    worktree folder recorded in the claim. We write back into the FOUND file: not one file is created,
+    deleted or renamed.
+    """
+    real_worktrees(tmp_path, {"tab": "orphan-branch"})
+    board = tmp_path / "board.jsonl"
+    tab = tmp_path / "tab"
+    deep = subfolder_of(tab)
+    orphan = put_claim(
+        registry_dir(board),
+        "older-version-claim",
+        **open_claim(str(deep), wave="wave9", stream="4"),
+    )
+
+    out = claim(board, deep, "wave9", "4", "-StreamName", "The same stream")
+
+    records = read_registry(registry_dir(board))
+    assert len(records) == 1, (
+        f"the announcement made a second entry of the same stream: {names_of(records)} — which of "
+        "them a finding reaches is decided by the directory listing"
+    )
+    assert records[0].file == orphan, (
+        f"the entry landed in a new file instead of the found one: {records[0].file.name}"
+    )
+    assert records[0].fields.get("name") == "The same stream", (
+        f"the announcement never reached the found claim: {records[0].fields!r}"
+    )
+    assert "Another worktree has an open claim" not in out, (
+        f"the session was told that it is arguing with itself: {out!r}"
+    )
+
+
+@needs_pwsh
+@needs_git
+def test_a_claim_of_the_older_version_from_a_subfolder_holds_the_folder_too(tmp_path: Path) -> None:
+    """An older version's claim from a subfolder is your own, and the folder rule sees it.
+
+    Otherwise the second route would itself become a hole: were the rule not to recognize such a claim
+    as THIS folder's claim, an announcement on a different address would write the new stream straight
+    into its file — that is, would erase the previous stream the same way, only more quietly.
+    """
+    real_worktrees(tmp_path, {"tab": "orphan-branch"})
+    board = tmp_path / "board.jsonl"
+    tab = tmp_path / "tab"
+    deep = subfolder_of(tab)
+    orphan = put_claim(
+        registry_dir(board),
+        "older-version-claim",
+        **open_claim(str(deep), wave="wave9", stream="4"),
+    )
+    before = orphan.read_bytes()
+
+    denied = tool(board, "-Mode", "Claim", "-Wave", "wave9", "-Stream", "9", cwd=deep)
+
+    assert denied.returncode != 0, (
+        f"another stream was written over an older version's claim: {denied.stdout!r}"
+    )
+    assert orphan.read_bytes() == before, "the older version's claim was overwritten"
+    assert "wave9/4" in denied.stderr, f"the refusal did not name the folder's holder: {denied.stderr!r}"
+
+
+# ─────────────────────────────────────────────────────────────────────────────────────────────
+# The short re-announcement: a session announces again from ITS OWN folder, naming neither the wave
+# nor the number.
+#
+# The wave-substitution ladder had no "your own previous claim" step, so the stream drifted off into
+# the wave named by today's date and lost, along with the address, its name, its tasks, the plan path,
+# the "is there a plan" flag and its seniority in the dispute over the number. Neighbours meanwhile
+# went on addressing findings to the old address, and it was no longer in the registry. With the
+# folder rule the case became VISIBLE (the announcement got refused), but no more correct: the session
+# hit a refusal where it should simply carry on with its own stream.
+#
+# The entry is checked WHOLE, and not by a string occurring in it. Half of what was lost (the moment
+# of the claim, the "is there a plan" flag, the plan path) is not visible from outside at all, and a
+# piecewise check would miss exactly that half — and on the "is there a plan" flag hangs the whole
+# "Wave Loose Ends or a reply to the owner" fork.
+
+
+def claim_stamp(fields: dict[str, object]) -> str:
+    """The moment a claim was made — in the very shape the tool prints it."""
+    return datetime.fromisoformat(str(fields["claimed_at"])).strftime("%Y-%m-%d %H:%M")
+
+
+def reclaimed_the_same_stream(before: dict[str, object], after: dict[str, object]) -> None:
+    """After a short re-announcement the entry must match the previous one WHOLE.
+
+    Except for the liveness mark: that is what says "the session is on the move", and it is supposed
+    to be refreshed. Everything else — the address, the name, the tasks, the plan path, the "is there
+    a plan" flag, the moment of the claim, the memory of branch names, the worktree folder, the state
+    — belongs to the STREAM and not to the call, and a re-announcement does not touch it.
+    """
+    was = {key: value for key, value in before.items() if key != "seen_at"}
+    now = {key: value for key, value in after.items() if key != "seen_at"}
+    assert now == was, (
+        "the short re-announcement changed the stream's entry — so the stream lost part of itself:\n"
+        f"  was: {was}\n"
+        f"  now: {now}"
+    )
+
+
+@needs_pwsh
+def test_a_short_reclaim_continues_a_stream_of_a_named_wave(tmp_path: Path) -> None:
+    """The wave was named in the first announcement — a short reclaim continues THAT SAME stream.
+
+    The costliest of the three cases: in a wave that comes from a plan the stream numbers are declared
+    IN THE PLAN, and a stream that has drifted into the wave named by today's date becomes invisible
+    to neighbours under exactly the address the plan calls it by. Findings go off into the void, with
+    a cheerful report back to the sender.
+    """
+    board = tmp_path / "board.jsonl"
+    tab = tmp_path / "tab"
+    claim(board, tab, "wave9", "3", "-StreamName", "Stream identity", "-Tasks", "10-13")
+    before = dict(claim_of(board, tab, only_open=True).fields)
+    assert before["wave_auto"] is False, (
+        f'the check is built wrong: a named wave has the wrong "is there a plan" flag: {before!r}'
+    )
+
+    out = claim_bare(board, tab)
+
+    reclaimed_the_same_stream(before, dict(claim_of(board, tab, only_open=True).fields))
+    assert (
+        "Wave not named — inherited from your previous entry. You're continuing stream wave9/3 "
+        f'"Stream identity", claimed {claim_stamp(before)}.' in said(out)
+    ), f"the fourth source of the wave is not named, or its line was reworded: {out!r}"
+    assert (
+        "The work is different — release the previous stream right here (-Mode Release) and announce again."
+        in said(out)
+    ), f"the way out of an inherited address is not named: {out!r}"
+    assert "issued the next free one" not in out, (
+        f"an inherited number was passed off as freshly issued — the session was lied to: {out!r}"
+    )
+
+    # The "is there a plan" flag is checked in earnest too: the whole release fork hangs on it.
+    done = release(board, tab)
+    assert done.returncode == 0, done.stderr
+    assert (
+        'Last step — a line for your stream in the wave plan\'s "Stream status" section.'
+        in said(done.stdout)
+    ), f"after the reclaim a stream of a planned wave was left with no plan: {done.stdout!r}"
+
+
+@needs_pwsh
+def test_a_short_reclaim_continues_a_stream_whose_wave_came_from_the_plan_name(
+    tmp_path: Path,
+) -> None:
+    """The wave came from the plan's file name — a short reclaim keeps both it and the plan path.
+
+    The plan path sits in the claim as a field of its own, and losing it is the quietest loss of all:
+    from outside it is not visible at all, yet it is needed where the session is told which section of
+    the plan to write its summary into.
+    """
+    board = tmp_path / "board.jsonl"
+    tab = tmp_path / "tab"
+    tab.mkdir()
+    plan = tab / "2026-08-24-wave9.md"
+    plan.write_text("# wave 9 plan\n", encoding="utf-8")
+    claim_bare(board, tab, "-Plan", str(plan), "-StreamName", "From the plan name", "-Tasks", "1-4")
+    before = dict(claim_of(board, tab, only_open=True).fields)
+    assert before["plan"] == str(plan) and before["wave_auto"] is False, (
+        f"the check is built wrong: the wave did not come from the plan's file name: {before!r}"
+    )
+
+    out = claim_bare(board, tab)
+
+    reclaimed_the_same_stream(before, dict(claim_of(board, tab, only_open=True).fields))
+    assert (
+        "Wave not named — inherited from your previous entry. You're continuing stream wave9/1 "
+        f'"From the plan name", claimed {claim_stamp(before)}.' in said(out)
+    ), f"the fourth source of the wave is not named, or its line was reworded: {out!r}"
+
+    done = release(board, tab)
+    assert done.returncode == 0, done.stderr
+    assert (
+        'Last step — a line for your stream in the wave plan\'s "Stream status" section.'
+        in said(done.stdout)
+    ), f"after the reclaim the stream lost the plan taken from the file name: {done.stdout!r}"
+
+
+@needs_pwsh
+def test_a_short_reclaim_continues_a_stream_of_a_wave_the_tool_invented(tmp_path: Path) -> None:
+    """The tool supplied the wave itself — a reclaim starts no second one and loses no seniority.
+
+    Here the address did not change even before the fix (the tool gave this folder back its previous
+    number), which is why the loss was the least noticeable of all: away went the name, the tasks and
+    the MOMENT OF THE CLAIM — that is, the seniority in the dispute over the number. A session that
+    announced itself again began yielding its number to neighbours who came into the wave LATER than
+    it did.
+    """
+    board = tmp_path / "board.jsonl"
+    tab = tmp_path / "tab"
+    claim_bare(board, tab, "-StreamName", "No plan", "-Tasks", "5-7")
+    before = dict(claim_of(board, tab, only_open=True).fields)
+    assert before["wave_auto"] is True, (
+        f"the check is built wrong: the wave was not supplied by the tool itself: {before!r}"
+    )
+
+    out = claim_bare(board, tab)
+
+    reclaimed_the_same_stream(before, dict(claim_of(board, tab, only_open=True).fields))
+    assert (
+        "Wave not named — inherited from your previous entry. You're continuing stream "
+        f'{today_wave()}/1 "No plan", claimed {claim_stamp(before)}.' in said(out)
+    ), f"the fourth source of the wave is not named, or its line was reworded: {out!r}"
+
+    done = release(board, tab)
+    assert done.returncode == 0, done.stderr
+    assert "No wave plan — nowhere to write a stream line; the summary goes in your reply to the owner." in said(
+        done.stdout
+    ), f"after the reclaim a planless stream acquired a plan: {done.stdout!r}"
+
+
+@needs_pwsh
+def test_a_short_reclaim_of_an_old_claim_does_not_invent_the_flag_it_never_had(
+    tmp_path: Path,
+) -> None:
+    """An older version's claim has no "the wave was supplied itself" flag — and none may be invented.
+
+    Every reader judges such a claim by the name of the wave: `waveN` is a plan's wave, a word or a
+    date is a wave of its own. Let a reclaim invent a value for it, and a wave named by a WORD would
+    suddenly become "supplied by the tool itself" — and a neighbour has every right to join such a
+    wave and take in it a number the plan has already declared. Half the wave's findings would go
+    astray, silently.
+
+    So what is inherited is not a computed value but the field exactly as it lay — together with its
+    absence.
+    """
+    board = tmp_path / "board.jsonl"
+    tab = tmp_path / "tab"
+    claim(board, tab, "sprint-alpha", "1", "-StreamName", "An older version's claim")
+    strip_claim_field(board, tab, "wave_auto")
+    before = dict(claim_of(board, tab, only_open=True).fields)
+    assert "wave_auto" not in before, "the check is built wrong: the flag was not removed from the claim"
+
+    claim_bare(board, tab)
+
+    after = dict(claim_of(board, tab, only_open=True).fields)
+    reclaimed_the_same_stream(before, after)
+    assert "wave_auto" not in after, (
+        f"the reclaim invented a flag the claim never had: {after!r}"
+    )
+
+    # A check in earnest: the neighbour's right to join this wave must not come into being.
+    newcomer = claim_bare(board, tmp_path / "neighbour")
+    assert "sprint-alpha" not in newcomer, (
+        f"the neighbour joined a wave named by a word and took a number in it: {newcomer!r}"
+    )
+
+
+@needs_pwsh
+@needs_git
+def test_a_short_reclaim_keeps_the_names_the_stream_is_remembered_by(tmp_path: Path) -> None:
+    """A short reclaim — and the memory of the stream's former branch names stayed with it.
+
+    Name inheritance is tied to the ADDRESS, and a short announcement names no address. So these two
+    changes hold each other up: were they to drift apart, a session announcing itself again would get
+    a new address and lose with it the names findings still travel to it by. The loss is silent:
+    accepting takes such a finding (the tree is in place) and promises the author delivery, and there
+    is no delivery.
+
+    The trees are real: the branch name is taken from git, and on stub folders there is none at all.
+    """
+    real_worktrees(tmp_path, {"tab": "alpha", "neighbour": "neighbour-branch"})
+    board = tmp_path / "board.jsonl"
+    tab = tmp_path / "tab"
+    neighbour = tmp_path / "neighbour"
+    claim(board, tab, "wave6", "1", "-StreamName", "The same stream")
+    rename_branch(tab, "beta")
+
+    claim_bare(board, tab)
+
+    record = claim_of(board, tab, only_open=True)
+    assert record.address == "wave6/1", (
+        f"the short reclaim moved the stream onto a different address: {record.fields!r}"
+    )
+    assert record.fields["former_branches"] == ["alpha"], (
+        f"the stream forgot the name it was known by before the branch was renamed: {record.fields!r}"
+    )
+
+    offered = tool(
+        board,
+        "-Mode",
+        "Add",
+        "-To",
+        "alpha",
+        "-Title",
+        "by the branch's former name",
+        cwd=neighbour,
+        known=True,
+    )
+    assert offered.returncode == 0, (
+        f"accepting did not recognize the stream by its branch's former name: {offered.stderr!r}"
+    )
+
+    brought = run_deliver(board, tab, "Start", "short-reclaim")
+    assert "by the branch's former name" in brought, (
+        f"the finding sent by the former name was not delivered — it will never arrive: {brought!r}"
+    )
+
+
+@needs_pwsh
+@needs_git
+def test_a_new_stream_over_a_released_one_does_not_inherit_its_names(tmp_path: Path) -> None:
+    """A stream released, the next announced from the same folder — the released one's names stay behind.
+
+    Before, former branch names were carried across on a match of the FOLDER alone. And folders get
+    reused all the time: a stream is released, the next one is announced in the same folder — and the
+    new one began answering to the released one's name and receiving the findings addressed to it. The
+    author who sent a finding by the released stream's branch name read "noted" from a stream they had
+    never named, while the stream itself never saw the finding at all.
+
+    A branch name is a way of addressing a finding to a STREAM, so it is inherited by address (wave
+    and number), and not by folder. That inheritance stayed as it was where the address matches is
+    guarded by the neighbouring check about the short re-announcement.
+    """
+    real_worktrees(tmp_path, {"tab": "alpha", "neighbour": "neighbour-branch"})
+    board = tmp_path / "board.jsonl"
+    tab = tmp_path / "tab"
+    neighbour = tmp_path / "neighbour"
+    claim(board, tab, "wave6", "1")
+    # The branch was renamed and re-announced on the same address — the stream now REMEMBERS the old name.
+    rename_branch(tab, "beta")
+    claim(board, tab, "wave6", "1")
+    assert claim_of(board, tab, only_open=True).fields["former_branches"] == ["alpha"], (
+        "the check is built wrong: the stream did not remember its branch's former name"
+    )
+
+    offered = tool(
+        board,
+        "-Mode",
+        "Add",
+        "-To",
+        "alpha",
+        "-Title",
+        "to the released one by its former name",
+        cwd=neighbour,
+        known=True,
+    )
+    assert offered.returncode == 0, f"the finding by the former name was not accepted: {offered.stderr!r}"
+
+    given = release(board, tab, "-Force")
+    assert given.returncode == 0, f"releasing the stream did not go through: {given.stdout!r} {given.stderr!r}"
+
+    claim(board, tab, "wave6", "2", "-StreamName", "Next")
+    record = claim_of(board, tab, only_open=True)
+    assert record.fields["former_branches"] == [], (
+        f"the new stream took the released one's names for itself: {record.fields!r}"
+    )
+
+    # A positive check IN THE SAME environment: what is its own does reach the new stream. Without it
+    # the silence of the check below would be indistinguishable from a dead delivery hook — and it
+    # would go green whatever the code did.
+    mine = tool(
+        board,
+        "-Mode",
+        "Add",
+        "-To",
+        "wave6/2",
+        "-Title",
+        "to the new stream by address",
+        cwd=neighbour,
+        known=True,
+    )
+    assert mine.returncode == 0, f"the finding for the new stream was not accepted: {mine.stderr!r}"
+
+    brought = run_deliver(board, tab, "Start", "folder-reuse")
+    assert "to the new stream by address" in brought, (
+        f"the delivery hook is silent entirely — the check below would be green at any code: {brought!r}"
+    )
+    assert "to the released one by its former name" not in brought, (
+        f"the released stream's finding reached the one who merely sat down in its folder: {brought!r}"
+    )
+
+
+# ─────────────────────────────────────────────────────────────────────────────────────────────
+# Stream identity: who exactly is being continued, and who has merely sat down in the same folder.
+#
+# The checks below close four findings of the independent review of this change. They have one
+# thing in common: "the same stream" was recognized by signs that DON'T belong to the STREAM — by
+# the folder, by a number that happened to match, by silence about the wave — and identity leaked
+# now to the folder's new tenant, now to a released neighbour, and now was lost altogether.
+
+
+@needs_pwsh
+@needs_git
+def test_a_stream_claimed_after_a_release_gets_a_free_number_and_none_of_the_names(
+    tmp_path: Path,
+) -> None:
+    """A stream is honestly released, the next announces from the same folder — FREE number, no names.
+
+    The memory of branch names passed to the folder's new tenant all by itself, without a single
+    switch, and the root here runs deeper than inheritance: picking a number returned the number of
+    THIS folder's OWN previous claim without looking at its state. A released one counted as its
+    own too, so the next stream in the reused folder got the same address — and along with the
+    address it inherited both the released one's memory of names and its post. And at release time
+    the tool prints a promise that findings for a released stream will no longer be accepted.
+
+    The decision speaks about this case plainly: the folder rule doesn't apply, the announcement is
+    an ordinary one, the number is FREE, the memory of names is NOT inherited — it passes only
+    between claims of one and the same address.
+
+    The trees are real: a stream's names are taken from git, and on stub folders they never appear.
+    """
+    real_worktrees(tmp_path, {"tab": "alpha", "neighbour": "neighbour-branch"})
+    board = tmp_path / "board.jsonl"
+    tab = tmp_path / "tab"
+    neighbour = tmp_path / "neighbour"
+    claim(board, tab, "wave6", "1", "-StreamName", "Releasing")
+    # The branch was renamed and the same address announced again — the stream now REMEMBERS the
+    # former name.
+    rename_branch(tab, "beta")
+    claim(board, tab, "wave6", "1")
+    assert claim_of(board, tab, only_open=True).fields["former_branches"] == ["alpha"], (
+        "the check is built wrong: the stream didn't remember the former name of its branch"
+    )
+    offered = tool(
+        board,
+        "-Mode",
+        "Add",
+        "-To",
+        "alpha",
+        "-Title",
+        "for the released one by its old name",
+        cwd=neighbour,
+        known=True,
+    )
+    assert offered.returncode == 0, f"a finding by the old name wasn't accepted: {offered.stderr!r}"
+    assert release(board, tab, "-Force").returncode == 0, "releasing the stream failed"
+
+    claim_bare(board, tab, "-Wave", "wave6", "-StreamName", "Next")
+
+    record = claim_of(board, tab, only_open=True)
+    assert record.address == "wave6/2", (
+        f"the next stream of the same folder got the released one's number: {record.fields!r} — "
+        "neighbours will go on sending findings to that address that it never awaited"
+    )
+    assert record.fields["former_branches"] == [], (
+        f"the new stream took the released one's names for itself: {record.fields!r}"
+    )
+
+    # A positive check IN THE VERY SAME setup: what belongs to the new stream does reach it. Without
+    # it, the silence of the check below would be indistinguishable from a dead delivery hook.
+    mine = tool(
+        board,
+        "-Mode",
+        "Add",
+        "-To",
+        record.address,
+        "-Title",
+        "for the new stream by address",
+        cwd=neighbour,
+        known=True,
+    )
+    assert mine.returncode == 0, f"the finding for the new stream wasn't accepted: {mine.stderr!r}"
+
+    brought = run_deliver(board, tab, "Start", "after-the-release")
+    assert "for the new stream by address" in brought, (
+        f"the delivery hook says nothing at all — the check below would be green on any code: {brought!r}"
+    )
+    assert "for the released one by its old name" not in brought, (
+        f"a released stream's finding reached whoever merely sat down in its folder: {brought!r}"
+    )
+
+
+@needs_pwsh
+def test_a_reclaim_that_names_only_the_wave_keeps_the_rest_of_the_stream(tmp_path: Path) -> None:
+    """The wave was named, the number wasn't — the stream continues WHOLE, not by halves.
+
+    The entire inheritance step hung on the condition "the wave wasn't named". Yet a tab is fully
+    entitled to announce itself afresh, naming its own wave in words (or passing a plan path) and
+    not naming a number: the address didn't change from that — the number was still picked as its
+    own. But the name, the tasks and the plan path were erased, the claim time was reset, and on
+    top of that the tool printed an untruth, as if the number had been issued as the next free one.
+
+    Continuing a stream is never partial: unnamed fields are taken from one's own unclosed claim of
+    the SAME ADDRESS, wherever the wave itself came from. The whole record is checked — half of
+    what is lost (the claim time, the plan path) is not visible from the outside at all.
+    """
+    board = tmp_path / "board.jsonl"
+    tab = tmp_path / "tab"
+    tab.mkdir()
+    plan = tab / "2026-08-24-wave9.md"
+    plan.write_text("# wave 9 plan\n", encoding="utf-8")
+    claim(
+        board,
+        tab,
+        "wave9",
+        "3",
+        "-StreamName",
+        "Stream identity",
+        "-Tasks",
+        "10-13",
+        "-Plan",
+        str(plan),
+    )
+    before = dict(claim_of(board, tab, only_open=True).fields)
+
+    out = claim_bare(board, tab, "-Wave", "wave9")
+
+    reclaimed_the_same_stream(before, dict(claim_of(board, tab, only_open=True).fields))
+    assert (
+        f"You're continuing stream wave9/3 \"Stream identity\", claimed {claim_stamp(before)}."
+        in said(out)
+    ), f"the tab wasn't told it is continuing its own stream, or the line was rewritten: {out!r}"
+    assert (
+        "The work is different — release the previous stream right here (-Mode Release) and "
+        "announce again." in said(out)
+    ), f"the way out of the inherited address isn't named: {out!r}"
+    assert "issued the next free one" not in out, (
+        f"an inherited number was passed off as freshly issued — the tab was told an untruth about "
+        f"its own address: {out!r}"
+    )
+
+
+@needs_pwsh
+def test_a_reclaim_that_names_only_the_wave_keeps_its_seniority(
+    tmp_path: Path, registry_invariants: RegistryWatch
+) -> None:
+    """And seniority survives with it: the yield ring won't hand the address to a later neighbour.
+
+    Of everything lost in a partial re-announcement, the claim time is the most dangerous: it, and
+    it alone, measures seniority in a dispute over a number. Reset it, and the tab yields its
+    address to anyone who announced themselves between its two announcements — that is, it moves
+    silently to a number its neighbours know nothing about, while at its former address findings
+    are accepted by somebody else.
+    """
+    registry_invariants.waive(
+        "the invariant \"one leading record per address\": a rival for the same number is built by "
+        "hand here, and what is being checked is precisely that the tab does NOT give the address "
+        "up. The address rule deliberately doesn't part this pair: the number here is INHERITED "
+        "from the tab's own previous record, that is, it stays issued, and the address rule doesn't "
+        "cover an issued number — there the number may be moved, and the dispute is settled by the "
+        "yield ring"
+    )
+    board = tmp_path / "board.jsonl"
+    tab = tmp_path / "tab"
+    claim(board, tab, "wave9", "3", "-StreamName", "Senior", "-Tasks", "10-13")
+    # The stream has been running since yesterday. Otherwise there is nothing to check: a claim made
+    # a second ago stays the senior one even with the time reset — the reset shifts it by that very
+    # second.
+    patch_claim(
+        board,
+        tab,
+        claimed_at=(datetime.now() - timedelta(days=1)).isoformat(timespec="seconds"),
+    )
+    put_claim(
+        registry_dir(board),
+        "neighbour-who-came-later",
+        **open_claim(
+            str(tmp_path / "neighbour"),
+            wave="wave9",
+            stream="3",
+            claimed_at=(datetime.now() - timedelta(hours=1)).isoformat(timespec="seconds"),
+        ),
+    )
+
+    out = claim_bare(board, tab, "-Wave", "wave9")
+
+    assert claim_of(board, tab, only_open=True).address == "wave9/3", (
+        "the tab gave its address up to a neighbour that announced itself LATER than it did — so "
+        f"the re-announcement reset the claim time, and seniority along with it: {out!r}"
+    )
+    assert "shifted to the next free one" not in out, (
+        f"the stream was moved off its own address while its seniority was alive: {out!r}"
+    )
+
+
+@needs_pwsh
+@needs_git
+def test_a_claim_never_writes_over_the_live_record_of_a_dirty_folder(tmp_path: Path) -> None:
+    """A released and an open record in one folder — an announcement mustn't overwrite the LIVE one.
+
+    There were two choices of "this folder's previous claim", and they diverged: the folder rule
+    took the FIRST record in the registry listing (a released one doesn't count, so no refusal was
+    raised), while the file write went to the one found under the canonical key — that is, to the
+    live one. Announcing another stream went through with a success code and erased a working one:
+    exactly the incident this whole change was started for, only coming in from the other side.
+
+    Such a folder is not invented: an announcement writes an older version's claim from a subfolder
+    in place, so its file stays lying under the old name next to the new one.
+    """
+    real_worktrees(tmp_path, {"tab": "dirty-folder-branch"})
+    board = tmp_path / "board.jsonl"
+    tab = tmp_path / "tab"
+    claim(board, tab, "wave9", "8", "-StreamName", "Live one", "-Tasks", "10-13")
+    live = claim_of(board, tab, only_open=True)
+    before = live.file.read_bytes()
+    # A released record of THE SAME folder under its own file name. Its number is lower — so it
+    # comes first in the registry listing, and the former choice "the first in order" fell to it.
+    put_claim(
+        registry_dir(board),
+        "released-of-the-older-version",
+        **open_claim(
+            str(tab),
+            wave="wave9",
+            stream="1",
+            state="released",
+            claimed_at=str(live.fields["claimed_at"]),
+            released_at=str(live.fields["claimed_at"]),
+        ),
+    )
+    expected = folder_taken_refusal(
+        board,
+        tab,
+        address="wave9/3",
+        name="Live one",
+        tasks="10-13",
+        branch="dirty-folder-branch",
+        state="live",
+    )
+
+    denied = tool(board, "-Mode", "Claim", "-Wave", "wave9", "-Stream", "3", cwd=tab)
+
+    assert denied.returncode != 0, (
+        f"announcing another stream went through over the folder's live record: {denied.stdout!r}"
+    )
+    assert live.file.read_bytes() == before, (
+        "the live stream was overwritten silently — the folder rule looked at the released record "
+        "while the write went over the working one"
+    )
+    said_lines = said(denied.stderr)
+    for line in expected:
+        assert line in said_lines, (
+            f"the refusal named the wrong stream or the line was rewritten: {line!r} — "
+            f"{denied.stderr!r}"
+        )
+    records = read_registry(registry_dir(board))
+    assert len(records) == 2, (
+        f"the registry changed though the announcement was refused: {names_of(records)}"
+    )
+
+
+@needs_pwsh
+def test_the_continued_stream_is_named_by_the_address_it_really_had(tmp_path: Path) -> None:
+    """The "you're continuing stream …" line names the address the stream HAD, not the one just issued.
+
+    The line is printed after the yield ring. A senior neighbour holds the number, the tab is
+    shifted to the next free one — and the tab was told it is continuing a stream at an address it
+    never had, and "claimed yesterday" on top of that. On the next line the tool honestly speaks
+    about the shift, but the first line is believed before the second one is read, and it is the
+    address from that first line the tab passes on to its neighbours.
+    """
+    board = tmp_path / "board.jsonl"
+    tab = tmp_path / "tab"
+    claim_bare(board, tab, "-StreamName", "Shifted", "-Tasks", "5-7")
+    mine = claim_of(board, tab, only_open=True)
+    before = dict(mine.fields)
+    earlier = datetime.fromisoformat(str(mine.fields["claimed_at"])) - timedelta(hours=1)
+    put_claim(
+        registry_dir(board),
+        "senior-neighbour",
+        **open_claim(
+            str(tmp_path / "neighbour"),
+            wave=today_wave(),
+            stream="1",
+            wave_auto=True,
+            claimed_at=earlier.isoformat(timespec="seconds"),
+        ),
+    )
+
+    out = claim_bare(board, tab)
+
+    assert claim_of(board, tab, only_open=True).address == f"{today_wave()}/2", (
+        f"the check is built wrong: the yield ring didn't shift the stream — {out!r}"
+    )
+    assert (
+        "Wave not named — inherited from your previous entry. You're continuing stream "
+        f"{today_wave()}/1 \"Shifted\", claimed {claim_stamp(before)} — the number was yielded to a "
+        "neighbour, the new address is named below." in said(out)
+    ), f"the line about continuing the stream names a foreign address or was rewritten: {out!r}"
+    assert f"You're continuing stream {today_wave()}/2" not in out, (
+        f"the tab was told it continues an address its stream never had: {out!r}"
+    )
+    assert (
+        f"‼️ A neighbouring session announced number {today_wave()}/1 at the very same moment — "
+        f"your stream was shifted to the next free one: {today_wave()}/2." in said(out)
+    ), f"the tab wasn't told about the shift itself: {out!r}"
+
+
+# ─────────────────────────────────────────────────────────────────────────────────────────────
+# DEFECT 1: a move doubles the address.
+#
+# A tab announced itself from a shared folder, set up a worktree and announced itself from there
+# under the same address — the registry ended up with two open records of one address, and who got
+# a finding was decided by the directory listing order. It is cured by two changes at once, and the
+# order between them is strict:
+#   • the address rule — a refusal BEFORE the write, with the clues and one explicit take-over key;
+#   • one single sign of "the record is closed" — otherwise the losing tab goes on receiving the
+#     new owner's post and silencing it for them.
+#
+# ‼️ A move is written as a field IN ONE'S OWN claim, not by editing someone else's file: another
+# folder's claim has a second writer (that folder's delivery hook), which rewrites it whole on every
+# turn and takes no lock. This same thing buys compatibility with an older copy of the toolkit in
+# two dozen live trees.
+# ─────────────────────────────────────────────────────────────────────────────────────────────
+
+
+def address_taken_refusal(
+    board: Path, rival: Path, *, address: str, state: str, disk: str, distinct: str
+) -> list[str]:
+    """The address rule's refusal in full — in the very lines the decision promises.
+
+    It is checked IN FULL, not by the address occurring in it: half the refusal's work is the clues
+    (the other folder, its state, whether it is on disk) and three ways out with the values already
+    substituted. The order of the ways out is part of the promise too: the HARMLESS one first, the
+    destructive one last, because a tab uses the first thing printed.
+    """
+    fields = claim_of(board, rival, only_open=False).fields
+    stamp = datetime.fromisoformat(str(fields["seen_at"])).strftime("%Y-%m-%d %H:%M")
+    where = str(fields["worktree"])
+    wave, stream = address.split("/")
+    return [
+        f"address {address} is already run by an unclosed claim of a DIFFERENT worktree folder: "
+        f"{where} — {state}, checked in {stamp}, {disk}.",
+        "There is ONE leading entry per address: announce as a second one, and which of you got a "
+        "finding would be decided by the directory listing order — half of what is addressed would "
+        "vanish with a cheerful report of success.",
+        "A different split of the same wave — announce under your own number: pwsh "
+        f"scripts/wave-board.ps1 -Mode Claim -Wave {wave} -Stream {distinct}",
+        f"That stream is finished — release it, standing in exactly its folder {where}: "
+        "pwsh scripts/wave-board.ps1 -Mode Release",
+        "This is your stream and you moved here (or are picking up an abandoned session) — take "
+        f"the address for yourself, folder {where} will lose it: pwsh scripts/wave-board.ps1 "
+        f"-Mode Claim -Wave {wave} -Stream {stream} -TakeOver",
+    ]
+
+
+@needs_pwsh
+def test_a_move_with_a_named_address_is_refused_before_a_single_byte_is_written(
+    tmp_path: Path,
+) -> None:
+    """A move without the take-over key — refused BEFORE the write, the old claim untouched byte for byte.
+
+    This is the main form of defect 1: a tab announced itself from a shared folder, set up a
+    worktree and announces itself from there under the same, explicitly named address. Today that
+    left two open records of one address in the registry — the refusal is placed where the doubling
+    hasn't happened yet.
+    """
+    board = tmp_path / "board.jsonl"
+    common = tmp_path / "common"
+    tree = tmp_path / "tree"
+    tree.mkdir()
+    claim(board, common, "wave9", "3", "-StreamName", "Move", "-Tasks", "10-13")
+    kept = claim_of(board, common, only_open=True)
+    before = kept.file.read_bytes()
+
+    denied = tool(board, "-Mode", "Claim", "-Wave", "wave9", "-Stream", "3", cwd=tree)
+
+    assert denied.returncode != 0, (
+        f"the move went through silently — the address is run by two: {denied.stdout!r}"
+    )
+    assert kept.file.read_bytes() == before, (
+        "the old claim's file was touched — and \"not a byte into someone else's file\" is what the "
+        "whole compatibility with an older copy of the toolkit in live worktrees rests on"
+    )
+    records = read_registry(registry_dir(board))
+    assert len(records) == 1, f"a second record appeared in the registry: {names_of(records)}"
+    expected = address_taken_refusal(
+        board, common, address="wave9/3", state="live", disk="folder still there", distinct="3k"
+    )
+    said_lines = said(denied.stderr)
+    for line in expected:
+        assert line in said_lines, (
+            f"a line of the refusal was rewritten or went missing: {line!r} — {denied.stderr!r}"
+        )
+    # ‼️ The order of the ways out: the harmless one FIRST, the destructive one LAST. A tab uses the
+    # first thing printed, and had we swapped them round, the refusal itself would be nudging people
+    # into taking someone else's address away.
+    order = [said_lines.index(line) for line in expected[2:]]
+    assert order == sorted(order), (
+        f"the ways out printed in the wrong order — the destructive one isn't last: {said_lines!r}"
+    )
+
+
+@needs_pwsh
+def test_the_refusal_names_a_folder_that_is_gone_and_frees_the_registry_lock(
+    tmp_path: Path,
+) -> None:
+    """Picking up an abandoned tab: the clue says plainly "the folder is no longer on disk".
+
+    A pick-up and a move end the same way, so the mechanism is one. The only difference is how loud
+    the clues are — and that is enough for a human to decide in a second.
+
+    The second half: after the refusal the registry lock is released. Were the tool to leave without
+    releasing it, every neighbouring tab would pay half a minute of waiting on its own first action
+    for someone else's refusal.
+    """
+    board = tmp_path / "board.jsonl"
+    gone = tmp_path / "vanished"
+    tree = tmp_path / "tree"
+    tree.mkdir()
+    put_claim(
+        registry_dir(board),
+        "abandoned",
+        **open_claim(str(gone), wave="wave9", stream="3", seen_at=now_minus(3)),
+    )
+
+    denied = tool(board, "-Mode", "Claim", "-Wave", "wave9", "-Stream", "3", cwd=tree)
+
+    assert denied.returncode != 0, f"an abandoned tab's address taken silently: {denied.stdout!r}"
+    expected = address_taken_refusal(
+        board,
+        gone,
+        address="wave9/3",
+        state="silent",
+        disk="folder is no longer on disk",
+        distinct="3k",
+    )
+    said_lines = said(denied.stderr)
+    for line in expected:
+        assert line in said_lines, (
+            f"the clue about the vanished folder was rewritten or went missing: {line!r} — "
+            f"{denied.stderr!r}"
+        )
+
+    started = time.monotonic()
+    neighbour = claim(board, tmp_path / "neighbour", "wave9", "8")
+    assert time.monotonic() - started < 20, (
+        "a neighbouring tab waited on a lock left over from someone else's refusal"
+    )
+    assert "The claim registry lock wasn't handed over" not in neighbour, (
+        f"the lock wasn't freed after the refusal — the neighbour got by without it: {neighbour!r}"
+    )
+
+
+@needs_pwsh
+@needs_git
+def test_the_take_over_key_moves_the_address_the_inbox_and_the_branch_names(
+    tmp_path: Path,
+) -> None:
+    """The take-over key: one leading record per address, inbox and branch names move to the new folder.
+
+    The inbox is work, not bookkeeping: moving the address without moving the inbox would be the
+    same loss, only from the other side. The branch names too: a finding ALREADY SENT under the
+    stream's former name must reach the folder the stream moved to.
+    """
+    real_worktrees(tmp_path, {"common": "branch-before-the-move", "tree": "branch-after-the-move"})
+    board = tmp_path / "board.jsonl"
+    common = tmp_path / "common"
+    tree = tmp_path / "tree"
+    claim(board, common, "wave9", "3", "-StreamName", "Move", "-Tasks", "10-13")
+    mark = add(board, "wave9/3", "a finding for the address")
+    by_branch = add(board, "branch-before-the-move", "a finding by the former branch name")
+    lost = str(claim_of(board, common, only_open=False).fields["worktree"])
+
+    moved = claim(board, tree, "wave9", "3", "-StreamName", "Move", "-TakeOver")
+
+    assert address_of(board, tree) == "wave9/3", "the address didn't move"
+    assert f"Address wave9/3 taken from folder {lost}" in moved, (
+        f"the move of the address wasn't said out loud: {moved!r}"
+    )
+    # A loud warning: the rival checked in just now, so it looks like it is working.
+    assert (
+        "‼️ That session checked in just now — it looks like it is working. The address was taken "
+        "from a working neighbour: make sure this is your move and not a dispute between two live "
+        "sessions." in said(moved)
+    ), f"the address was taken from a working neighbour silently: {moved!r}"
+
+    won = str(claim_of(board, tree, only_open=True).fields["worktree"])
+    listed = run_tool(board, "-Mode", "Streams")
+    ghost = [line for line in shown_streams(listed) if folder_key(lost) in folder_key(line)]
+    assert len(ghost) == 1 and f"handed on to {won}" in ghost[0], (
+        f"the old record isn't shown as handed on, nor is it named where the address went: {listed!r}"
+    )
+    assert not [line for line in listed.splitlines() if line.startswith("‼️")], (
+        f"the display shouts about doubling where the address moved by an explicit key: {listed!r}"
+    )
+
+    arrived = bullets(run_deliver(board, tree, "Start", "new"))
+    assert any(mark in line for line in arrived), (
+        f"the finding from the moved address didn't reach the new folder: {arrived!r}"
+    )
+    assert any(by_branch in line for line in arrived), (
+        f"the former stream's branch name doesn't answer to the new claim: {arrived!r}"
+    )
+
+
+@needs_pwsh
+@needs_git
+def test_the_losing_tab_is_disarmed_the_moment_its_address_moves(tmp_path: Path) -> None:
+    """The losing tab is disarmed entirely — that is the single sign "the record is closed".
+
+    Exactly this was missing from the original design: silencing lived only in the parsed registry,
+    while delivery, release, closing a finding and both liveness marks read the state straight out
+    of THEIR OWN file. So the loser would go on receiving the new owner's post and silencing it for
+    them — the same trouble that was being cured at the neighbour's, only mirrored.
+    """
+    real_worktrees(tmp_path, {"common": "loser-branch", "tree": "winner-branch"})
+    board = tmp_path / "board.jsonl"
+    common = tmp_path / "common"
+    tree = tmp_path / "tree"
+    claim(board, common, "wave9", "3", "-StreamName", "Move")
+    claim(board, tree, "wave9", "3", "-StreamName", "Move", "-TakeOver")
+    mark = add(board, "wave9/3", "the new owner's finding")
+    loser = claim_of(board, common, only_open=False)
+    before = loser.file.read_bytes()
+    # We name the folder EXACTLY as the claim recorded it: the tool prints it out of the record
+    # rather than assembling it from the system path, and a whole-line check doesn't forgive that.
+    won = str(claim_of(board, tree, only_open=True).fields["worktree"])
+
+    # 1. The delivery hook brings it no findings and doesn't refresh its liveness mark.
+    #
+    # ‼️ The assertion is narrowed deliberately: it used to demand FULL silence from the hook, and
+    # that cemented the very flaw because of which the losing side went quiet. Now the hook must
+    # bring it no FINDINGS — and must say why it no longer brings them.
+    walked = run_deliver(board, common, "Start", "loser")
+    assert not bullets(walked), (
+        f"the losing tab receives the post of the address's new owner: {bullets(walked)!r}"
+    )
+    assert mark not in context_text(walked), (
+        f"the new owner's finding reached the losing tab: {context_text(walked)!r}"
+    )
+    assert f"‼️ Your stream wave9/3 was taken over into {won}" in context_text(walked), (
+        f"the tab was disarmed silently — it wasn't told why the hook went quiet: {walked!r}"
+    )
+    assert loser.file.read_bytes() == before, (
+        "the hook refreshed the liveness mark of a handed-on record — any new session in the old "
+        "folder would resurrect a ghost on its very first turn"
+    )
+
+    # 2. Its release says "handed on", not "already released".
+    given = release(board, common)
+    assert given.returncode == 0, given.stderr
+    assert said(given.stdout) == [
+        f"Stream wave9/3 handed on to {won} — there is nothing to release here: that session runs "
+        "the address.",
+        "This session is no longer addressable: findings for the address arrive there, and they "
+        "can't be closed from here.",
+        "This is your stream and it was moved by mistake — take the address back: "
+        "pwsh scripts/wave-board.ps1 -Mode Claim -Wave wave9 -Stream 3 -TakeOver",
+    ], f"the release answer was rewritten or passes a move off as a release: {given.stdout!r}"
+    assert loser.file.read_bytes() == before, "release closed a handed-on record as its own"
+
+    # 3. Its attempt to close the new owner's finding is refused.
+    closing = tool(board, "-Mode", "Done", "-Id", mark, cwd=common)
+    assert closing.returncode != 0, (
+        f"the loser silenced the new owner's finding — closing a name-based address is SHARED, and "
+        f"they would have seen it neither in delivery nor on the board: {closing.stdout!r}"
+    )
+    assert "is addressed to stream" in closing.stderr, f"the wrong guard refused: {closing.stderr!r}"
+    assert any(mark in line for line in bullets(run_deliver(board, tree, "Start", "owner"))), (
+        "the new owner's finding was silenced by someone else's hand"
+    )
+
+
+@needs_pwsh
+def test_the_succession_survives_a_short_reclaim_of_the_new_owner(tmp_path: Path) -> None:
+    """The succession field is inherited by a short re-announcement — the ghost doesn't rise again.
+
+    Otherwise the new owner's very first re-announcement would erase the mark, and the silenced
+    record would come back leading, together with its address and its post.
+    """
+    board = tmp_path / "board.jsonl"
+    common = tmp_path / "common"
+    tree = tmp_path / "tree"
+    claim(board, common, "wave9", "3", "-StreamName", "Move", "-Tasks", "10-13")
+    claim(board, tree, "wave9", "3", "-StreamName", "Move", "-TakeOver")
+    taken = claim_of(board, tree, only_open=True)
+    assert taken.taken_from == folder_key(common), (
+        "the move wasn't written into ONE'S OWN claim — there is nothing to silence the ghost with"
+    )
+
+    out = claim_bare(board, tree)
+
+    assert claim_of(board, tree, only_open=True).taken_from == folder_key(common), (
+        f"the short re-announcement erased the succession field — the ghost rose again: {out!r}"
+    )
+    listed = run_tool(board, "-Mode", "Streams")
+    assert not [line for line in listed.splitlines() if line.startswith("‼️")], (
+        f"after the re-announcement the address is doubled again: {listed!r}"
+    )
+
+
+@needs_pwsh
+def test_a_claim_of_the_older_version_without_the_succession_field_is_not_a_corruption(
+    tmp_path: Path,
+) -> None:
+    """An older version's claim has no succession field — rules work on it, it isn't a corruption.
+
+    The mechanism lives in five copies with no synchronization between them, and claims of different
+    ages are the norm, not the exception. A missing field reads as "there was no move".
+    """
+    board = tmp_path / "board.jsonl"
+    old = tmp_path / "older-version"
+    tree = tmp_path / "tree"
+    old.mkdir()
+    tree.mkdir()
+    put_claim(
+        registry_dir(board),
+        "claim-of-the-older-version",
+        wave="wave9",
+        stream="3",
+        name="Older version",
+        worktree=str(old),
+        state="open",
+        seen_at=now_minus(0.1),
+    )
+    assert TAKEN_FROM_FIELD not in claim_of(board, old, only_open=True).fields, (
+        "the check is built wrong: the older version's claim turned out to have a succession field"
+    )
+
+    # The address rule works on it: a refusal, not silent doubling.
+    denied = tool(board, "-Mode", "Claim", "-Wave", "wave9", "-Stream", "3", cwd=tree)
+    assert denied.returncode != 0, (
+        f"the older version's claim wasn't counted a rival — two run the address: {denied.stdout!r}"
+    )
+    # And the folder rule: another stream from ITS folder doesn't get through.
+    other = tool(board, "-Mode", "Claim", "-Wave", "wave9", "-Stream", "8", cwd=old)
+    assert other.returncode != 0, (
+        f"the older version's claim didn't hold its folder — a stream would be erased silently: "
+        f"{other.stdout!r}"
+    )
+    # And the take-over key works on it — otherwise the way out of the refusal would be a deception.
+    taken = claim(board, tree, "wave9", "3", "-TakeOver")
+    assert address_of(board, tree) == "wave9/3", (
+        f"the take-over key didn't give the address up: {taken!r}"
+    )
+    assert claim_of(board, tree, only_open=True).taken_from == folder_key(old), (
+        "the move wasn't recorded for the older version's claim"
+    )
+
+
+@needs_pwsh
+def test_a_finding_for_a_released_stream_is_refused_even_after_the_address_moved(
+    tmp_path: Path, registry_invariants: RegistryWatch
+) -> None:
+    """A regression of defect 1 from the other side: the real stream is honestly released — intake REFUSES.
+
+    This is the defect's costliest consequence: an abandoned record kept the address alive, a
+    finding for it was accepted with a cheerful report of success, the sender was reassured and set
+    up no fallback for it — and it reached nobody at all.
+    """
+    registry_invariants.waive(
+        "the invariant \"an address has a leading record\": the address ends here DELIBERATELY — the "
+        "stream moved and in the new folder honestly released itself, while the abandoned record of "
+        "the old folder stayed open. That is exactly what is checked: the address has no leading "
+        "record, and a finding for it is not accepted"
+    )
+    board = tmp_path / "board.jsonl"
+    common = tmp_path / "common"
+    tree = tmp_path / "tree"
+    claim(board, common, "wave9", "3", "-StreamName", "Move")
+    claim(board, tree, "wave9", "3", "-StreamName", "Move", "-TakeOver")
+    assert release(board, tree).returncode == 0, "releasing the real stream failed"
+
+    denied = tool(board, "-Mode", "Add", "-To", "wave9/3", "-Title", "a late finding", cwd=common)
+
+    assert denied.returncode != 0, (
+        f"a finding for a released address was accepted — an abandoned record keeps it alive: "
+        f"{denied.stdout!r}"
+    )
+    assert "stream \"wave9/3\" was RELEASED" in denied.stderr, (
+        f"the refusal doesn't speak of a release — so a ghost holds the address: {denied.stderr!r}"
+    )
+
+
+def older_copy(root: Path) -> Path:
+    """The toolkit from main BEFORE this work — exactly the copy standing in live trees today.
+
+    There are about twenty copies, no synchronization between them, and BOTH sides of a move meet
+    the old code: the winning one at the neighbour's, the losing one at its own place. So two checks
+    set this copy up, and one helper sets it up for them.
+    """
+    old = root / "older-copy"
+    if old.is_dir():
+        return old
+    before_the_series = "1649e4ff"
+    known = subprocess.run(
+        ["git", "cat-file", "-e", f"{before_the_series}^{{commit}}"],
+        cwd=str(REPO_ROOT),
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    if known.returncode != 0:
+        pytest.skip("no history before this work (shallow clone) — nowhere to get the older copy")
+    inside = ".claude/skills/parallel-streams/coordination"
+    # Every file the older copy is made of: the library pulls in two more of its own, and without
+    # them it would fail on the very first line — that is, the check would silently measure the
+    # wrong thing.
+    for name in (
+        "wave-board.ps1",
+        "lib/wave-board-lib.ps1",
+        "lib/git-env-clean.ps1",
+        "lib/hook-io.ps1",
+        "hooks/wave-board-deliver.ps1",
+    ):
+        shown = subprocess.run(
+            ["git", "show", f"{before_the_series}:{inside}/{name}"],
+            cwd=str(REPO_ROOT),
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            timeout=60,
+        )
+        assert shown.returncode == 0, shown.stderr
+        target = old / name
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(shown.stdout, encoding="utf-8")
+    return old
+
+
+def older_deliver(
+    old: Path, board: Path, cwd: Path, session: str
+) -> subprocess.CompletedProcess[str]:
+    """A turn of the OLD delivery hook from the named worktree folder — as at a live neighbour's today."""
+    assert pwsh
+    return subprocess.run(
+        [
+            pwsh,
+            "-NoProfile",
+            "-File",
+            str(old / "hooks" / "wave-board-deliver.ps1"),
+            "-Stage",
+            "Prompt",
+            "-BoardPath",
+            str(board),
+        ],
+        input=json.dumps({"session_id": session}),
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        cwd=str(cwd),
+        timeout=60,
+    )
+
+
+@needs_pwsh
+@needs_git
+def test_the_older_copy_of_the_tool_reads_the_new_registry_as_it_did_yesterday(
+    tmp_path: Path,
+) -> None:
+    """An older copy of the toolkit from a neighbouring tree neither breaks nor spoils anything.
+
+    There are about twenty of them right now, and nothing keeps them in sync. The older copy sees
+    the unfamiliar succession field and quietly ignores it; the losing record it reads as open —
+    that is, exactly as it read it yesterday. No new breakage, no resurrection.
+
+    ‼️ The point here is that the older copy SURVIVES the field rather than wiping it. Its liveness
+    check-in rewrites the whole claim file, and were it to lose the succession field while doing so,
+    the silenced record would come back to life for everyone at once, without a single warning.
+    """
+    old = older_copy(tmp_path)
+    real_worktrees(tmp_path, {"common": "loser-branch", "tree": "winner-branch"})
+    board = tmp_path / "board.jsonl"
+    common = tmp_path / "common"
+    tree = tmp_path / "tree"
+    claim(board, common, "wave9", "3", "-StreamName", "Move")
+    claim(board, tree, "wave9", "3", "-StreamName", "Move", "-TakeOver")
+    winner = claim_of(board, tree, only_open=True)
+    loser_file = claim_of(board, common, only_open=False).file
+    loser_before = loser_file.read_bytes()
+
+    assert pwsh
+    listed = subprocess.run(
+        [
+            pwsh,
+            "-NoProfile",
+            "-File",
+            str(old / "wave-board.ps1"),
+            "-Mode",
+            "Streams",
+            "-BoardPath",
+            str(board),
+        ],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        cwd=str(tree),
+        timeout=60,
+    )
+    assert listed.returncode == 0, f"the older copy broke on the new registry: {listed.stderr!r}"
+    assert "Stream claims: 2" in listed.stdout, (
+        f"the older copy reads the new registry differently than yesterday: {listed.stdout!r}"
+    )
+
+    # Its delivery hook rewrites THIS folder's claim in full — the field has to survive that.
+    walked = older_deliver(old, board, tree, "older")
+    assert walked.returncode == 0, f"the older delivery hook failed: {walked.stderr!r}"
+    after = read_claim_json(winner.file)
+    assert after is not None and folder_key(after.get(TAKEN_FROM_FIELD)) == folder_key(common), (
+        f"the older copy wiped the succession field — the silenced record would revive: {after!r}"
+    )
+    assert loser_file.read_bytes() == loser_before, "the older copy touched the losing claim file"
+
+
+@needs_pwsh
+@needs_git
+def test_the_older_copy_in_the_losing_folder_still_carries_away_the_new_owners_mail(
+    tmp_path: Path,
+) -> None:
+    """Takeover's other side: the older copy is the LOSER's — the registry holds, mail still comes.
+
+    ‼️ The limitation is named out loud and CANNOT BE FIXED from its own folder by anything: the
+    code the losing tab moves with lives in ITS worktree, and that code is old — it doesn't know
+    about the takeover and cannot know until the change reaches its copy (and that takes days). So
+    the test pins down exactly what we were promised and what we do hold: the registry stays intact,
+    the succession field survives, the silenced record doesn't come back. And the new owner's
+    finding the older hook does bring it all the same, telling it to close it — that is the price of
+    copies of differing ages, named out loud.
+    """
+    old = older_copy(tmp_path)
+    real_worktrees(tmp_path, {"common": "loser-branch", "tree": "winner-branch"})
+    board = tmp_path / "board.jsonl"
+    common = tmp_path / "common"
+    tree = tmp_path / "tree"
+    claim(board, common, "wave9", "3", "-StreamName", "Move")
+    claim(board, tree, "wave9", "3", "-StreamName", "Move", "-TakeOver")
+    mark = add(board, "wave9/3", "a finding for the new owner")
+    winner = claim_of(board, tree, only_open=True)
+
+    walked = older_deliver(old, board, common, "loser-with-an-older-copy")
+
+    assert walked.returncode == 0, f"the older hook failed in the loser's folder: {walked.stderr!r}"
+    assert mark in walked.stdout, (
+        "the scene is assembled wrongly: the older hook brought the loser nothing — then there is "
+        f"no limitation to name at all: {walked.stdout!r}"
+    )
+    after = read_claim_json(winner.file)
+    assert after is not None and folder_key(after.get(TAKEN_FROM_FIELD)) == folder_key(common), (
+        f"the older copy's turn in the loser's folder wiped the new owner's succession: {after!r}"
+    )
+    listed = run_tool(board, "-Mode", "Streams")
+    assert not [line for line in listed.splitlines() if line.startswith("‼️")], (
+        f"after the older copy's turn in the loser's folder the silenced record revived: {listed!r}"
+    )
+
+
+# ─────────────────────────────────────────────────────────────────────────────────────────────
+# Notifying the losing tab, and releasing an orphan by address.
+#
+# Both changes close one hole from two sides. A tab whose address was taken has to LEARN about it:
+# otherwise it works blind on an address it no longer holds, and tells its neighbours and the owner
+# that it is running the stream. And a record that has not even a worktree folder left has to be
+# releasable: otherwise it holds the address alive forever and accepts findings that will reach
+# nobody.
+#
+# ‼️ Release by address is the toolkit's ONLY operation that writes into someone else's claim file,
+# and its condition was chosen not by silence but by the absence of a writer: in a folder that does
+# not exist the delivery hook cannot start. Silence proves exactly one thing — the tab made no move.
+# ─────────────────────────────────────────────────────────────────────────────────────────────
+
+
+@needs_pwsh
+def test_the_losing_tab_learns_on_its_next_turn_that_its_address_was_taken(
+    tmp_path: Path,
+) -> None:
+    """The losing tab learns of the takeover on its own next turn — a separate line from the hook.
+
+    Without it the losing side goes quiet SILENTLY: findings stop arriving, release answers "handed
+    on", an attempt to close a finding is refused — and why, the tab does not know. Its claim on
+    disk still looks open (a takeover doesn't touch someone else's file by a single byte), and from
+    its own file it will never learn about the takeover.
+    """
+    board = tmp_path / "board.jsonl"
+    common = tmp_path / "common"
+    tree = tmp_path / "tree"
+    claim(board, common, "wave9", "3", "-StreamName", "Move")
+
+    before = context_text(run_deliver(board, common, "Prompt", "loser"))
+    assert "taken over" not in before, f"the takeover was announced before it happened: {before!r}"
+
+    claim(board, tree, "wave9", "3", "-StreamName", "Move", "-TakeOver")
+    won = str(claim_of(board, tree, only_open=True).fields["worktree"])
+
+    after = said(context_text(run_deliver(board, common, "Prompt", "loser")))
+    assert (
+        f"‼️ Your stream wave9/3 was taken over into {won} — this session is no longer "
+        "addressable: findings for that address arrive there, and they can't be closed from here."
+    ) in after, f"the losing tab went quiet without a word: {after!r}"
+    # The way out is printed as a ready-made line with the values filled in: a takeover is
+    # reversible, the loser's file is untouched, and it may take the address back with the same key.
+    assert (
+        "This is your stream and it was taken over by mistake — take the address back: "
+        "pwsh scripts/wave-board.ps1 -Mode Claim -Wave wave9 -Stream 3 -TakeOver"
+    ) in after, f"the way out wasn't named as a ready-made line: {after!r}"
+
+
+@needs_pwsh
+def test_release_by_address_closes_an_orphan_whose_folder_is_gone(tmp_path: Path) -> None:
+    """Release by address closes a record whose worktree folder is gone, and leaves a trace.
+
+    This is the toolkit's only operation that writes into SOMEONE ELSE'S claim file. It is allowed
+    because that file has no writer: a delivery hook cannot start in a folder that doesn't exist.
+    The "who released it and when" trace is mandatory — without it a release by an outsider is
+    indistinguishable from an honest release by the tab itself.
+    """
+    board = tmp_path / "board.jsonl"
+    gone = tmp_path / "vanished"
+    tab = tmp_path / "tab"
+    tab.mkdir()
+    put_claim(
+        registry_dir(board),
+        "orphan",
+        **open_claim(str(gone), wave="wave9", stream="3", name="Orphan", seen_at=now_minus(5)),
+    )
+
+    given = release(board, tab, "-Wave", "wave9", "-Stream", "3")
+
+    assert given.returncode == 0, given.stderr
+    closed = claim_of(board, gone, only_open=False)
+    assert closed.released, f"the orphan's record wasn't released: {closed.fields!r}"
+    assert folder_key(closed.fields.get(RELEASED_FROM_FIELD)) == folder_key(tab), (
+        'no "who released it" trace in the record — an outsider release is indistinguishable from '
+        f"an honest one: {closed.fields!r}"
+    )
+    assert closed.fields.get("released_at"), (
+        f'no "when it was released" trace in the record: {closed.fields!r}'
+    )
+    assert (
+        f"Entry wave9/3 released by address: worktree folder {gone} is not on disk, and its "
+        "claim has no writer."
+    ) in said(given.stdout), f"what was done wasn't said out loud: {given.stdout!r}"
+
+    # The address is no longer held by a ghost: a finding for it now gets a refusal, not a cheerful
+    # report of success.
+    denied = tool(board, "-Mode", "Add", "-To", "wave9/3", "-Title", "a late finding", cwd=tab)
+    assert denied.returncode != 0, (
+        f"the entry released by address still holds the address alive: {denied.stdout!r}"
+    )
+    assert 'stream "wave9/3" was RELEASED' in denied.stderr, (
+        "the refusal doesn't talk about a release — so a ghost is holding the address: "
+        f"{denied.stderr!r}"
+    )
+
+
+@needs_pwsh
+def test_release_by_address_refuses_while_the_folder_is_still_on_disk(tmp_path: Path) -> None:
+    """Folder is there — refusal, even when the record is silent for five days. No bypass switch.
+
+    Silence proves exactly one thing: the tab made no moves. Running subagents, waiting for a build
+    and an overnight pause all look the same. And where the folder exists, the claim has a second
+    writer as well — that tab's delivery hook: it rewrites the whole document on every turn and
+    takes no lock, so our release mark would be wiped by its next liveness check-in, AFTER we had
+    been told it succeeded.
+    """
+    board = tmp_path / "board.jsonl"
+    silent = tmp_path / "silent"
+    tab = tmp_path / "tab"
+    silent.mkdir()
+    tab.mkdir()
+    kept = put_claim(
+        registry_dir(board),
+        "silent-for-five-days",
+        **open_claim(str(silent), wave="wave9", stream="3", name="Silent", seen_at=now_minus(5)),
+    )
+    before = kept.read_bytes()
+
+    denied = release(board, tab, "-Wave", "wave9", "-Stream", "3")
+
+    assert denied.returncode != 0, (
+        f"someone else's live folder was released on silence alone: {denied.stdout!r}"
+    )
+    assert kept.read_bytes() == before, "someone else's claim file was touched during the refusal"
+    said_lines = said(denied.stderr)
+    assert (
+        f"stream wave9/3's worktree folder is still there: {silent} — go into it and release the "
+        "stream from there: pwsh scripts/wave-board.ps1 -Mode Release"
+    ) in said_lines, f"the refusal named neither the folder nor the way out: {denied.stderr!r}"
+    # ‼️ There is no bypass switch here at all: print even one switch in the refusal and the tab
+    # would take the only way out it was shown, and a live neighbour's record would vanish with a
+    # success code.
+    offered = [line for line in said_lines if "-Force" in line or "-TakeOver" in line]
+    assert not offered, f"the refusal offers a bypass switch: {offered!r}"
+
+
+@needs_pwsh
+def test_release_by_address_tells_an_unreachable_path_from_a_missing_folder(
+    tmp_path: Path,
+) -> None:
+    """An unreachable path means "unknown", not "gone", and one must not pass for the other.
+
+    A dropped drive and a vanished network share answer with the same refusal as a deleted folder.
+    Let the tool take one for the other, and it would write into someone else's claim at a path
+    where a tab is living and working at that very moment, and that tab's delivery hook would wipe
+    our mark straight away.
+    """
+    board = tmp_path / "board.jsonl"
+    unreachable = dead_board_path().parent / "tree"
+    tab = tmp_path / "tab"
+    tab.mkdir()
+    kept = put_claim(
+        registry_dir(board),
+        "on-a-dead-path",
+        **open_claim(
+            str(unreachable), wave="wave9", stream="3", name="Orphan", seen_at=now_minus(5)
+        ),
+    )
+    before = kept.read_bytes()
+
+    denied = release(board, tab, "-Wave", "wave9", "-Stream", "3")
+
+    assert denied.returncode != 0, (
+        f"a record on an unreachable path was released: {denied.stdout!r}"
+    )
+    assert kept.read_bytes() == before, "someone else's claim file was touched during the refusal"
+    said_lines = said(denied.stderr)
+    assert (
+        f"the path to stream wave9/3's worktree folder is unreachable entirely: {unreachable} — "
+        "whether it is alive is unknown."
+    ) in said_lines, f"the refusal didn't name the path as unreachable: {denied.stderr!r}"
+    guessed = [line for line in said_lines if "not on disk" in line or "folder is gone" in line]
+    assert not guessed, f'"I cannot see it" was passed off as "it is not there": {guessed!r}'
+
+
+# ─────────────────────────────────────────────────────────────────────────────────────────────
+# A takeover edge acts by TIME, not by topology.
+#
+# The way out "take the address back with the same key" is printed by the tool itself — so mutual
+# takeover edges aren't an invention of the test suite but a promised scenario. While edges were
+# resolved topologically, such a pair gave no record a zero waiting count: the ready queue was
+# empty, NOBODY was silenced, and the address was run by two again — the same defect 1, only
+# quieter than before. The first record in a chain of moves A→B→C revived in exactly the same way.
+#
+# The time rule closes both cases at once: the edge "i took the address from folder j" does NOT act
+# only when it is proven that j's claim began later than the moment of i's takeover. Hence the third
+# part of the rule: the moment of announcement isn't inherited if your own earlier record was
+# silenced by a takeover. Otherwise the returning tab would look as if it had announced itself
+# before its address was taken — and the two records would silence each other.
+# ─────────────────────────────────────────────────────────────────────────────────────────────
+
+
+def hours_ago(hours: float) -> str:
+    """A past moment, in hours: the test sets the event order itself, not the machine's speed.
+
+    Times in a claim are kept to the second, and three runs in a row fit into one second easily.
+    Then the test would be checking not the rule but how fast the machine is.
+    """
+    return (datetime.now() - timedelta(hours=hours)).isoformat(timespec="seconds")
+
+
+@needs_pwsh
+@needs_git
+def test_the_address_returned_by_the_same_key_leaves_exactly_one_leader(tmp_path: Path) -> None:
+    """A takeover circle A↔B: the address returned by the printed command — ONE leader is left.
+
+    The promise that a takeover is reversible rests exactly on this: the tool itself prints the
+    losing tab the command to take it back. While edges were resolved topologically, the two records
+    referred to each other and neither was silenced — a finding arrived at both, and whichever
+    closed it first cleared it for the other.
+    """
+    real_worktrees(tmp_path, {"common": "first-branch", "tree": "second-branch"})
+    board = tmp_path / "board.jsonl"
+    common = tmp_path / "common"
+    tree = tmp_path / "tree"
+    claim(board, common, "wave9", "3", "-StreamName", "Circle", "-Tasks", "10-13")
+    patch_claim(board, common, claimed_at=hours_ago(3))
+    claim(board, tree, "wave9", "3", "-StreamName", "Circle", "-TakeOver")
+    patch_claim(board, tree, claimed_at=hours_ago(2), taken_at=hours_ago(2))
+
+    back = claim(board, common, "wave9", "3", "-TakeOver")
+
+    assert address_of(board, common) == "wave9/3", (
+        f"the tab that took its address back didn't get it: {back!r}"
+    )
+    listed = run_tool(board, "-Mode", "Streams")
+    assert not [line for line in listed.splitlines() if line.startswith("‼️")], (
+        f"after the return two run the address again — the circle wasn't untangled: {listed!r}"
+    )
+    won = str(claim_of(board, common, only_open=True).fields["worktree"])
+    assert f"handed on to {won}" in stream_line_of(listed, tree), (
+        f"the taking record wasn't silenced by the return: {listed!r}"
+    )
+
+    mark = add(board, "wave9/3", "a finding after the return")
+    arrived = bullets(run_deliver(board, common, "Start", "returned"))
+    assert any(mark in line for line in arrived), (
+        f"the finding didn't reach the tab that took its address back: {arrived!r}"
+    )
+    lost = context_text(run_deliver(board, tree, "Start", "giver"))
+    assert mark not in lost, f"the finding went to both sides of the circle at once: {lost!r}"
+    assert (
+        f"‼️ Your stream wave9/3 was taken over into {won} — this session is no longer addressable"
+    ) in lost, f"the second side of the circle went quiet without a word: {lost!r}"
+
+
+@needs_pwsh
+def test_the_returning_tab_gets_its_stream_back_but_not_its_seniority(tmp_path: Path) -> None:
+    """Taking the address back brings the stream too — name, tasks, plan. Seniority it does not.
+
+    Everything is inherited except the moment of announcement: seniority at this address was lost
+    together with the address itself. And it isn't only about fairness: an inherited moment would
+    fall EARLIER than the moment the address was taken — the rival's edge would start acting again,
+    and the two records would silence each other. Today the tab comes back nameless altogether, that
+    is, it loses the stream entirely.
+    """
+    board = tmp_path / "board.jsonl"
+    common = tmp_path / "common"
+    tree = tmp_path / "tree"
+    plan = "docs/superpowers/plans/2026-09-02-circle.md"
+    claim(board, common, "wave9", "3", "-StreamName", "Circle", "-Tasks", "10-13", "-Plan", plan)
+    patch_claim(board, common, claimed_at=hours_ago(3))
+    claim(board, tree, "wave9", "3", "-StreamName", "Taker", "-TakeOver")
+    patch_claim(board, tree, claimed_at=hours_ago(2), taken_at=hours_ago(2))
+
+    back = claim(board, common, "wave9", "3", "-TakeOver")
+
+    returned = claim_of(board, common, only_open=True).fields
+    assert returned["name"] == "Circle" and returned["tasks"] == "10-13", (
+        f"the returning tab announced itself nameless — the stream is lost with its tasks: {back!r}"
+    )
+    assert returned["plan"] == plan, f"the plan path was lost on the address's return: {returned!r}"
+    assert str(returned["claimed_at"]) > hours_ago(1), (
+        "the moment of announcement was inherited from the silenced record — the tab looks as if "
+        "it announced itself before its address was taken, and that pits the two records against "
+        f"each other again: {returned!r}"
+    )
+
+
+@needs_pwsh
+def test_a_chain_of_moves_leaves_one_leader_and_no_resurrected_ghost(tmp_path: Path) -> None:
+    """A chain of moves A→B→C silences A and B: only C runs it, no doubling, display is quiet.
+
+    The rule "a takeover from an already taken-over record doesn't act" was a crutch against cycles
+    and cost exactly this: on two moves in a row record A became the leader again, the address
+    counted as doubled, and a human was invited to sort it out. That fork is closed — the ghost no
+    longer revives.
+    """
+    board = tmp_path / "board.jsonl"
+    first = tmp_path / "first"
+    second = tmp_path / "second"
+    third = tmp_path / "third"
+    claim(board, first, "wave9", "3", "-StreamName", "Chain")
+    patch_claim(board, first, claimed_at=hours_ago(3))
+    claim(board, second, "wave9", "3", "-StreamName", "Chain", "-TakeOver")
+    patch_claim(board, second, claimed_at=hours_ago(2), taken_at=hours_ago(2))
+
+    last = claim(board, third, "wave9", "3", "-StreamName", "Chain", "-TakeOver")
+
+    assert address_of(board, third) == "wave9/3", f"the last move didn't get the address: {last!r}"
+    listed = run_tool(board, "-Mode", "Streams")
+    assert not [line for line in listed.splitlines() if line.startswith("‼️")], (
+        f"the chain of moves revived the first record — the address is doubled: {listed!r}"
+    )
+    for lost in (first, second):
+        assert "handed on" in stream_line_of(listed, lost), (
+            f"after the chain of moves folder {lost}'s record stayed the leader: {listed!r}"
+        )
+
+
+@needs_pwsh
+def test_a_fresh_claim_in_the_old_folder_is_not_quenched_by_the_old_edge(tmp_path: Path) -> None:
+    """The address taken, the stream moved and released honestly — the old folder claims it anew.
+
+    The take-over key isn't needed here: the address has no open claims. And the old takeover edge,
+    were it to act forever, would silence the fresh claim quietly — the folder would announce itself
+    with a success code and stay invisible to neighbours and to findings alike. That is a hidden
+    defect: from the outside it shows up nowhere but in the registry.
+    """
+    board = tmp_path / "board.jsonl"
+    common = tmp_path / "common"
+    tree = tmp_path / "tree"
+    claim(board, common, "wave9", "3", "-StreamName", "First")
+    patch_claim(board, common, claimed_at=hours_ago(3))
+    claim(board, tree, "wave9", "3", "-StreamName", "First", "-TakeOver")
+    patch_claim(board, tree, claimed_at=hours_ago(2), taken_at=hours_ago(2))
+    assert release(board, tree).returncode == 0, "releasing the moved stream didn't go through"
+
+    again = claim(board, common, "wave9", "3", "-StreamName", "Second")
+
+    assert address_of(board, common) == "wave9/3", (
+        f"the old folder's fresh claim was silenced by the old takeover edge: {again!r}"
+    )
+    listed = run_tool(board, "-Mode", "Streams")
+    assert not [line for line in listed.splitlines() if line.startswith("‼️")], (
+        f"the display counts the address as doubled after a lawful re-announcement: {listed!r}"
+    )
+    mark = add(board, "wave9/3", "a finding for the new stream")
+    arrived = bullets(run_deliver(board, common, "Start", "fresh"))
+    assert any(mark in line for line in arrived), (
+        f"the finding didn't reach the tab that claimed the freed address: {arrived!r}"
+    )
+
+
+@needs_pwsh
+def test_the_yield_ring_never_leaves_a_succession_of_another_address(tmp_path: Path) -> None:
+    """The yield ring shifted the number — the succession field neither travels nor disappears.
+
+    The field names the folder from which THIS VERY address was taken. Let it stay through the shift
+    and the claim asserts that it took the address from a folder that never ran it: the real
+    takeover edge disappears, and the silenced record comes back to life together with its inbox and
+    its names.
+
+    ‼️ Throwing it away isn't allowed either: the move DID happen, and the old folder's record is
+    silenced by it. So it goes into the list of past ones TOGETHER WITH ITS OWN address — the one
+    the stream ran before the shift.
+    """
+    board = tmp_path / "board.jsonl"
+    tree = tmp_path / "tree"
+    tree.mkdir()
+    put_claim(
+        registry_dir(board),
+        "moved",
+        **open_claim(
+            str(tree),
+            wave="wave9",
+            stream="3",
+            name="Moved",
+            claimed_at=hours_ago(1),
+            seen_at=now_minus(0),
+            taken_from=str(tmp_path / "common"),
+            taken_at=hours_ago(1),
+        ),
+    )
+    put_claim(
+        registry_dir(board),
+        "older-neighbour",
+        **open_claim(
+            str(tmp_path / "neighbour"),
+            wave="wave9",
+            stream="3",
+            claimed_at=hours_ago(3),
+            seen_at=now_minus(0),
+        ),
+    )
+
+    out = claim_bare(board, tree)
+
+    assert "shifted to the next free one" in out, (
+        f"the scene is assembled wrongly — the yield ring didn't shift the number: {out!r}"
+    )
+    moved = claim_of(board, tree, only_open=True)
+    assert moved.address != "wave9/3", f"the number stayed the same: {moved.fields!r}"
+    assert TAKEN_FROM_FIELD not in moved.fields and "taken_at" not in moved.fields, (
+        "after the shift the claim asserts it took an address it doesn't hold — and the real "
+        f"takeover edge disappeared with it: {moved.fields!r}"
+    )
+    remembered = moved.fields.get(PAST_TAKEOVERS_FIELD)
+    assert isinstance(remembered, list) and len(remembered) == 1, (
+        "the move was simply thrown away on the number shift — the record it silenced comes back: "
+        f"{moved.fields!r}"
+    )
+    assert remembered[0]["stream"] == "3" and folder_key(
+        remembered[0][TAKEN_FROM_FIELD]
+    ) == folder_key(tmp_path / "common"), (
+        f"the past move was recorded under the wrong address and the wrong folder: {remembered!r}"
+    )
+
+
+@needs_pwsh
+@needs_git
+def test_a_claim_of_the_older_version_from_a_subfolder_never_closes_the_new_owners_finding(
+    tmp_path: Path,
+) -> None:
+    """Closing a finding looks for its claim by both routes — else the loser clears another's mail.
+
+    Release and the delivery hook already got a second route to their own claim; closing a finding
+    did not. A claim filed by an older version from a subfolder lies under that subfolder's key, is
+    not found by the canonical key at all, and the closed-check never fires. So the tab whose
+    address was TAKEN clears the new owner's finding — and closing a named address is SHARED, so he
+    will see it neither in delivery nor on the board, while the author gets an "acknowledged".
+    """
+    real_worktrees(tmp_path, {"common": "loser-branch", "tree": "winner-branch"})
+    board = tmp_path / "board.jsonl"
+    common = tmp_path / "common"
+    tree = tmp_path / "tree"
+    deep = subfolder_of(common)
+    put_claim(
+        registry_dir(board),
+        "claim-of-the-older-version",
+        **open_claim(
+            str(deep),
+            wave="wave9",
+            stream="3",
+            name="Loser",
+            branch="loser-branch",
+            seen_at=now_minus(0),
+        ),
+    )
+    claim(board, tree, "wave9", "3", "-StreamName", "Winner", "-TakeOver")
+    mark = add(board, "loser-branch", "a finding for the new owner", cwd=tmp_path)
+
+    closing = tool(board, "-Mode", "Done", "-Id", mark, cwd=deep)
+
+    assert closing.returncode != 0, (
+        f"the tab whose address was taken cleared the new owner's finding: {closing.stdout!r}"
+    )
+    assert "not you" in closing.stderr, f"the wrong guard refused: {closing.stderr!r}"
+    assert any(mark in line for line in bullets(run_deliver(board, tree, "Start", "owner"))), (
+        "the new owner's finding was cleared by someone else's hand"
+    )
+
+
+@needs_pwsh
+def test_adding_a_finding_to_a_doubled_address_says_it_may_reach_the_wrong_tab(
+    tmp_path: Path, registry_invariants: RegistryWatch
+) -> None:
+    """A finding for a doubled address shouts like the display — else the author is calmed in vain.
+
+    The display speaks about doubling in a loud line, while accepting answered "a tab runs the
+    stream — most likely it will get there by itself". It is accepting that reassures the author:
+    after a cheerful report he gives the finding no fallback item, and it may reach the wrong tab —
+    which one exactly is decided by the order of the folder listing.
+    """
+    registry_invariants.waive(
+        'the "one leading record per address" invariant: the doubling is assembled by hand as a '
+        "legacy of the defect — what's checked is that accepting a finding shouts about it too, "
+        "not the display alone"
+    )
+    board = tmp_path / "board.jsonl"
+    folder = registry_dir(board)
+    first = tmp_path / "first"
+    second = tmp_path / "second"
+    put_claim(
+        folder, "one", **open_claim(str(first), wave="wave9", stream="3", seen_at=now_minus(0))
+    )
+    put_claim(
+        folder, "other", **open_claim(str(second), wave="wave9", stream="3", seen_at=now_minus(0))
+    )
+
+    out = run_tool(
+        board, "-Mode", "Add", "-To", "wave9/3", "-Title", "a finding for a doubled address"
+    )
+
+    loud = [line for line in out.splitlines() if line.startswith("‼️")]
+    assert len(loud) == 1, f"accepting the finding stayed quiet about the doubled address: {out!r}"
+    assert "wave9/3" in loud[0], f"the loud line didn't name the doubled address: {loud[0]!r}"
+    assert folder_key(first) in folder_key(out) and folder_key(second) in folder_key(out), (
+        f"the loud line named neither folder — there is nowhere to go and sort it out: {out!r}"
+    )
+
+
+def test_the_stand_reads_supersessions_the_way_the_tool_does(tmp_path: Path) -> None:
+    """The stand's takeover parsing drops records WITH NO address — just as the tool drops them.
+
+    A claim of a stranger's version may have no wave and no number at all. The tool doesn't count
+    such a record among takeovers (no address — nothing to take), while the stand did: two
+    address-less neighbours met on an "address" made of two voids, and the stand saw an edge the
+    tool doesn't have. A divergence between the stand and the tool costs more than a defect in the
+    stand itself: the stand starts pinning down the wrong behaviour.
+    """
+    board = tmp_path / "board.jsonl"
+    folder = registry_dir(board)
+    put_claim(folder, "stranger-taker", state="open", worktree="d:/second", taken_from="d:/first")
+    put_claim(folder, "stranger-former", state="open", worktree="d:/first")
+
+    superseded, faults = supersessions(read_registry(folder))
+
+    assert not superseded, "the stand silenced an address-less record — the tool sees no such edge"
+    assert not faults, f"the stand found a fault where the tool sees no takeover at all: {faults}"
+
+@needs_pwsh
+def test_a_move_outlives_the_folder_taken_by_the_next_stream(
+    tmp_path: Path, registry_invariants: RegistryWatch
+) -> None:
+    """The memory of a takeover outlives the REUSE of a folder, not just a release.
+
+    The succession field lives in the taking folder's claim, and a folder has exactly ONE claim: the
+    moment that same folder took on the next stream, its file was rewritten, the edge vanished — and
+    the abandoned record of the old folder became the leader again. Silently: the display didn't
+    shout, intake reported "it will get there on its own", and the delivery hook carried the finding
+    to an abandoned tab. That is precisely the costliest consequence of defect 1.
+    """
+    registry_invariants.waive(
+        "the invariant 'an address has a leading record': the address ends here DELIBERATELY — the "
+        "stream moved, released and the folder was taken for the next one. What is checked is "
+        "exactly that the ghost of the old folder does not become the leader"
+    )
+    board = tmp_path / "board.jsonl"
+    common = tmp_path / "common"
+    tree = tmp_path / "tree"
+    claim(board, common, "wave9", "3", "-StreamName", "Move")
+    patch_claim(board, common, claimed_at=hours_ago(3))
+    ghost_file = claim_of(board, common, only_open=True).file
+    claim(board, tree, "wave9", "3", "-StreamName", "Move", "-TakeOver")
+    patch_claim(board, tree, claimed_at=hours_ago(2), taken_at=hours_ago(2))
+    assert release(board, tree).returncode == 0, "releasing the moved stream failed"
+    before = ghost_file.read_bytes()
+
+    claim(board, tree, "wave9", "8", "-StreamName", "Next")
+
+    assert ghost_file.read_bytes() == before, "someone else's claim was touched — two writers on it"
+    denied = tool(board, "-Mode", "Add", "-To", "wave9/3", "-Title", "a late finding", cwd=common)
+    assert denied.returncode != 0, (
+        f"a finding for an abandoned address was accepted — the ghost runs the stream again: "
+        f"{denied.stdout!r}"
+    )
+    listed = run_tool(board, "-Mode", "Streams")
+    line = stream_line_of(listed, common)
+    assert "took the address" in line and "wave9/8" in line, (
+        f"the display passes an abandoned record off as a handover to a live tab on it: {line!r}"
+    )
+    loud = [text for text in listed.splitlines() if text.startswith("‼️")]
+    assert any("wave9/3" in text for text in loud), (
+        f"the display stayed silent about an address left with no leading record: {listed!r}"
+    )
+
+
+@needs_pwsh
+def test_a_chain_of_moves_outlives_a_reclaim_of_its_middle_folder(tmp_path: Path) -> None:
+    """The chain A→B→C outlives a reclaim of its MIDDLE folder: the ghost does not come back.
+
+    While only a folder's current claim remembered the takeover, announcing the next stream in the
+    middle folder erased its edge — and the first record came alive beside the last. Two of them ran
+    the address again.
+    """
+    board = tmp_path / "board.jsonl"
+    first = tmp_path / "first"
+    second = tmp_path / "second"
+    third = tmp_path / "third"
+    claim(board, first, "wave9", "3", "-StreamName", "Chain")
+    patch_claim(board, first, claimed_at=hours_ago(4))
+    claim(board, second, "wave9", "3", "-StreamName", "Chain", "-TakeOver")
+    patch_claim(board, second, claimed_at=hours_ago(3), taken_at=hours_ago(3))
+    claim(board, third, "wave9", "3", "-StreamName", "Chain", "-TakeOver")
+    patch_claim(board, third, claimed_at=hours_ago(2), taken_at=hours_ago(2))
+
+    claim(board, second, "wave9", "9", "-StreamName", "Next")
+
+    assert address_of(board, third) == "wave9/3", "the last record of the chain lost the address"
+    listed = run_tool(board, "-Mode", "Streams")
+    assert not [text for text in listed.splitlines() if text.startswith("‼️")], (
+        f"reclaiming the middle folder resurrected the first record — address doubled: {listed!r}"
+    )
+    assert "handed on to" in stream_line_of(listed, first), (
+        f"the first record of the chain became the leader again: {listed!r}"
+    )
+    mark = add(board, "wave9/3", "a finding after the middle folder was reclaimed")
+    arrived = bullets(run_deliver(board, third, "Start", "last"))
+    assert any(mark in text for text in arrived), f"the finding missed the leader: {arrived!r}"
+    lost = context_text(run_deliver(board, first, "Start", "first"))
+    assert mark not in lost, f"the finding went to the abandoned tab as well: {lost!r}"
+
+
+@needs_pwsh
+def test_a_claim_quenched_the_moment_it_is_written_never_reports_plain_success(
+    tmp_path: Path,
+) -> None:
+    """Your own record came out superseded at once — announcing shouts and REFUSES, not reports.
+
+    The claim landed in its own file, but whether it leads or is already superseded is decided by
+    the registry as a whole: a neighbouring tab took the address at the very moment ours was reading
+    the registry — and as written down, our claim turned out to be moved away. A zero exit code
+    would be read by the tab as "announced, working", and it would go off running a stream that does
+    not exist from the outside.
+    """
+    board = tmp_path / "board.jsonl"
+    mine = tmp_path / "mine"
+    rival = tmp_path / "rival"
+    mine.mkdir(parents=True, exist_ok=True)
+    # ‼️ The moment of the other side's takeover is a minute AHEAD: that is what the race this scene
+    # was written for looks like (the neighbour took the address while our tab was reading the
+    # registry). It also makes the outcome repeatable: had we put "now", a fraction of a second
+    # would decide it.
+    put_claim(
+        registry_dir(board),
+        "rival",
+        **open_claim(
+            str(rival),
+            wave="wave9",
+            stream="3",
+            claimed_at=hours_ago(3),
+            seen_at=hours_ago(3),
+            taken_from=str(mine),
+            taken_at=hours_ago(-1 / 60),
+        ),
+    )
+
+    done = tool(
+        board,
+        "-Mode",
+        "Claim",
+        "-Wave",
+        "wave9",
+        "-Stream",
+        "3",
+        "-StreamName",
+        "Fresh",
+        "-TakeOver",
+        cwd=mine,
+    )
+
+    assert done.returncode != 0, (
+        f"announcing reported success where the record was superseded at once: {done.stdout!r}"
+    )
+    loud = [text for text in done.stdout.splitlines() if text.startswith("‼️")]
+    assert any("SUPERSEDED" in text for text in loud), (
+        f"announcing stayed silent about the record being superseded at once: {done.stdout!r}"
+    )
+    assert "Address wave9/3 taken from folder" in done.stdout, (
+        f"the report about the takeover wasn't printed at all: {done.stdout!r}"
+    )
+    assert folder_key(str(rival)) in folder_key(done.stdout), (
+        f"the folder the address stayed with isn't named — nowhere to go and sort it out: "
+        f"{done.stdout!r}"
+    )
+    assert "-TakeOver" in done.stdout, (
+        f"a live record runs the address, yet no working way out was printed: {done.stdout!r}"
+    )
+    # ‼️ Whether the claim was written we ask across the CLOSED ones too: a superseded record does
+    # not count as open, while the refusal says outright that the file is in place and the command
+    # need not be repeated.
+    assert claim_of(board, mine, only_open=False).address == "wave9/3", (
+        "the claim file wasn't written, and the refusal says otherwise"
+    )
+
+
+@needs_pwsh
+def test_an_edge_without_a_moment_no_longer_locks_the_address_forever(tmp_path: Path) -> None:
+    """A takeover edge without a moment no longer silences whoever announced LATER.
+
+    The succession field without a moment was written only by an unreleased interim version, and it
+    wrote both fields at the very same instant of announcing. While such an edge held
+    unconditionally, it locked the address behind the victim forever: however many times she
+    announced anew, the edge silenced every fresh claim of hers, and the way out printed for her did
+    not work — there was no one left to take the address from.
+    """
+    board = tmp_path / "board.jsonl"
+    mine = tmp_path / "mine"
+    rival = tmp_path / "rival"
+    put_claim(
+        registry_dir(board),
+        "rival",
+        **open_claim(
+            str(rival),
+            wave="wave9",
+            stream="3",
+            claimed_at=hours_ago(3),
+            seen_at=hours_ago(3),
+            taken_from=str(mine),
+        ),
+    )
+
+    out = claim(board, mine, "wave9", "3", "-StreamName", "Reclaim", "-TakeOver")
+
+    assert "Address wave9/3 taken from folder" in out, "the takeover wasn't named at all"
+    assert "SUPERSEDED" not in out, (
+        f"a fresh claim was silenced by an edge known only to be older: {out!r}"
+    )
+    assert address_of(board, mine) == "wave9/3", "the tab that reclaimed the address didn't get it"
+    mark = add(board, "wave9/3", "a finding after the address was reclaimed")
+    arrived = bullets(run_deliver(board, mine, "Start", "returned"))
+    assert any(mark in text for text in arrived), (
+        f"the finding for the address missed the tab that reclaimed it: {arrived!r}"
+    )
+
+
+@needs_pwsh
+def test_show_shouts_about_an_address_left_without_a_leader(
+    tmp_path: Path, registry_invariants: RegistryWatch
+) -> None:
+    """The display shouts about the opposite trouble too: open claims on an address, no leader.
+
+    That is what a tab that does not exist from the outside looks like: its claim file is open, it
+    believes it is running the stream, yet intake will not accept a finding for the address and the
+    delivery hook will not bring one. About a doubled address the display shouted; about this one it
+    stayed silent.
+    """
+    registry_invariants.waive(
+        "the watch is waived entirely: the registry is assembled by hand as exactly this scene — "
+        "what is checked is that the display shouts about it"
+    )
+    board = tmp_path / "board.jsonl"
+    folder = registry_dir(board)
+    lost = tmp_path / "abandoned"
+    gone = tmp_path / "moved-away"
+    put_claim(
+        folder, "abandoned", **open_claim(str(lost), claimed_at=hours_ago(3), seen_at=hours_ago(0))
+    )
+    put_claim(
+        folder,
+        "moved-away",
+        **open_claim(
+            str(gone),
+            state="released",
+            claimed_at=hours_ago(2),
+            seen_at=hours_ago(0),
+            taken_from=str(lost),
+            taken_at=hours_ago(2),
+        ),
+    )
+
+    listed = run_tool(board, "-Mode", "Streams")
+
+    loud = [text for text in listed.splitlines() if text.startswith("‼️")]
+    assert len(loud) == 1 and "wave9/3" in loud[0], (
+        f"the display stayed silent about an address with no leading record: {listed!r}"
+    )
+    assert folder_key(str(lost)) in folder_key(listed), (
+        f"the loud line didn't name the abandoned tab's folder: {listed!r}"
+    )
+
+
+def test_registry_invariants_catch_an_address_without_a_leader(
+    tmp_path: Path, registry_invariants: RegistryWatch
+) -> None:
+    """The same question, put to the stand's watch: a leaderless registry it must call a fault.
+
+    ‼️ This test cannot be red against the code without the fix: what is under test here is not the
+    mechanism but the stand itself, and it pins down a NEW skill of its. The mechanism takes no part
+    in it at all.
+    """
+    registry_invariants.waive("the registry is inconsistent on purpose — the watch is the subject")
+    board = tmp_path / "board.jsonl"
+    folder = registry_dir(board)
+    put_claim(folder, "abandoned", **open_claim("d:/first", claimed_at=hours_ago(3)))
+    put_claim(
+        folder,
+        "moved-away",
+        **open_claim(
+            "d:/second",
+            state="released",
+            claimed_at=hours_ago(2),
+            taken_from="d:/first",
+            taken_at=hours_ago(2),
+        ),
+    )
+
+    faults = registry_faults(folder)
+
+    assert any("has no leading record left" in fault for fault in faults), (
+        f"the watch stayed silent on an address that has no leader left: {faults}"
+    )
+
+
+@needs_pwsh
+def test_the_memory_of_past_moves_is_capped_and_drops_the_oldest(tmp_path: Path) -> None:
+    """The list of past takeovers does not grow forever: the excess goes from the oldest end.
+
+    ‼️ This test pins down a LIMIT rather than the behaviour being fixed, yet it still comes out red
+    against the code without the fix: there is no list there at all.
+    """
+    board = tmp_path / "board.jsonl"
+    here = tmp_path / "folder"
+    old_moves = [
+        {
+            "wave": "wave9",
+            "stream": str(number),
+            "taken_from": f"d:/folder-{number}",
+            "taken_at": hours_ago(100 - number),
+        }
+        for number in range(1, 26)
+    ]
+    put_claim(
+        registry_dir(board),
+        "folder",
+        **open_claim(
+            str(here),
+            wave="wave9",
+            stream="26",
+            state="released",
+            claimed_at=hours_ago(80),
+            past_takeovers=old_moves,
+        ),
+    )
+
+    claim(board, here, "wave9", "30", "-StreamName", "Next")
+
+    kept = claim_of(board, here, only_open=True).fields["past_takeovers"]
+    assert isinstance(kept, list) and len(kept) == 20, (
+        f"the memory of past takeovers isn't capped at two dozen: {kept}"
+    )
+    numbers = [str(move["stream"]) for move in kept]
+    assert "25" in numbers and "1" not in numbers, (
+        f"what was dropped isn't the oldest takeovers but whichever came to hand: {numbers}"
+    )
+
+
+@needs_pwsh
+@needs_git
+def test_the_older_copy_keeps_the_memory_of_past_moves_it_does_not_understand(
+    tmp_path: Path, registry_invariants: RegistryWatch
+) -> None:
+    """An older copy of the toolkit from a live tree doesn't understand the list — nor erase it.
+
+    There are about twenty copies, nothing synchronizes them, and the older copy's delivery hook
+    rewrites the claim file IN FULL on every turn of the tab. Were it to throw the unfamiliar field
+    away, the memory of the takeover would die on the very first turn, and the abandoned record of
+    the old folder would become the leader again.
+    """
+    registry_invariants.waive(
+        "the invariant 'an address has a leading record': the stream moved, released and the "
+        "folder was taken for the next one — what is checked is that an older copy's turn does "
+        "not erase the memory of the takeover"
+    )
+    board = tmp_path / "board.jsonl"
+    common = tmp_path / "common"
+    tree = tmp_path / "tree"
+    claim(board, common, "wave9", "3", "-StreamName", "Move")
+    patch_claim(board, common, claimed_at=hours_ago(3))
+    claim(board, tree, "wave9", "3", "-StreamName", "Move", "-TakeOver")
+    patch_claim(board, tree, claimed_at=hours_ago(2), taken_at=hours_ago(2))
+    assert release(board, tree).returncode == 0, "releasing the moved stream failed"
+    claim(board, tree, "wave9", "8", "-StreamName", "Next")
+    old = older_copy(tmp_path)
+
+    walked = older_deliver(old, board, tree, "old")
+
+    assert walked.returncode == 0, f"the old delivery hook fell over: {walked.stderr!r}"
+    kept = claim_of(board, tree, only_open=True).fields.get(PAST_TAKEOVERS_FIELD)
+    assert isinstance(kept, list) and kept, (
+        f"the older copy erased the memory of past takeovers: {kept!r}"
+    )
+    denied = tool(
+        board, "-Mode", "Add", "-To", "wave9/3", "-Title", "after the older copy", cwd=common
+    )
+    assert denied.returncode != 0, (
+        f"after the older copy's turn the ghost runs the address again: {denied.stdout!r}"
+    )
+
+
+@needs_pwsh
+def test_the_invariant_never_calls_a_lawful_move_a_circle(
+    tmp_path: Path, registry_invariants: RegistryWatch
+) -> None:
+    """Silencing every record of an address is NOT a circle — the watch must name the scene right.
+
+    A folder took the address and then took on the next stream: its record is about a different
+    address now, and the old one is left with a single silenced record. The old condition
+    ("everything is silenced") did once really mean a circle — only a neighbour on the same address
+    could silence an address's last record. With the memory of takeovers a record of ANOTHER address
+    silences it, and the assertion started shouting "the takeover goes in a circle" at the most
+    common lawful scene, the very one the fix was made for. The fifth assertion speaks about it.
+    """
+    registry_invariants.waive(
+        "the registry is assembled by hand: the address really does have no leader left — what is "
+        "checked is exactly the name the watch gives this scene"
+    )
+    board = tmp_path / "board.jsonl"
+    folder = registry_dir(board)
+    put_claim(folder, "former", **open_claim("d:/first", wave="wave9", stream="3"))
+    put_claim(
+        folder,
+        "taker",
+        **open_claim(
+            "d:/second",
+            wave="wave9",
+            stream="9",
+            past_takeovers=[
+                {
+                    "wave": "wave9",
+                    "stream": "3",
+                    TAKEN_FROM_FIELD: "d:/first",
+                    TAKEN_AT_FIELD: hours_ago(2),
+                }
+            ],
+        ),
+    )
+
+    faults = registry_faults(folder)
+
+    assert not [fault for fault in faults if "in a circle" in fault], (
+        f"a lawful takeover was called a circle — the watch shouts at the scene it was made for: "
+        f"{faults}"
+    )
+    assert any("has no leading record left" in fault for fault in faults), (
+        f"the scene where the address was left with no leader went by in silence: {faults}"
+    )
+
+
+@needs_pwsh
+def test_the_answer_names_the_folder_where_the_address_really_went(
+    tmp_path: Path, registry_invariants: RegistryWatch
+) -> None:
+    """The victim is told the END of the chain of takeovers, not the middle folder.
+
+    The chain A→B→C is lawful, and the middle folder may since have taken on the next stream. The
+    answer to "where did the address go" used to break off at the very first link whose record
+    changed address — that is, exactly where the memory of takeovers was needed. A human was sent to
+    a folder that holds nothing about that address.
+    """
+    registry_invariants.waive(
+        "the invariant 'an address has a leading record': the stream moved along a chain and ended "
+        "there — what is checked is which folder the victim is told about"
+    )
+    board = tmp_path / "board.jsonl"
+    first = tmp_path / "first"
+    second = tmp_path / "second"
+    third = tmp_path / "third"
+    claim(board, first, "wave9", "3", "-StreamName", "Chain")
+    patch_claim(board, first, claimed_at=hours_ago(5))
+    claim(board, second, "wave9", "3", "-StreamName", "Chain", "-TakeOver")
+    patch_claim(board, second, claimed_at=hours_ago(4), taken_at=hours_ago(4))
+    claim(board, third, "wave9", "3", "-StreamName", "Chain", "-TakeOver")
+    patch_claim(board, third, claimed_at=hours_ago(3), taken_at=hours_ago(3))
+    # The middle folder took on the next stream; the last one honestly released its own.
+    claim(board, second, "wave9", "9", "-StreamName", "Next")
+    assert release(board, third).returncode == 0, "releasing the chain's last folder failed"
+
+    given = release(board, first).stdout
+
+    assert folder_key(str(third)) in folder_key(given), (
+        f"the end of the chain of takeovers isn't named — nowhere to go and sort it out: {given!r}"
+    )
+    assert folder_key(str(second)) not in folder_key(given), (
+        f"the victim is sent to the middle folder, which holds nothing about the address: {given!r}"
+    )
+
+
+@needs_pwsh
+def test_a_dead_end_is_never_printed_as_the_way_out(
+    tmp_path: Path, registry_invariants: RegistryWatch
+) -> None:
+    """The take-over key is advised only where it has someone to take the address from.
+
+    A neighbouring folder took the address and finished the stream there — the address has no
+    leading record left. Both release and the delivery hook used to advise the victim to take the
+    address back with the take-over key, and the key answered "wasn't needed: no other folder's
+    claim runs the address". The tab went round in circles carrying out the one way out printed for
+    it — and a printed way out has to work.
+    """
+    registry_invariants.waive(
+        "the invariant 'an address has a leading record': the stream moved and ended there — what "
+        "is checked is exactly that the truth is told about this dead end"
+    )
+    board = tmp_path / "board.jsonl"
+    mine = tmp_path / "mine"
+    rival = tmp_path / "rival"
+    claim(board, mine, "wave9", "3", "-StreamName", "Move")
+    patch_claim(board, mine, claimed_at=hours_ago(4))
+    claim(board, rival, "wave9", "3", "-StreamName", "Move", "-TakeOver")
+    patch_claim(board, rival, claimed_at=hours_ago(2), taken_at=hours_ago(2))
+    assert release(board, rival).returncode == 0, "releasing the moved stream failed"
+
+    given = release(board, mine).stdout
+    walked = context_text(run_deliver(board, mine, "Start", "victim"))
+
+    assert "-TakeOver" not in given, (
+        f"release advises a key that has no one to take the address from: {given!r}"
+    )
+    assert "nothing to take the address back from" in given, (
+        f"release stays silent about there being no one to take the address from: {given!r}"
+    )
+    assert "-TakeOver" not in walked, (
+        f"the delivery hook advises a key with no one to take the address from: {walked!r}"
+    )
+    assert "under a free number" in walked, (
+        f"the delivery hook printed no working way out for the tab: {walked!r}"
+    )
+
+
+@needs_pwsh
+def test_a_forgotten_move_is_named_aloud_when_the_memory_overflows(tmp_path: Path) -> None:
+    """A takeover forgotten to the memory limit is named ALOUD, not lost in silence.
+
+    With every dropped edge the abandoned record of the old folder becomes the leader on that
+    address again, and neither the display, nor intake, nor the delivery hook will say a word about
+    it. The scene is practically unreachable (it takes a twenty-first takeover by one folder), but
+    being unreachable is no reason to stay silent.
+    """
+    board = tmp_path / "board.jsonl"
+    here = tmp_path / "folder"
+    old_moves = [
+        {
+            "wave": "wave9",
+            "stream": str(number),
+            TAKEN_FROM_FIELD: f"d:/folder-{number}",
+            TAKEN_AT_FIELD: hours_ago(100 - number),
+        }
+        for number in range(1, 26)
+    ]
+    put_claim(
+        registry_dir(board),
+        "folder",
+        **open_claim(
+            str(here),
+            wave="wave9",
+            stream="26",
+            state="released",
+            claimed_at=hours_ago(80),
+            past_takeovers=old_moves,
+        ),
+    )
+
+    out = claim(board, here, "wave9", "30", "-StreamName", "Next")
+
+    loud = [text for text in out.splitlines() if text.startswith("‼️")]
+    assert any("The takeover memory is full" in text for text in loud), (
+        f"the forgotten takeover was lost in silence — nobody said a word about it: {out!r}"
+    )
+    assert "wave9/1" in out and "folder-1" in out, (
+        f"the forgotten takeover isn't named: neither address nor the folder it left: {out!r}"
     )
