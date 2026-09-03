@@ -82,7 +82,10 @@ function Get-CurrentKeys {
     } catch {
         # Detached HEAD or a broken git — the second key is enough.
     }
-    $keys.Add((Get-StreamKey -Raw (Split-Path -Leaf $PWD)))
+    # We take the folder name from the worktree ROOT, not from the current directory: a session
+    # that has stepped into a subfolder otherwise starts calling itself by that subfolder's name and
+    # stops answering to its own.
+    $keys.Add((Get-StreamKey -Raw ((Get-TreeRoot) -split '/')[-1]))
     $script:WaveBoardCurrentKeys = @($keys | Where-Object { $_ } | Select-Object -Unique)
     return $script:WaveBoardCurrentKeys
 }
@@ -422,7 +425,13 @@ function Test-AliveBeacon {
     # overnight pause in the conversation. Erring toward "alive" is safe: the finding lands on the
     # board and waits for the session. Erring the other way sends the finding into the "Wave
     # loose ends" pile past a neighbour who's actually alive — that is, past the whole mechanism.
-    $aliveHours = 12
+    #
+    # ‼️ We take the SHARED threshold, not our own number alongside it. The comment on the shared
+    # threshold flatly promises it is one and the same for the tree beacon and for the claim's
+    # checked-in mark; while the number sat here as a second copy, editing either of them silently
+    # gave two answers to one question — the same tree would count as alive in the display and
+    # abandoned in the hint.
+    $aliveHours = Get-AliveHours
     $beacon = Get-AliveBeaconPath -TreePath $TreePath
     try {
         if (-not (Test-Path $beacon)) { return $false }
@@ -608,12 +617,151 @@ function Get-RegistryDir {
     return [System.IO.Path]::Combine($parent, 'streams')
 }
 
+function Get-RepoMarkerState {
+    param([string]$StartDir)
+    # Is there a repository here AT ALL — a question for the disk, not for git. We need it because
+    # git stays silent in exactly the same way in two opposite cases: there is no repository here at
+    # all (then there is no tree either, and the current folder IS the session's identity — nothing
+    # can drift) and git is out of sorts over a live repository (then falling back to the current
+    # folder CHANGES the session's identity). Different decisions follow from those two answers, so
+    # we tell them apart.
+    #
+    # ‼️ There are THREE outcomes, not two: `found` — the marker was found; `none` — it definitely
+    # isn't here; `unknown` — we couldn't find out. The third used to be passed off as the second:
+    # path parsing on an unreachable path (a dropped drive, a vanished network share) died, the
+    # catch quietly answered "no repository", and the caller read that as permission to work off the
+    # current folder — that is, the session's identity changed silently in the very place strict
+    # mode forbids it. "Not visible" and "not there" must never be conflated anywhere in this
+    # toolkit: every refusal out loud rests on that difference.
+    #
+    # We ask the system the same way everything else in the toolkit does (`Get-PathState`): that
+    # tells "this doesn't exist" apart from "couldn't check", and a shell existence check doesn't.
+    # The path is cut with plain string ops: shell path parsing on a nonexistent drive dies by
+    # itself.
+    #
+    # In a worktree `.git` is a file, not a folder, so we don't check the kind.
+    if (-not $StartDir) { $StartDir = $PWD.Path }
+    try {
+        $dir = $StartDir
+        while ($dir) {
+            $state = Get-PathState -Path ([System.IO.Path]::Combine($dir, '.git'))
+            if ($state.Kind -eq 'container' -or $state.Kind -eq 'leaf') {
+                return [pscustomobject]@{ Kind = 'found'; Reason = '' }
+            }
+            if ($state.Kind -eq 'unknown') {
+                return [pscustomobject]@{ Kind = 'unknown'; Reason = $state.Reason }
+            }
+            $parent = [System.IO.Path]::GetDirectoryName($dir)
+            if (-not $parent -or $parent -eq $dir) { break }
+            $dir = $parent
+        }
+    } catch {
+        return [pscustomobject]@{ Kind = 'unknown'; Reason = (Get-FailureReason -Failure $_) }
+    }
+    # We climbed all the way to the top and found no marker. That is a "no" only where the path is
+    # REACHABLE: on a dead drive and on a vanished share every step up answers with the same
+    # "nothing here", and quietly concluding "there was never a repository here" would be an
+    # invention.
+    if (-not (Test-PathReachable -Path ([System.IO.Path]::Combine($StartDir, '.git')))) {
+        return [pscustomobject]@{
+            Kind   = 'unknown'
+            Reason = "the path is unreachable altogether ($StartDir): there isn't a single existing folder above it"
+        }
+    }
+    return [pscustomobject]@{ Kind = 'none'; Reason = '' }
+}
+
+# The worktree root, asked for ONCE per run. Three variables instead of one: a failure must not be
+# remembered as a success, or a strict reader would get the current folder quietly substituted in —
+# the very thing this whole change was made against.
+$script:WaveBoardTreeRootAsked = $false
+$script:WaveBoardTreeRoot = ''
+$script:WaveBoardTreeRootReason = ''
+
+function Get-TreeRoot {
+    param([switch]$Strict)
+    # ‼️ Who this session is. EVERYTHING that identifies it follows from here: the claim file's name,
+    # the liveness beacon, the stream keys, and the "is this my claim" check. So the answer must be
+    # one and the same no matter which folder of the tree the session was launched from. Before,
+    # each of those places took the current folder — and a session that started in a subfolder of
+    # its own tree announced under one key and released under another: release couldn't find its own
+    # claim and answered "nothing to release" WITH A SUCCESS CODE. The session closed, while
+    # neighbours went on addressing findings to a stream they believed was alive.
+    #
+    # We ask git once per run, same as for the worktree list: the answer doesn't change within a
+    # run, and many callers need it — the delivery hook runs on every user move.
+    #
+    # `-Strict` is for whoever has a stream's FATE riding on the key (announcing and releasing):
+    # there a git failure is said out loud. For tolerant readers (the delivery hook, display) the
+    # fallback to the current folder is harmless: there a miss costs one invisible line, while a
+    # change of identity costs the stream.
+    if (-not $script:WaveBoardTreeRootAsked) {
+        $script:WaveBoardTreeRootAsked = $true
+        try {
+            $top = @(& git rev-parse --show-toplevel 2>$null)
+            if ($LASTEXITCODE -eq 0 -and $top.Count -gt 0 -and $top[0]) {
+                $script:WaveBoardTreeRoot = ("$($top[0])".Trim() -replace '\\', '/').TrimEnd('/')
+            } else {
+                $script:WaveBoardTreeRootReason = "git did not name the worktree root (exit code $LASTEXITCODE)"
+            }
+        } catch {
+            $script:WaveBoardTreeRootReason = Get-FailureReason -Failure $_
+        }
+    }
+    if ($script:WaveBoardTreeRoot) { return $script:WaveBoardTreeRoot }
+    $here = ($PWD.Path -replace '\\', '/').TrimEnd('/')
+    # ‼️ There is no repository here at all — so there is no tree either, and the current folder is
+    # this session's only identity: announcing and releasing have nothing to drift between. Refusing
+    # here would be wrong for the strict reader and the tolerant one alike — otherwise the toolkit
+    # would stop working everywhere the board is supplied explicitly and an ordinary folder stands
+    # where a repository would be.
+    #
+    # ‼️ But "couldn't find out" is a refusal for the strict reader, on a par with "there is a
+    # repository". Otherwise we'd get the worst of it: on an unreachable path a session would
+    # silently change its own identity, and the blow would land in the most expensive place —
+    # release would stop finding its own claim and exit with SUCCESS. For tolerant readers (the
+    # delivery hook, display) the fallback is harmless: there a miss costs one invisible line.
+    if ($Strict) {
+        $marker = Get-RepoMarkerState
+        if ($marker.Kind -eq 'found') {
+            throw "couldn't work out the worktree root: $($script:WaveBoardTreeRootReason). There IS a repository here, which means the session would identify itself by the current folder ($here) — and under that key neither release nor the neighbours will find its claim, and the stream is quietly lost. Try again once git answers."
+        }
+        if ($marker.Kind -eq 'unknown') {
+            throw "couldn't work out the worktree root: $($script:WaveBoardTreeRootReason). Whether there is a repository here couldn't be found out either ($($marker.Reason)) — and not seeing something is not the same as it not being there: taking one for the other, the session would silently identify itself by the current folder ($here), and neither release nor the neighbours would find its claim. Try again once the path reads again."
+        }
+    }
+    return $here
+}
+
+function Get-FolderKey {
+    param([string]$Path)
+    # ‼️ A worktree folder in ONE form, and this normalization is ONE for the whole toolkit: forward
+    # slashes, no trailing one, no difference in letter case. Five places compare the folder recorded
+    # in a claim against a session's key — rivals for a number, inheriting former branch names, the
+    # second route to one's own claim, the "that's you" mark, and filtering out one's own claim when
+    # handing out names — and each of them wrote the normalization by hand. While the normalizations
+    # matched letter for letter this held; but the key's source changed from the shell to git, and
+    # five identical-looking expressions are five places where they can drift. Let them drift by so
+    # much as the case of the drive letter and a session would count its own claim as a rival and
+    # lose its memory of former branch names.
+    #
+    # ‼️ This key is for COMPARISON only. The claim records the worktree folder as it is — a
+    # lowercased path must never be shown to a human, who hunts for it with their eyes in a list.
+    #
+    # We fold the case explicitly instead of trusting the shell to compare strings case-insensitively
+    # on its own: the same key is used by ordering (which compares strings BYTE BY BYTE) and by sets,
+    # and the shell's convention doesn't hold there. Paths in this toolkit are Windows ones, where
+    # case means nothing; on systems where it does, two twin folders differing only in case would
+    # count as one — a deliberate price for a session recognizing itself in its own claim.
+    return (([string]$Path) -replace '\\', '/').TrimEnd('/').ToLowerInvariant()
+}
+
 function Get-PathKey {
     param([string]$TreePath)
     # The claim file's name. The readable part is the tree's folder name; the tail is a fingerprint
     # of the full path — two folders with the same name in different places on disk shouldn't
     # overwrite each other's claims.
-    $normalized = ($TreePath -replace '\\', '/').TrimEnd('/').ToLowerInvariant()
+    $normalized = Get-FolderKey -Path $TreePath
     $leaf = ($normalized.Split('/')[-1] -replace '[^\p{L}\p{Nd}]+', '-').Trim('-')
     if (-not $leaf) { $leaf = 'tree' }
     $sha = [System.Security.Cryptography.SHA1]::Create()
@@ -770,13 +918,27 @@ function Get-NextStreamNumber {
     # The next free stream number within a wave. A number is always needed — it's how the stream is
     # named in an address — but where there's no plan, a human has nowhere to take it from: it was
     # never assigned there.
-    $here = ($TreePath -replace '\\', '/').TrimEnd('/')
+    $here = Get-FolderKey -Path $TreePath
     $inWave = @($Claims | Where-Object { $_.WaveKey -eq $WaveKey })
-    # This session's own earlier claim on this wave isn't a "neighbour": re-announcing the same
+    # This session's own earlier OPEN claim on this wave isn't a "neighbour": re-announcing the same
     # session must stay the same stream, otherwise an address it already told its neighbours would
     # change on its own.
+    #
+    # ‼️ A released one of ours doesn't count. While it did, the folder HANDED its old number to the
+    # next tenant all by itself, without a single key: the stream was released properly, another one
+    # announced from the same folder — and got the same address, and with it the released stream's
+    # name memory and its mail. All while the tool promised, at release time, that findings for the
+    # released stream would no longer be accepted. The decision says it plainly: after an honest
+    # release this is an ordinary new announcement and a FREE number.
+    #
+    # ‼️ A superseded one of ours doesn't count either — for the same reason a released one doesn't:
+    # another folder took its address, and this session is no longer entitled to carry the stream on
+    # under it. We ask for the state with the SINGLE closed-ness signal, not with a field of the
+    # file: supersession lives only in the parsed registry, and reading the field directly won't see
+    # it.
     $mine = @($inWave | Where-Object {
-            (([string]$_.Record.worktree) -replace '\\', '/').TrimEnd('/') -eq $here -and $_.StreamKey
+            (Get-FolderKey -Path $_.Record.worktree) -eq $here -and $_.StreamKey -and
+            -not $_.Closed
         })
     if ($mine.Count -gt 0) { return $mine[0].StreamKey }
     return (Get-FreeStreamNumber -Claims $Claims -WaveKey $WaveKey -TreePath $TreePath)
@@ -792,16 +954,47 @@ function Get-FreeStreamNumber {
     # We count from the highest number taken, not from how many claims exist: a released stream
     # doesn't free its number (findings are addressed to it by that number), and the plan's numbers
     # don't run in sequence anyway.
-    $here = ($TreePath -replace '\\', '/').TrimEnd('/')
+    $here = Get-FolderKey -Path $TreePath
     $used = 0
     foreach ($claim in @($Claims | Where-Object { $_.WaveKey -eq $WaveKey })) {
-        if (((([string]$claim.Record.worktree) -replace '\\', '/').TrimEnd('/')) -eq $here) { continue }
+        # ‼️ We skip only our own OPEN claim. Our own RELEASED one still holds its number: it went
+        # into the address findings were sent to, and its file can stay in the registry (announcing
+        # rewrites a previous version's claim from a subfolder in place, not over the canonical
+        # name). Not counting it would put two different streams with one address in the same wave,
+        # and the invariant guard would call that handing out a number twice.
+        #
+        # ‼️ And our own SUPERSEDED one holds its number too: another folder took its address, and
+        # there it's alive right now. Not counting it would free up a number a neighbour is running
+        # this very moment.
+        if ((Get-FolderKey -Path $claim.Record.worktree) -eq $here -and
+            -not $claim.Closed) { continue }
         $digits = [regex]::Match([string]$claim.StreamKey, '^\d+')
         if (-not $digits.Success) { continue }
         $number = [int]$digits.Value
         if ($number -gt $used) { $used = $number }
     }
     return [string]($used + 1)
+}
+
+function Get-DistinctStreamNumber {
+    param($Claims, [string]$WaveKey, [string]$StreamKey)
+    # A distinguisher for a taken number: `2` → `2k`. Needed by the harmless way out of the "address
+    # taken" refusal — the one printed FIRST. The case is real: `wave9/2` and `wave9/2k` are open in
+    # the registry right now, and that distinguisher was invented by hand half a day after the
+    # collision.
+    #
+    # ‼️ The form MUST PARSE as an address (digits and one letter), or the advice would send a session
+    # to a stream nobody can reach by the main form of address. So the letter goes onto the number's
+    # digits, not onto the whole of it: `3b` would give `3bk`, and such an address doesn't parse at
+    # all.
+    $digits = [regex]::Match([string]$StreamKey, '^\d+')
+    if (-not $digits.Success) { return '' }
+    $busy = @($Claims | Where-Object { $_.WaveKey -eq $WaveKey } | ForEach-Object { $_.StreamKey })
+    foreach ($letter in @('k', 'm', 'n', 'p', 'r', 's', 't')) {
+        $candidate = "$($digits.Value)$letter"
+        if ($candidate -notin $busy) { return $candidate }
+    }
+    return ''
 }
 
 function Test-ClaimHasPlan {
@@ -861,19 +1054,34 @@ function Get-ClaimOrder {
     }
     return [pscustomobject]@{
         When = $when
-        Path = (([string]$Claim.worktree) -replace '\\', '/').TrimEnd('/').ToLowerInvariant()
+        Path = Get-FolderKey -Path $Claim.worktree
     }
+}
+
+function Compare-ClaimOrder {
+    param($Left, $Right)
+    # The same FULL ordering key, but in the shape of a comparison: needed where records are walked
+    # by hand rather than sorted on the way out. ‼️ The key has to be the full one (announce time,
+    # tree path on a tie): by time alone, two claims filed in the same second would line up in a
+    # different order for different sessions — and different sessions would then supersede different
+    # records.
+    $a = Get-ClaimOrder -Claim $Left
+    $b = Get-ClaimOrder -Claim $Right
+    if ($a.When -lt $b.When) { return -1 }
+    if ($a.When -gt $b.When) { return 1 }
+    return [string]::CompareOrdinal($a.Path, $b.Path)
 }
 
 function Get-NumberRivals {
     param($Claims, [string]$WaveKey, [string]$StreamKey, [string]$TreePath)
-    # Claims from OTHER trees on the same address — the same wave and the same stream number.
-    # Released ones don't count: the session that ran that stream is gone, so there's nothing to
-    # dispute.
-    $here = ($TreePath -replace '\\', '/').TrimEnd('/')
+    # Claims from OTHER trees on the same address — the same wave and the same stream number. Closed
+    # ones don't count: a released one has no session left to run the stream, a superseded one has
+    # had its address taken away, and neither has anything to dispute. We ask for the state with the
+    # SINGLE signal: supersession is visible only in the parsed registry.
+    $here = Get-FolderKey -Path $TreePath
     return @($Claims | Where-Object {
-            $_.WaveKey -eq $WaveKey -and $_.StreamKey -eq $StreamKey -and $_.State -ne 'released' -and
-            ((([string]$_.Record.worktree) -replace '\\', '/').TrimEnd('/')) -ne $here
+            $_.WaveKey -eq $WaveKey -and $_.StreamKey -eq $StreamKey -and -not $_.Closed -and
+            (Get-FolderKey -Path $_.Record.worktree) -ne $here
         })
 }
 
@@ -1050,6 +1258,12 @@ function Get-ClaimState {
     #   released — the stream was released properly, the session is gone;
     #   no claim — the stream was never announced at all; deciding that is not this function's job,
     #              it's the caller's.
+    #
+    # ‼️ A fifth state — "superseded" — isn't computed here and cannot be: it lives not in the claim
+    # file but in the registry AS A WHOLE (another folder took the address, and it's said so in ITS
+    # file). It's set by the loader's second pass — `Set-ClaimSupersessions`. Hence the rule for the
+    # whole toolkit: ask a parsed registry record for the state (the `Closed` flag), not the `state`
+    # field of your own file, or supersession stays invisible.
     if (-not $Claim) { return 'no claim' }
     if ([string]$Claim.state -eq 'released') { return 'released' }
     $seen = [datetime]::MinValue
@@ -1072,13 +1286,15 @@ function Get-ClaimCurrentNames {
     foreach ($raw in @([string]$Claim.branch, [string]$Claim.worktree)) {
         $names.Add((Get-StreamKey -Raw $raw))
     }
-    $here = (([string]$Claim.worktree) -replace '\\', '/').TrimEnd('/').ToLowerInvariant()
+    $here = Get-FolderKey -Path $Claim.worktree
     foreach ($tree in (Get-Worktrees)) {
-        if ((($tree.path) -replace '\\', '/').TrimEnd('/').ToLowerInvariant() -ne $here) { continue }
+        if ((Get-FolderKey -Path $tree.path) -ne $here) { continue }
         if ($tree.branch) { $names.Add((Get-StreamKey -Raw $tree.branch)) }
         $names.Add((Get-StreamKey -Raw $tree.path))
     }
-    if ($here -eq (($PWD.Path -replace '\\', '/').TrimEnd('/').ToLowerInvariant())) {
+    # Whether this is our own claim we check against the tree ROOT: a claim records that, not
+    # whatever folder the session happened to be launched from.
+    if ($here -eq (Get-FolderKey -Path (Get-TreeRoot))) {
         foreach ($key in (Get-CurrentKeys)) { $names.Add($key) }
     }
     return @($names | Where-Object { $_ } | Select-Object -Unique)
@@ -1101,6 +1317,392 @@ function Get-ClaimRememberedNames {
     return @($names | Select-Object -Unique)
 }
 
+function Get-ClaimTakenFrom {
+    param($Claim)
+    # The succession field: the worktree folder this claim TOOK the address FROM. Empty means there
+    # was no takeover.
+    #
+    # ‼️ A takeover is recorded in ONE'S OWN claim, not by editing someone else's file. The load-bearing
+    # "one writer per file" invariant rests on that: someone else's claim already has a writer — that
+    # folder's delivery hook — and it rewrites the document whole on every session move without
+    # taking a lock. A mark in someone else's file would be erased by its next liveness update
+    # AFTER we'd already reported success. The same choice buys compatibility: another folder's file
+    # is untouched, so an older copy of the toolkit in a couple of dozen live worktrees sees exactly
+    # what it saw yesterday.
+    #
+    # ‼️ The field name `taken_from` is a point of agreement with the test suite: it is declared there
+    # as a constant, and the registry invariants look for a takeover by the same name. Let them drift
+    # and the guard stops seeing takeovers and goes quiet in the very place it was built for.
+    #
+    # A missing field reads as "there was no takeover", not as corruption: previous-version claims
+    # don't carry it at all, and copies of the toolkit of different ages are the norm, not the
+    # exception.
+    if (-not $Claim) { return '' }
+    return (Get-FolderKey -Path ([string]$Claim.taken_from))
+}
+
+function Get-ClaimMoment {
+    param($Raw)
+    # A time out of a claim field: a date — as it is (JSON parsing turns the string into a date), a
+    # string — by parsing, anything else — NOTHING. Nothing honestly means "we don't know", and any
+    # decision resting on it has to pick the safe side itself rather than be handed an invented
+    # value.
+    if ($Raw -is [datetime]) { return $Raw }
+    $parsed = [datetime]::MinValue
+    if ([string]$Raw -and [datetime]::TryParse([string]$Raw, [cultureinfo]::InvariantCulture,
+            [System.Globalization.DateTimeStyles]::None, [ref]$parsed)) {
+        return $parsed
+    }
+    return $null
+}
+
+function Get-ClaimTakenAt {
+    param($Claim)
+    # The moment this claim TOOK the address — written next to the succession field and inherited
+    # along with it. It, and it alone, decides whether a takeover edge applies.
+    #
+    # No field at all — that's how a claim from an unreleased interim version looks, which wrote only
+    # the folder. Then the edge's moment is the moment this same claim was ANNOUNCED (takeover
+    # parsing substitutes it itself), and failing that the edge applies unconditionally: not knowing
+    # must not resurrect a ghost.
+    if (-not $Claim) { return $null }
+    return (Get-ClaimMoment -Raw $Claim.taken_at)
+}
+
+function Get-ClaimTakeovers {
+    param($Claim)
+    # EVERY takeover of this record: the current one (fields `taken_from` and `taken_at`) and each
+    # past one from the `past_takeovers` list. Each carries ITS OWN address — the one it was taken
+    # at — not the claim's current address: a past takeover's was a different one.
+    #
+    # ‼️ Why the list exists. The memory of a takeover lives in the claim of the TAKING folder, and a
+    # folder has ONE claim: the moment that same folder took on the next stream, its file was
+    # rewritten, the edge vanished — and the abandoned record of the previous folder became the
+    # leader again. Silently: display didn't shout, accepting a finding reported "it'll get there",
+    # the delivery hook carried the finding to an abandoned session. The same thing killed an A→B→C
+    # chain the moment the MIDDLE folder re-announced. A takeover is an event in an ADDRESS'S
+    # history, and reusing a folder doesn't undo it, any more than releasing does.
+    #
+    # ‼️ The names `past_takeovers` and the fields inside its records are a point of agreement with the
+    # test suite: they are declared there as constants, and the registry invariants look for a
+    # takeover by the same names. Let them drift and the guard stops seeing takeovers and goes quiet
+    # in the very place it was built for.
+    #
+    # Duplicates of ONE takeover (the same address from the same folder) collapse, keeping the later
+    # one by time: an earlier moment silences less than it should — a victim's claim filed between
+    # two takeovers would slip out from under the edge. An unknown moment counts as the latest: an
+    # edge without a moment applies unconditionally. But takeovers of one address from DIFFERENT
+    # folders never collapse: those are different edges, and losing any of them resurrects its own
+    # victim.
+    if (-not $Claim) { return @() }
+    $all = [System.Collections.Generic.List[object]]::new()
+    $now = Get-ClaimTakenFrom -Claim $Claim
+    if ($now) {
+        $all.Add([pscustomobject]@{
+                Wave   = (Get-WaveKey -Raw ([string]$Claim.wave))
+                Stream = (Get-StreamNumberKey -Raw ([string]$Claim.stream))
+                From   = $now
+                At     = (Get-ClaimTakenAt -Claim $Claim)
+            })
+    }
+    foreach ($past in @($Claim.past_takeovers)) {
+        if (-not $past) { continue }
+        $all.Add([pscustomobject]@{
+                Wave   = (Get-WaveKey -Raw ([string]$past.wave))
+                Stream = (Get-StreamNumberKey -Raw ([string]$past.stream))
+                From   = (Get-FolderKey -Path ([string]$past.taken_from))
+                At     = (Get-ClaimMoment -Raw $past.taken_at)
+            })
+    }
+    $found = [ordered]@{}
+    foreach ($move in $all) {
+        # A takeover with no address is not a takeover: there's nothing to silence by it, and two
+        # addressless neighbours would meet on an "address" made of two blanks. The test suite skips
+        # them the same way.
+        if (-not $move.Wave -or -not $move.Stream -or -not $move.From) { continue }
+        $key = "$($move.Wave)/$($move.Stream)>$($move.From)"
+        $known = $found[$key]
+        if ($null -ne $known) {
+            $a = if ($null -eq $known.At) { [datetime]::MaxValue } else { $known.At }
+            $b = if ($null -eq $move.At) { [datetime]::MaxValue } else { $move.At }
+            if ($a -ge $b) { continue }
+        }
+        $found[$key] = $move
+    }
+    return @($found.Values)
+}
+
+function Get-PastTakeoverLimit {
+    # How many past takeovers a claim remembers. Twenty, with room to spare: over the registry's
+    # whole live history takeovers happened in single digits, and the list travels from claim to
+    # claim and only grows where one folder gets taken for new streams over and over. The limit
+    # isn't about space but about making it impossible to inflate a claim file without end; the
+    # excess is dropped from the oldest end.
+    return 20
+}
+
+function Get-ClaimPastTakeovers {
+    param($Previous, [string]$Wave, [string]$Stream, [string]$From, [ref]$Dropped)
+    # The list of PAST takeovers for this folder's new claim: everything the previous claim
+    # remembered, plus its own takeover. That's how the memory of a takeover survives the folder
+    # being reused: a folder has one claim, and without this list the next stream would erase the
+    # edge — the abandoned record of the previous folder would become the leader again, and silently
+    # at that.
+    #
+    # `-Wave`, `-Stream` and `-From` name the takeover the new claim carries as its CURRENT one: we
+    # keep that out of the list, or it would sit there twice. A duplicate does no harm (parsing
+    # collapses them), but a human reads the claim file, and a repeat in it is one more question.
+    $keep = [System.Collections.Generic.List[object]]::new()
+    # ‼️ We normalize the folder in the comparison key. A claim stores it the way its author wrote it
+    # (backslashes, its own letter case), while takeover parsing stores it normalized; comparing them
+    # as-is, the current takeover wouldn't be recognized in the list and would land there a SECOND
+    # time.
+    $here = Get-FolderKey -Path $From
+    $skip = if ($Wave -and $Stream -and $here) { "$Wave/$Stream>$here" } else { '' }
+    foreach ($move in (Get-ClaimTakeovers -Claim $Previous)) {
+        if ($skip -and "$($move.Wave)/$($move.Stream)>$($move.From)" -eq $skip) { continue }
+        $keep.Add($move)
+    }
+    if ($keep.Count -eq 0) { return @() }
+    # Ordered by the takeover's moment, oldest first; an unknown moment counts as the latest, as
+    # everywhere else in takeover parsing. We drop from the top of the list, that is, the oldest: an
+    # edge without a moment applies unconditionally, and losing it first would be the worst of the
+    # choices.
+    $sorted = @($keep | Sort-Object -Property @{ Expression = {
+                if ($null -eq $_.At) { [datetime]::MaxValue } else { $_.At }
+            }
+        }, @{ Expression = { "$($_.Wave)/$($_.Stream)>$($_.From)" } })
+    $limit = Get-PastTakeoverLimit
+    if ($sorted.Count -gt $limit) {
+        # ‼️ What was dropped gets named OUT LOUD — through the same `-Dropped` key that announcing
+        # prints it by. There must be no silent losses in this mechanism: with every dropped edge the
+        # abandoned record of the previous folder becomes the leader again, and display, accepting a
+        # finding and the delivery hook won't say a word about it. The scene is practically
+        # unreachable (it takes a twenty-first takeover by one folder), but being unreachable is no
+        # reason to stay quiet.
+        if ($Dropped) { $Dropped.Value = @($sorted[0..($sorted.Count - $limit - 1)]) }
+        $sorted = @($sorted[($sorted.Count - $limit)..($sorted.Count - 1)])
+    }
+    return @($sorted | ForEach-Object {
+            $entry = [ordered]@{
+                wave       = $_.Wave
+                stream     = $_.Stream
+                taken_from = $_.From
+            }
+            # There may be no moment at all: that's how a takeover inherited from a previous-version
+            # claim looks. An empty field would be read differently by different copies — so we don't
+            # write it at all.
+            if ($null -ne $_.At) { $entry.taken_at = $_.At.ToString('s') }
+            $entry
+        })
+}
+
+function Compare-ClaimTakeover {
+    param($LeftAt, [string]$LeftPath, $RightAt, [string]$RightPath)
+    # Who took the address LATER. Needed where several applicable edges point at one record: the
+    # leader is whoever took it last — the address is with them. An unknown moment counts as the
+    # latest, or a previous-version claim would silently yield the name to a current one.
+    #
+    # ‼️ The moment is taken from THE TAKEOVER ITSELF, not from the claim's current fields: the same
+    # record's past takeover happened at another time, and measuring it by the current ones would be
+    # measuring the wrong thing.
+    $a = if ($null -eq $LeftAt) { [datetime]::MaxValue } else { $LeftAt }
+    $b = if ($null -eq $RightAt) { [datetime]::MaxValue } else { $RightAt }
+    if ($a -lt $b) { return -1 }
+    if ($a -gt $b) { return 1 }
+    return [string]::CompareOrdinal($LeftPath, $RightPath)
+}
+
+function Set-ClaimSupersessions {
+    param($Entries)
+    # ‼️ THE SECOND PASS of the registry loader: we silence records whose address another folder took.
+    # Without it a takeover would be no more than a mark in one file, while the address would still
+    # be run by two records — and who gets a finding would be decided by the order of a directory
+    # listing.
+    #
+    # An edge runs from the claim that TOOK the address to the claim it was taken from: an open claim
+    # names someone else's worktree folder, and both share one address. The silenced one loses its
+    # names and its right to answer along with its state — handing out names comes next and counts it
+    # as closed.
+    #
+    # ‼️ An edge applies by TIME, not by topology: it fails to apply exactly when it is PROVEN that the
+    # victim folder's claim started LATER than the moment of the takeover. The old rule ("a takeover
+    # by an already-superseded record doesn't apply") was a crutch against cycles and cost two holes
+    # at once: an A↔B circle (the mechanism itself prints the loser a command to take the address
+    # back, and both records started pointing at each other) left neither with a zero wait count — so
+    # NOBODY was silenced and the address was run by two again; and an A→B→C chain of takeovers
+    # resurrected the first record.
+    #
+    # The time rule also closes a third, hidden case: the address was released properly and the
+    # FORMER folder announced on it again — its fresh claim would have been silenced by the old edge,
+    # silently, with a success code.
+    #
+    # ‼️ No takeover moment — we take the moment the taking record was ANNOUNCED. Before, such an edge
+    # applied unconditionally, and that locked the address behind the victim forever: however many
+    # times it announced again, a momentless edge silenced each fresh claim of its too. There was no
+    # way out at all — the printed takeover key answered "not needed", because by then there was
+    # nobody left to run the address. Nothing is lost by the substitution: a succession field WITHOUT
+    # a moment could only have been written by the unreleased interim version (old copies write
+    # neither), and that one wrote both fields at the same instant of announcing.
+    #
+    # The taking record has no announce moment either — then, as before, unconditionally: not knowing
+    # must not resurrect a ghost. The victim's announce time is unknown — the same: we silence until
+    # proven otherwise.
+    $records = @($Entries)
+    $count = $records.Count
+    if ($count -lt 2) { return $records }
+    # ‼️ We build lists with an ORDINARY loop, not a pipeline: a pipeline unrolls anything enumerable,
+    # and an empty list doesn't come out of it at all — the edge set came out empty and the tool
+    # crashed on the very first use of it.
+    $edges = [System.Collections.Generic.List[object]]::new()
+    $drawn = @{}
+    # We parse each record's takeovers ONCE: both the edges and the chain walk below read them.
+    # ‼️ We lay them out with an ORDINARY loop into pre-sized slots, not with a pipeline: a pipeline
+    # unrolls nested lists, and every record's takeovers would fuse into one.
+    $moves = [object[]]::new($count)
+    for ($i = 0; $i -lt $count; $i++) {
+        $when = Get-ClaimMoment -Raw $records[$i].Record.claimed_at
+        $mine = [System.Collections.Generic.List[object]]::new()
+        foreach ($move in (Get-ClaimTakeovers -Claim $records[$i].Record)) {
+            $mine.Add([pscustomobject]@{
+                    Wave   = $move.Wave
+                    Stream = $move.Stream
+                    From   = $move.From
+                    # The moment this edge lives by: its own, or failing that the moment the taking
+                    # record was announced (see the write-up above).
+                    At     = if ($null -eq $move.At) { $when } else { $move.At }
+                })
+        }
+        $moves[$i] = @($mine)
+    }
+    for ($i = 0; $i -lt $count; $i++) {
+        # ‼️ A RELEASED claim still holds its takeover. The temptation to skip it is strong ("the session
+        # is gone, so there's nobody to take from"), but that's exactly the costliest consequence of
+        # the defect: a stream moved, worked honestly and released — and the abandoned record in the
+        # previous folder would become the leader again and keep the address looking alive. A finding
+        # for such an address would be accepted with a cheerful success report, the sender would
+        # relax and set up no fallback, and it could reach nobody at all. A takeover is an event in
+        # an ADDRESS'S history, and releasing doesn't undo it.
+        #
+        # ‼️ And for the same reason edges are built from EVERY takeover of a record — the current one
+        # and each past one. Each edge's address comes from THE TAKEOVER ITSELF: a past one's is
+        # different, and the claim's current address has nothing to do with it.
+        foreach ($move in $moves[$i]) {
+            for ($j = 0; $j -lt $count; $j++) {
+                if ($i -eq $j) { continue }
+                $loser = $records[$j]
+                if ((Get-FolderKey -Path $loser.Record.worktree) -ne $move.From) { continue }
+                # The address must match in full: the field names a folder, not a stream, and the
+                # NEXT stream may have announced in that same folder since — we have no right to
+                # silence that one.
+                if ($loser.WaveKey -ne $move.Wave -or $loser.StreamKey -ne $move.Stream) { continue }
+                $started = Get-ClaimMoment -Raw $loser.Record.claimed_at
+                if ($null -ne $move.At -and $null -ne $started -and $started -gt $move.At) { continue }
+                $edges.Add([pscustomobject]@{ Taker = $i; Loser = $j; At = $move.At })
+                $drawn["$i>$j"] = $true
+            }
+        }
+    }
+    $takenBy = @{}
+    foreach ($edge in $edges) {
+        if ($drawn.ContainsKey("$($edge.Loser)>$($edge.Taker)")) {
+            # ‼️ The edges are MUTUAL: both claims took the address from each other, and neither is
+            # proven to have started later than the other's takeover — that's what a take-back
+            # circle closed within one second looks like. They must be told apart by the FULL
+            # ordering key (announce time, tree path on a tie): by time alone, two claims of the
+            # same second would line up differently for different sessions, and different sessions
+            # would silence different records. The edge of the ELDER record survives — by the same
+            # rule that settles a dispute over a stream number.
+            if ((Compare-ClaimOrder -Left $records[$edge.Taker].Record `
+                        -Right $records[$edge.Loser].Record) -gt 0) {
+                continue
+            }
+        }
+        $known = $takenBy[$edge.Loser]
+        # There may be several takers: then the leader is the last one — the address is with them.
+        if ($null -ne $known -and (Compare-ClaimTakeover -LeftAt $known.At `
+                    -LeftPath (Get-FolderKey -Path $records[$known.Taker].Record.worktree) `
+                    -RightAt $edge.At `
+                    -RightPath (Get-FolderKey -Path $records[$edge.Taker].Record.worktree)) -ge 0) {
+            continue
+        }
+        $takenBy[$edge.Loser] = $edge
+    }
+    foreach ($loser in @($takenBy.Keys)) {
+        $entry = $records[$loser]
+        $entry.Closed = $true
+        # A released one we don't rename: it's closed without the takeover anyway, and it matters
+        # more to a human that the stream was released properly than that its address was taken
+        # afterwards.
+        if ($entry.State -ne 'released') {
+            $entry.State = 'superseded'
+            # ‼️ The "address was taken" flag is ONE for the whole toolkit, like the closed-ness flag.
+            # Before, three places (release, the delivery hook, display) compared the state against
+            # the word "superseded" directly, and that same word was printed to a human: let someone
+            # reword it in the display and release and delivery would go quiet without a hint.
+            $entry.Superseded = $true
+        }
+        $entry.TakenBy = $records[$takenBy[$loser].Taker]
+        $entry.TakenAt = $takenBy[$loser].At
+    }
+    # ‼️ Who runs the address NOW is a separate question from who took it from this record. In a chain
+    # of takeovers a record is silenced by the middle folder while the last one runs the address; and
+    # the middle one may have taken on another stream since. Telling the victim "the middle folder
+    # took your address, and it's running something else now" would be only half true: the address IS
+    # being run, just in a third place. So we look for the leader by ADDRESS, not by edge.
+    $leaders = @{}
+    foreach ($entry in $records) {
+        if ($entry.Closed -or -not $entry.WaveKey -or -not $entry.StreamKey) { continue }
+        $address = "$($entry.WaveKey)/$($entry.StreamKey)"
+        # Two leaders on one address is a legacy of the defect, and choosing between them for a
+        # human is not allowed: we stay quiet, and display is what shouts about the doubling.
+        $leaders[$address] = if ($leaders.ContainsKey($address)) { $null } else { $entry }
+    }
+    # ‼️ Where the address ended up IN THE END is a separate question both from who took it from this
+    # record and from who runs it now. There may be no leading record at all (the stream moved and
+    # ended there), and then the human is told the last folder of the chain. Before, the chain broke
+    # at the FIRST link whose record had changed address: the middle folder of an A→B→C chain, having
+    # taken on the next stream, wasn't silenced — and the answer "folder B took the address" sent the
+    # human where there is nothing about that address at all. Takeover memory is what lets us go
+    # further: it remembers the address left B even when B's own claim is about another stream now.
+    #
+    # The pointer is built from EVERY takeover in the registry, not from applicable edges: an edge
+    # says whether a record is silenced, while the chain says where the ADDRESS went, and the second
+    # stays true even where the first isn't there.
+    $passedTo = @{}
+    for ($i = 0; $i -lt $count; $i++) {
+        foreach ($move in $moves[$i]) {
+            $key = "$($move.Wave)/$($move.Stream)>$($move.From)"
+            $known = $passedTo[$key]
+            # Several took from one folder — we take the last: the address is with them.
+            if ($null -ne $known -and (Compare-ClaimTakeover -LeftAt $known.At `
+                        -LeftPath (Get-FolderKey -Path $records[$known.Index].Record.worktree) `
+                        -RightAt $move.At `
+                        -RightPath (Get-FolderKey -Path $records[$i].Record.worktree)) -ge 0) {
+                continue
+            }
+            $passedTo[$key] = [pscustomobject]@{ Index = $i; At = $move.At }
+        }
+    }
+    foreach ($loser in @($takenBy.Keys)) {
+        $entry = $records[$loser]
+        $entry.AddressLedBy = $leaders["$($entry.WaveKey)/$($entry.StreamKey)"]
+        # We walk the chain down to the record this address wasn't taken from any further. A circle
+        # is broken by the "already seen" clause: the registry will survive this change dirty too.
+        $address = "$($entry.WaveKey)/$($entry.StreamKey)"
+        $seen = @{ "$($entry.File)" = $true }
+        $at = $records[$takenBy[$loser].Taker]
+        while ($null -ne $at -and -not $seen.ContainsKey([string]$at.File)) {
+            $seen[[string]$at.File] = $true
+            $next = $passedTo["$address>$(Get-FolderKey -Path $at.Record.worktree)"]
+            if ($null -eq $next -or $seen.ContainsKey([string]$records[$next.Index].File)) { break }
+            $at = $records[$next.Index]
+        }
+        $entry.AddressChainEnd = $at
+    }
+    return $records
+}
+
 function Resolve-ClaimNames {
     param($Entries)
     # ‼️ Who answers to which name is decided FOR THE WHOLE REGISTRY AT ONCE, not per claim
@@ -1119,19 +1721,23 @@ function Resolve-ClaimNames {
     # It all follows from a single rule: NO MORE THAN ONE STREAM ANSWERS TO ANY GIVEN NAME.
     #   • whoever carries the name right now — always answers to it;
     #   • whoever only remembers it — only if NO ONE ELSE carries or remembers it either;
-    #   • a released stream doesn't answer at all: there's no session left, and its memory shouldn't
-    #     take a name away from a live neighbour and snuff out someone else's findings.
+    #   • a CLOSED stream doesn't answer at all: there's no session left (released) or its address
+    #     was taken away (superseded), and a closed stream's memory shouldn't take a name away from a
+    #     live neighbour and snuff out someone else's findings. ‼️ We ask for closed-ness with the
+    #     single flag: supersession is visible only in the registry as a whole, and were we to read
+    #     the file's field, the losing session would go on answering to names that have already
+    #     passed to the address's new owner — that is, it would intercept its mail.
     # A name remembered by two and carried by no one belongs to neither: accepting such a finding
     # refuses out loud (no recipient), and that's more honest than silently delivering it at random.
     $carried = @{}
     $recalled = @{}
     foreach ($entry in $Entries) {
-        if ($entry.State -eq 'released') { continue }
+        if ($entry.Closed) { continue }
         foreach ($name in $entry.Current) { $carried[$name] = 1 + [int]$carried[$name] }
         foreach ($name in $entry.Remembered) { $recalled[$name] = 1 + [int]$recalled[$name] }
     }
     foreach ($entry in $Entries) {
-        if ($entry.State -eq 'released') {
+        if ($entry.Closed) {
             $entry.Keys = @()
             $entry.Silenced = @($entry.Current + $entry.Remembered | Select-Object -Unique)
             continue
@@ -1159,7 +1765,7 @@ function Get-NameRememberers {
     # `Resolve-ClaimNames`), and the human needs to be told exactly that, not left guessing about
     # worktrees.
     if (-not $Name) { return @() }
-    $live = @($Claims | Where-Object { $_.State -ne 'released' })
+    $live = @($Claims | Where-Object { -not $_.Closed })
     if (@($live | Where-Object { $Name -in $_.Current }).Count -gt 0) { return @() }
     return @($live | Where-Object { $Name -in $_.Remembered })
 }
@@ -1174,9 +1780,9 @@ function Get-StreamNames {
     # the remembered name — and that's exactly what the "no more than one stream per name" rule
     # rests on.
     if (-not $Claim) { return @(Get-CurrentKeys) }
-    $here = (([string]$Claim.worktree) -replace '\\', '/').TrimEnd('/').ToLowerInvariant()
+    $here = Get-FolderKey -Path $Claim.worktree
     foreach ($entry in @($Claims)) {
-        if ((([string]$entry.Record.worktree) -replace '\\', '/').TrimEnd('/').ToLowerInvariant() -ne $here) {
+        if ((Get-FolderKey -Path $entry.Record.worktree) -ne $here) {
             continue
         }
         return @($entry.Keys)
@@ -1268,23 +1874,68 @@ function Get-Claims {
         }
         $record = $read.Record
         if (-not $record) { continue }
+        $state = Get-ClaimState -Claim $record
         $claims.Add([pscustomobject]@{
-                File       = $file
-                Record     = $record
-                WaveKey    = Get-WaveKey -Raw ([string]$record.wave)
-                StreamKey  = Get-StreamNumberKey -Raw ([string]$record.stream)
-                Current    = @(Get-ClaimCurrentNames -Claim $record)
-                Remembered = @(Get-ClaimRememberedNames -Claim $record)
-                Keys       = @()
-                Silenced   = @()
-                State      = Get-ClaimState -Claim $record
+                File         = $file
+                Record       = $record
+                WaveKey      = Get-WaveKey -Raw ([string]$record.wave)
+                StreamKey    = Get-StreamNumberKey -Raw ([string]$record.stream)
+                Current      = @(Get-ClaimCurrentNames -Claim $record)
+                Remembered   = @(Get-ClaimRememberedNames -Claim $record)
+                Keys         = @()
+                Silenced     = @()
+                State        = $state
+                # ‼️ The SINGLE "this record is closed" flag — EVERY deciding place in the toolkit rests
+                # on it: rivals for a number, handing out names, the recipient check, a finding's
+                # fate, release, closing a finding, both liveness marks and the delivery hook.
+                # Before, each of them asked in its own way, and some read the `state` field of
+                # THEIR OWN file directly, bypassing the parsed registry. A takeover isn't reflected
+                # in the loser's file at all (its file is never touched), so it would go on getting
+                # the mail of the address's new owner and snuffing it out for them — the same
+                # trouble as a doubled address, only from the other side.
+                Closed       = ($state -eq 'released')
+                # Separate from closed-ness: "the address was taken" and "the stream was released"
+                # are cured differently and told to a human differently. Filled in by the second
+                # pass below, as is `TakenBy`.
+                Superseded   = $false
+                # The record that took this one's address: filled in by the second pass below.
+                TakenBy      = $null
+                # The moment of THE VERY takeover that silenced this record. The taking record may
+                # have several takeovers (its current one and each past one), and its current fields
+                # would speak of a different event — while the human is told about this one.
+                TakenAt      = $null
+                # Who runs this address NOW. Not the same as the taking record: in a chain of
+                # takeovers the middle folder silences and the last one runs.
+                AddressLedBy = $null
+                # The last folder in this address's chain of takeovers — where it ended up in the
+                # end. Needed where no leading record is left at all: sending a human to the middle
+                # folder of the chain is wrong, there's nothing about that address there any more.
+                AddressChainEnd = $null
             })
     }
     # ‼️ Names are handed out in a SECOND pass, once the whole registry is assembled: which stream a
     # name answers to depends on whether anyone else carries or remembers it too. That question
     # can't be settled one claim at a time, and a wrong answer to it hands the same finding to two
     # streams at once.
-    return @((Resolve-ClaimNames -Entries @($claims)) | Sort-Object WaveKey, StreamKey)
+    #
+    # ‼️ The ordering is FULL: wave, number, announce time, tree path. Two records on one address don't
+    # happen in a healthy registry, but the change ships onto a dirty one — and there wave-and-number
+    # weren't enough, and the order of two such records was settled by the directory listing.
+    # Everything else followed from that: display served them up one way one run and another the
+    # next, and a human couldn't compare two runs by eye. The key's tail is the same one that settles
+    # a dispute over a number (`Get-ClaimOrder`) — otherwise display and dispute resolution would
+    # name different records as the elder.
+    # ‼️ Address takeovers are parsed BEFORE names are handed out: a silenced record loses its right to
+    # answer to names along with its address, and handing out names looks at the closed-ness flag.
+    # Swap the passes and the losing session would take the branch name away from the address's new
+    # owner.
+    return @((Resolve-ClaimNames -Entries (Set-ClaimSupersessions -Entries @($claims))) |
+            Sort-Object -Property @(
+                @{ Expression = { $_.WaveKey } }
+                @{ Expression = { $_.StreamKey } }
+                @{ Expression = { (Get-ClaimOrder -Claim $_.Record).When } }
+                @{ Expression = { (Get-ClaimOrder -Claim $_.Record).Path } }
+            ))
 }
 
 function Find-Claims {
@@ -1310,7 +1961,12 @@ function Get-CurrentClaim {
     # no claim — nothing to release," and the session would close without releasing: neighbours would
     # go on addressing findings to a stream that, as far as they know, is still alive. Same root
     # cause as choosing a number — a single read attempt and emptiness standing in for the truth.
-    $read = Read-ClaimRecord -Path (Get-ClaimPath -Dir $Dir -TreePath $PWD.Path) -Strict:$Strict
+    #
+    # The key is the worktree ROOT, not the current folder: otherwise a session that has stepped into
+    # a subfolder looks for its claim somewhere other than where it put it, and gets an emptiness
+    # indistinguishable from "there is no claim".
+    $path = Get-ClaimPath -Dir $Dir -TreePath (Get-TreeRoot)
+    $read = Read-ClaimRecord -Path $path -Strict:$Strict
     if ($Strict -and $read.State -eq 'unreadable') {
         throw "couldn't read this session's claim ($($read.Reason)) — releasing the stream blind isn't an option, or it would stay listed as yours. Try again in a few seconds."
     }
@@ -1322,9 +1978,82 @@ function Get-CurrentClaim {
         # didn't name the file at all and suggested announcing again — and announcing reads the
         # whole registry strictly, hits the same file, and refuses too. A human would read their own
         # refusal and have no way out of it.
-        throw "this session's claim is broken and won't parse ($(Get-ClaimPath -Dir $Dir -TreePath $PWD.Path)) — while it stays this way the stream is invisible, both to neighbours and to you. Reason: $($read.Reason). Remove this file, then announce again."
+        throw "this session's claim is broken and won't parse ($path) — while it stays this way the stream is invisible, both to neighbours and to you. Reason: $($read.Reason). Remove this file, then announce again."
     }
     return $read.Record
+}
+
+function Find-ClaimByWorktree {
+    param($Claims, [string[]]$Paths)
+    # The second route to ONE'S OWN claim — by an exact match on the worktree folder recorded in it.
+    #
+    # Why. A claim file's name is derived from the path, and claims filed by a PREVIOUS version from
+    # a subfolder of the tree sit under that subfolder's key. They aren't found by the canonical key
+    # (the tree root), and release would answer "nothing to release" with a success code — that is,
+    # it would orphan exactly the streams this change is being made for.
+    #
+    # ‼️ This is READING, not migration: not a single file is created or deleted, and a record found is
+    # edited in place. And the match is EXACT only — not "starts with", not "sits inside": otherwise
+    # a session would take over the claim of a neighbouring tree nested in its folder.
+    if (-not $Claims) { return $null }
+    $wanted = @($Paths | ForEach-Object { Get-FolderKey -Path $_ } |
+            Where-Object { $_ } | Select-Object -Unique)
+    if ($wanted.Count -eq 0) { return $null }
+    $mine = @($Claims | Where-Object {
+            (Get-FolderKey -Path $_.Record.worktree) -in $wanted
+        })
+    # We ask for open-ness with the SINGLE flag: a superseded record looks open in its own file (its
+    # file is never touched), and were we to read the field directly, a session whose address was
+    # taken would treat it as its own live claim — releasing it and closing other people's findings
+    # by it.
+    $open = @($mine | Where-Object { -not $_.Closed })
+    # Two open claims on one folder don't happen, by the registry's rule. Should it happen anyway —
+    # choosing for the human isn't allowed: we'd release one at random while the other went on
+    # keeping the address alive.
+    if ($open.Count -gt 1) {
+        $names = @($open | ForEach-Object { $_.File }) -join ', '
+        throw "there are $($open.Count) open claims on this worktree folder in the registry at once ($names) — which of them to release is not the mechanism's call. Remove the spare one and try again."
+    }
+    if ($open.Count -eq 1) { return $open[0] }
+    if ($mine.Count -eq 1) { return $mine[0] }
+    return $null
+}
+
+function Get-ClaimEntry {
+    param($Claims, $Claim, [string]$Path)
+    # The PARSED registry record matching this claim. Needed where all we have is the claim file
+    # itself while the question is about state: a takeover lives not in the file but in the registry
+    # as a whole, and a session will never learn of it from its own file.
+    #
+    # We look by file first (that's exact even where the claim sits under a non-canonical name), then
+    # by the recorded worktree folder.
+    if (-not $Claims) { return $null }
+    if ($Path) {
+        $wanted = Get-FolderKey -Path $Path
+        foreach ($entry in @($Claims)) {
+            if ((Get-FolderKey -Path $entry.File) -eq $wanted) { return $entry }
+        }
+    }
+    if ($Claim -and $Claim.worktree) {
+        $here = Get-FolderKey -Path $Claim.worktree
+        # An open one is preferred: in a reused folder a released record sits alongside.
+        $mine = @($Claims | Where-Object { (Get-FolderKey -Path $_.Record.worktree) -eq $here })
+        $open = @($mine | Where-Object { -not $_.Closed })
+        if ($open.Count -eq 1) { return $open[0] }
+        if ($mine.Count -eq 1) { return $mine[0] }
+    }
+    return $null
+}
+
+function Test-ClaimClosed {
+    param($Claims, $Claim, [string]$Path)
+    # Is the record closed — ONE answer for the whole toolkit. Released-ness is visible in the file
+    # itself, a takeover only in the parsed registry; so we ask for both, and the registry isn't
+    # required: without it we answer exactly as before (released or not).
+    if ($Claim -and [string]$Claim.state -eq 'released') { return $true }
+    $entry = Get-ClaimEntry -Claims $Claims -Claim $Claim -Path $Path
+    if (-not $entry) { return $false }
+    return [bool]$entry.Closed
 }
 
 function Get-RegistryLockPath {
@@ -1642,16 +2371,30 @@ function Write-ClaimFile {
 }
 
 function Update-ClaimSeen {
-    param([string]$Dir, [string]$TreePath)
+    param([string]$Dir, [string]$TreePath, [string]$Path, $Claims)
     # The "session is active" mark. Called by the delivery hook on every move and has to stay quiet:
     # a failed mark update is no reason to get in the way of work.
+    #
+    # `-Path` — for when the claim file has already been found and it is NOT the canonical one: that's
+    # how claims filed by a previous version from a subfolder of the tree sit. Without this, such a
+    # claim got mail but never once got a liveness mark: a day later it landed in the owner's stuck
+    # summary, and neighbours stopped counting the session as alive. ‼️ No second writer appears here:
+    # it was found by an EXACT match on the worktree folder, so it belongs to this same session. The
+    # ban on writing into SOMEONE ELSE'S claim file stands.
+    #
+    # ‼️ `-Claims` — the parsed registry, if the caller already has it. Stamping a record in ANY closed
+    # state is not allowed, not just a released one: a superseded record looks open in its own file,
+    # and any new session opened in the old folder would resurrect a ghost on its very first move — a
+    # fresh mark gives it back the look of a working stream, along with its address and its mail.
     try {
-        $path = Get-ClaimPath -Dir $Dir -TreePath $TreePath
-        $claim = Read-ClaimFile -Path $path
+        if (-not $Path) { $Path = Get-ClaimPath -Dir $Dir -TreePath $TreePath }
+        $claim = Read-ClaimFile -Path $Path
         if (-not $claim) { return }
-        if ([string]$claim.state -eq 'released') { return }
-        $claim.seen_at = (Get-Date).ToString('s')
-        Write-ClaimFile -Path $path -Claim $claim
+        if (Test-ClaimClosed -Claims $Claims -Claim $claim -Path $Path) { return }
+        # Through `Add-Member -Force`, not assignment: a previous-version claim may have no mark
+        # field at all, and assignment would fail — that is, such a claim would stay silent forever.
+        $claim | Add-Member -NotePropertyName seen_at -NotePropertyValue ((Get-Date).ToString('s')) -Force
+        Write-ClaimFile -Path $Path -Claim $claim
     } catch {
         return
     }
@@ -1724,6 +2467,9 @@ function Get-TouchedFiles {
         if ($LASTEXITCODE -eq 0 -and $base) {
             foreach ($name in @(& git diff --name-only $base.Trim() HEAD 2>$null)) { $files.Add($name) }
         }
+        # The machine-readable form of the summary names paths from the tree ROOT, not from the
+        # launch folder (verified from a subfolder): for a session that stepped into a subfolder the
+        # touched-files list lines up with its neighbours', and there's nothing to fix here.
         foreach ($line in @(& git status --porcelain 2>$null)) {
             if ($line.Length -le 3) { continue }
             $name = $line.Substring(3).Trim().Trim('"')
@@ -1750,14 +2496,22 @@ function Get-TouchedFiles {
 }
 
 function Update-ClaimFiles {
-    param([string]$Dir, [string]$TreePath, [int]$MaxAgeMinutes = 5)
+    param([string]$Dir, [string]$TreePath, [string]$Path, $Claims, [int]$MaxAgeMinutes = 5)
     # The touched-files list is recomputed no more than once every few minutes: the hook gets called
     # on EVERY session move, and two git calls per move would be a cost for nothing.
+    #
+    # `-Path` — the same second route as for the liveness mark: a previous-version claim from a
+    # subfolder sits under a non-canonical name, and without this a neighbour would never see its
+    # overlaps by file.
     try {
-        $path = Get-ClaimPath -Dir $Dir -TreePath $TreePath
+        if (-not $Path) { $Path = Get-ClaimPath -Dir $Dir -TreePath $TreePath }
+        $path = $Path
         $claim = Read-ClaimFile -Path $path
         if (-not $claim) { return }
-        if ([string]$claim.state -eq 'released') { return }
+        # ‼️ Closed in ANY sense — don't touch it, by the same single flag and for the same reason as the
+        # liveness mark: a fresh touched-files list on a superseded record looks like the work of a
+        # live session and brings the ghost back into neighbours' overlaps.
+        if (Test-ClaimClosed -Claims $Claims -Claim $claim -Path $path) { return }
         $when = [datetime]::MinValue
         if ($claim.files_at -and [datetime]::TryParse([string]$claim.files_at, [cultureinfo]::InvariantCulture,
                 [System.Globalization.DateTimeStyles]::None, [ref]$when)) {
@@ -1789,11 +2543,11 @@ function Get-Overlaps {
         [void]$mine.Add($text)
     }
     if ($mine.Count -eq 0) { return @() }
-    $here = ([string]$MyClaim.worktree -replace '\\', '/').TrimEnd('/')
+    $here = Get-FolderKey -Path $MyClaim.worktree
     $found = [System.Collections.Generic.List[object]]::new()
     foreach ($claim in $Claims) {
         if ($claim.State -ne 'live') { continue }
-        if ((([string]$claim.Record.worktree) -replace '\\', '/').TrimEnd('/') -eq $here) { continue }
+        if ((Get-FolderKey -Path $claim.Record.worktree) -eq $here) { continue }
         $common = @(@($claim.Record.files) | Where-Object { $_ -and $mine.Contains([string]$_) })
         if ($common.Count -eq 0) { continue }
         $found.Add([pscustomobject]@{ Claim = $claim; Files = @($common) })
@@ -1823,8 +2577,16 @@ function Get-StuckRecords {
             [System.Globalization.DateTimeStyles]::None, [ref]$when)
         $reason = ''
         if (@($addressed | Where-Object { $_.State -eq 'released' }).Count -gt 0) {
-            # Released is the one case with nothing left to wait for at all: the session is gone and won't be back.
+            # Released is a case with nothing left to wait for at all: the session is gone and won't be back.
             $reason = 'the stream was released'
+        } elseif (@($addressed | Where-Object { $_.Closed }).Count -eq $addressed.Count -and
+            $addressed.Count -gt 0) {
+            # Every record on the address is superseded, and no leader is left. The chain of
+            # takeovers no longer leads here (all but the last are silenced in it), so what we have
+            # is a circle: the records took the address from each other, and there is nothing to wait
+            # for on it. The reason is not "released", and lying about a release is not allowed — the
+            # human would go looking for the outcome of a released stream that nobody ever wrote.
+            $reason = 'the address was handed on, and no record leads it any more'
         } elseif ($addressed.Count -gt 0) {
             if ($parsed -and $when -gt $deadline) { continue }
             $reason = "the stream has been silent since $(Format-Stamp -Raw $addressed[0].Record.seen_at)"
@@ -1857,6 +2619,165 @@ function Format-Stamp {
     return $text
 }
 
+function Get-ClaimFolderMarks {
+    param($Claim)
+    # Evidence about a record's WORKTREE FOLDER — the very evidence both refusals ("folder taken",
+    # "address taken") are explained by. A refusal names someone else's folder to a human, and today
+    # there's nowhere for them to see it: display printed the address, the name and the branch, but
+    # not the folder. So the evidence and the marks live in one place with the display — having read
+    # the refusal, a human finds that same folder in the list and decides in a second.
+    $marks = [System.Collections.Generic.List[string]]::new()
+    $here = Get-FolderKey -Path $Claim.Record.worktree
+    if (-not $here) { return @($marks) }
+    # "This is you" comes first, because it's a human's first question to a refusal: "is this about
+    # me?" We check against the tree ROOT, not the current folder: a claim records the root, and a
+    # session launched from a subfolder would otherwise not recognize its own record in the list.
+    if ($here -eq (Get-FolderKey -Path (Get-TreeRoot))) { $marks.Add('this is you') }
+    # We say "folder is gone" only when the path is REACHABLE at the same time. A dropped drive and a
+    # vanished network share answer with the same failure as a deleted folder — and that's "not
+    # visible", not "not there", and passing one off as the other is wrong: the decision of whether
+    # someone else's record may be touched rests on that difference. We don't know — we stay quiet.
+    $state = Get-PathState -Path $here
+    if ($state.Kind -eq 'none' -and (Test-PathReachable -Path $here)) { $marks.Add('folder is gone') }
+    # "No check-in for a long time" — the mark is older than the SHARED liveness threshold. An open
+    # record's state says the same thing ("silent"), but the mark sits here deliberately: a human
+    # reads a refusal's evidence next to the folder, not gathered from different corners of the line.
+    if (-not $Claim.Closed) {
+        $seen = [datetime]::MinValue
+        $raw = [string]$Claim.Record.seen_at
+        $known = $raw -and [datetime]::TryParse($raw, [cultureinfo]::InvariantCulture,
+            [System.Globalization.DateTimeStyles]::None, [ref]$seen)
+        if (-not $known -or ((Get-Date) - $seen).TotalHours -ge (Get-AliveHours)) {
+            $marks.Add('no check-in for a long time')
+        }
+    }
+    return @($marks)
+}
+
+function Get-DoubledAddresses {
+    param($Claims)
+    # Addresses run by several open records at once. This is a legacy of the "a takeover doubles the
+    # address" defect: the change ships onto a dirty registry, and such pairs are already lying there.
+    #
+    # ‼️ This has to be said OUT LOUD and on a line of its own. While the doubling shows up only as two
+    # similar-looking lines in a list, the choice of "which of the two is the real one" is made not by
+    # a human but by the order of a directory listing — and it is made by accepting a finding,
+    # silently.
+    #
+    # A superseded record doesn't count as a doubling: its address was taken by an explicit key, there
+    # is one leader on it, and there's nothing to shout about.
+    $seen = [ordered]@{}
+    foreach ($entry in @($Claims)) {
+        if ($entry.Closed) { continue }
+        if (-not $entry.WaveKey -or -not $entry.StreamKey) { continue }
+        $address = "$($entry.WaveKey)/$($entry.StreamKey)"
+        if (-not $seen.Contains($address)) { $seen[$address] = [System.Collections.Generic.List[object]]::new() }
+        $seen[$address].Add($entry)
+    }
+    $doubled = [System.Collections.Generic.List[object]]::new()
+    foreach ($address in $seen.Keys) {
+        if ($seen[$address].Count -lt 2) { continue }
+        $doubled.Add([pscustomobject]@{ Address = $address; Claims = @($seen[$address]) })
+    }
+    return @($doubled)
+}
+
+function Get-ClaimAddressHolder {
+    param($Claim)
+    # Where the address ended up IN THE END: the chain of takeovers is walked by registry parsing
+    # (it has every record at once there) and it puts the end of the chain into the record itself. An
+    # A→B→C chain is legitimate, and telling the victim A "superseded by B" is a half-truth: that
+    # stream isn't in B any more.
+    if ($Claim.AddressChainEnd) { return $Claim.AddressChainEnd }
+    # ‼️ The fallback — by silencing edges alone, for records assembled without registry parsing. It
+    # breaks at the first link whose record changed address, which is why the main route is above.
+    $seen = @{}
+    $at = $Claim
+    while ($at.TakenBy -and -not $seen.ContainsKey([string]$at.File)) {
+        $seen[[string]$at.File] = $true
+        $at = $at.TakenBy
+    }
+    return $at
+}
+
+function Get-ClaimAddressFate {
+    param($Claim)
+    # The fate of a silenced record's address — ONE answer for the whole toolkit: display, release,
+    # the delivery hook and accepting a finding speak about it in the same words and by the same
+    # signal.
+    #
+    # ‼️ "Handed on to folder X" holds exactly when X RUNS THAT SAME ADDRESS. The taking folder may
+    # have released the stream since, or taken on the next one — then "handed on to X" lies twice:
+    # the human will go and send a finding to X, and nobody there runs that address. Such an address
+    # has no leading record left at all, and that is the RIGHT outcome (the stream moved and ended),
+    # but it must be visible rather than look like a handover to a live session.
+    # We look for the leader BY ADDRESS, not by edge: in a chain of takeovers this record is silenced
+    # by the middle folder while the address is run by the last — and that's the one the human needs.
+    if ($Claim.AddressLedBy) {
+        return [pscustomobject]@{
+            Holder   = $Claim.AddressLedBy
+            StillLed = $true
+            Text     = "handed on to $([string]$Claim.AddressLedBy.Record.worktree)"
+        }
+    }
+    $holder = Get-ClaimAddressHolder -Claim $Claim
+    if (-not $holder -or $holder -eq $Claim) {
+        return [pscustomobject]@{
+            Holder = $null; StillLed = $false; Text = 'the address was taken by another worktree folder'
+        }
+    }
+    $folder = [string]$holder.Record.worktree
+    $text = if ($holder.State -eq 'released') {
+        "folder $folder took the address, and that stream has since been released"
+    } elseif ($holder.WaveKey -and $holder.StreamKey) {
+        "folder $folder took the address, but it is running a different stream now ($($holder.WaveKey)/$($holder.StreamKey))"
+    } else {
+        "folder $folder took the address"
+    }
+    return [pscustomobject]@{ Holder = $holder; StillLed = $false; Text = $text }
+}
+
+function Get-ClaimTakenAwayText {
+    param($Claim)
+    # One line about the address's fate — for the places where the fork "is it still being run or
+    # not" doesn't change the rest of the text.
+    return (Get-ClaimAddressFate -Claim $Claim).Text
+}
+
+function Get-LeaderlessAddresses {
+    param($Claims)
+    # Addresses that have records open IN THEIR OWN FILES but not a single leader. That's what a
+    # session that doesn't exist from the outside looks like: its claim file is open, it believes it
+    # is running the stream, yet accepting a finding for that address will refuse and the delivery
+    # hook will bring nothing.
+    #
+    # ‼️ In itself this isn't corruption but a legitimate end to an address's history: the stream moved
+    # and ended. But staying quiet about it is not allowed, for exactly the reason we don't stay quiet
+    # about a doubled address: a human can't make the "is this session alive" call until they've been
+    # told about it.
+    $records = @($Claims | Where-Object { $_.WaveKey -and $_.StreamKey })
+    $byAddress = [ordered]@{}
+    foreach ($entry in $records) {
+        $address = "$($entry.WaveKey)/$($entry.StreamKey)"
+        if (-not $byAddress.Contains($address)) {
+            $byAddress[$address] = [System.Collections.Generic.List[object]]::new()
+        }
+        $byAddress[$address].Add($entry)
+    }
+    $found = [System.Collections.Generic.List[object]]::new()
+    foreach ($address in $byAddress.Keys) {
+        $group = @($byAddress[$address])
+        if (@($group | Where-Object { -not $_.Closed }).Count -gt 0) { continue }
+        # A released record raises no questions: the stream is finished, and there's nobody to ask
+        # about it. We're after the one whose file is open — a session that believes it is leading
+        # stands behind it.
+        $orphans = @($group | Where-Object { $_.State -ne 'released' })
+        if ($orphans.Count -eq 0) { continue }
+        $found.Add([pscustomobject]@{ Address = $address; Claims = $orphans })
+    }
+    return @($found)
+}
+
 function Format-ClaimLine {
     param($Claim)
     $record = $Claim.Record
@@ -1872,5 +2793,20 @@ function Format-ClaimLine {
     $memory = ''
     if ($kept.Count -gt 0) { $memory += ", remembers names: $($kept -join ', ')" }
     if ($lost.Count -gt 0) { $memory += ", names taken away: $($lost -join ', ')" }
-    return "  $($record.wave)/$($record.stream)$name$tasks — $($Claim.State) (checked in $(Format-Stamp -Raw $record.seen_at), branch $($record.branch)$memory)"
+    # The worktree folder goes next to the branch, not at the end of the line: both refusals name
+    # exactly it to a human, and they should find it by eye in the same place they looked for the
+    # branch.
+    $folder = if ($record.worktree) { ", folder $($record.worktree)" } else { '' }
+    foreach ($mark in (Get-ClaimFolderMarks -Claim $Claim)) { $folder += ", $mark" }
+    # ‼️ For a superseded record we name WHERE the address went. Without that, "superseded" is a dead
+    # end: a human sees the record is silenced but doesn't know which folder to look for the stream
+    # in or whom to send a finding to. The taking folder may have moved on further, released, or
+    # taken on the next stream — then we say so plainly rather than pass it off as a handover to a
+    # live session on the same address.
+    $state = if ($Claim.TakenBy -and $Claim.Superseded) {
+        Get-ClaimTakenAwayText -Claim $Claim
+    } else {
+        $Claim.State
+    }
+    return "  $($record.wave)/$($record.stream)$name$tasks — $state (checked in $(Format-Stamp -Raw $record.seen_at), branch $($record.branch)$folder$memory)"
 }

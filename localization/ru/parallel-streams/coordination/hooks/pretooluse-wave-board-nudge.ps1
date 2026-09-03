@@ -35,7 +35,9 @@ $ErrorActionPreference = 'Stop'
 $MaxNames = 8
 
 function Get-StateDir {
-    $dir = Join-Path $PWD '.claude/.cache'
+    # По корню дерева, а не по текущей папке: напоминание обещано «один раз за сессию», а от папки
+    # к папке оно возвращалось бы заново.
+    $dir = Join-Path (Get-TreeRoot) '.claude/.cache'
     if (-not (Test-Path $dir)) { New-Item -ItemType Directory -Path $dir -Force | Out-Null }
     return $dir
 }
@@ -44,12 +46,14 @@ function Get-WaveStreams {
     param([string]$WaveMarker)
     # Деревья волны, разложенные по живости: отметившиеся вкладки отдельно, молчащие деревья
     # отдельно. Главная папка репозитория потоком не является, себя тоже не предлагаем.
-    $here = ($PWD.Path -replace '\\', '/').TrimEnd('/').ToLowerInvariant()
+    # Себя узнаём по КОРНЮ дерева: из подкаталога вкладка не узнала бы себя в списке и предложила
+    # бы человеку адресовать находку самому себе.
+    $here = Get-FolderKey -Path (Get-TreeRoot)
     $alive = [System.Collections.Generic.List[string]]::new()
     $silent = [System.Collections.Generic.List[string]]::new()
     foreach ($tree in (Get-Worktrees)) {
         if ($tree.path -notmatch '/\.claude/worktrees/[^/]+$') { continue }
-        if ($tree.path.ToLowerInvariant() -eq $here) { continue }
+        if ((Get-FolderKey -Path $tree.path) -eq $here) { continue }
         $name = if ($tree.branch) { $tree.branch } else { Split-Path -Leaf $tree.path }
         if ($WaveMarker -and $name -notmatch $WaveMarker -and $tree.path -notmatch $WaveMarker) { continue }
         # Молчащее дерево из списка НЕ выбрасываем: маячка может не быть у вкладки, запущенной до

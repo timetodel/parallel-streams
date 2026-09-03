@@ -46,7 +46,13 @@ $MaxRecords = 5
 
 function Get-StateDir {
     # .claude/.cache is already in .gitignore — hook state doesn't litter the repository there.
-    $dir = Join-Path $PWD '.claude/.cache'
+    #
+    # ‼️ The state folder sits at the TREE ROOT, not at the current directory. First, the liveness
+    # beacon's folder is created right here, and the beacon is read by root — let the two drift
+    # apart and a live session would look abandoned. Second, the shown-log belongs to the session:
+    # let the session step into a subdirectory, and everything already shown would arrive all over
+    # again.
+    $dir = Join-Path (Get-TreeRoot) '.claude/.cache'
     if (-not (Test-Path $dir)) { New-Item -ItemType Directory -Path $dir -Force | Out-Null }
     return $dir
 }
@@ -167,14 +173,32 @@ try {
     # worktree. Set on EVERY turn, both stages, before any early exit: otherwise only the session
     # that already got something delivered would count as alive, and every other one would look
     # closed. This costs one write to a file — the hook touches the state folder anyway.
-    Set-Content -Path (Get-AliveBeaconPath -TreePath $PWD.Path) `
+    # ‼️ We write it by the TREE ROOT — where the worktree scan looks for the beacon (it knows paths
+    # from git, not from our current folder). The writer used to address it by the current folder,
+    # and a session that had stepped into a subdirectory looked abandoned to its neighbours: findings
+    # went off into "Wave Loose Ends" past a live person. The fallback to the current folder here is
+    # silent — the hook must stay mute.
+    Set-Content -Path (Get-AliveBeaconPath -TreePath (Get-TreeRoot)) `
         -Value "$((Get-Date).ToString('s')) $sessionId" -Encoding utf8
+
+    # ‼️ We read the registry BEFORE the marks, not after. Both marks must stay silent on ANY closed
+    # record, and a handed-over address is only visible in the registry as a whole: in its own file a
+    # handed-over claim still looks open. Read the registry later, and any new session opened in the
+    # old folder would, on its very first turn, resurrect a ghost with a fresh mark — along with its
+    # address and its mail. The read is forgiving: the hook must stay mute, and a partial snapshot is
+    # no reason for it to break off.
+    $registry = Get-RegistryDir -BoardOverride $BoardPath
+    $claims = @(Get-Claims -Dir $registry)
+    # Wave names from the registry, for address parsing: a wave isn't only ever called "wave6" —
+    # where there are no waves, the claim supplies one instead (a date or a word). Without this,
+    # such a wave's address wouldn't parse, and the finding would never reach the session waiting
+    # for it.
+    Set-KnownWaves -Keys @($claims | ForEach-Object { $_.WaveKey })
 
     # The same mark, but in the stream's claim: the beacon speaks about the FOLDER, the claim speaks
     # about the STREAM, and it survives the folder being deleted. No claim (the session never
     # announced) — quietly do nothing.
-    $registry = Get-RegistryDir -BoardOverride $BoardPath
-    Update-ClaimSeen -Dir $registry -TreePath $PWD.Path
+    Update-ClaimSeen -Dir $registry -TreePath (Get-TreeRoot) -Claims $claims
 
     # Live-session mark: we bump the log's write time on EVERY turn, not only when there's something
     # to show. Otherwise a long session that went days without a finding would fall under cleanup
@@ -192,22 +216,97 @@ try {
 
     # The list of files touched in this stream's own claim — neighbours use it to see overlapping
     # work. Recomputed no more than every few minutes, and stays silent on any failure.
-    Update-ClaimFiles -Dir $registry -TreePath $PWD.Path
+    Update-ClaimFiles -Dir $registry -TreePath (Get-TreeRoot) -Claims $claims
 
     $board = Get-BoardPath -Override $BoardPath
-    $claims = @(Get-Claims -Dir $registry)
-    # Wave names from the registry, for address parsing: a wave isn't only ever called "wave6" —
-    # where there are no waves, the claim supplies one instead (a date or a word). Without this,
-    # such a wave's address wouldn't parse, and the finding would never reach the session waiting
-    # for it.
-    Set-KnownWaves -Keys @($claims | ForEach-Object { $_.WaveKey })
     $claim = Get-CurrentClaim -Dir $registry
+    if (-not $claim) {
+        # A second route to our own claim — the same one release already uses: by an EXACT match on
+        # the worktree folder recorded in the claim. This is how claims filed by an older version
+        # from a subdirectory of the tree get found: their file name was derived from that folder, so
+        # the current canonical key (the tree root) doesn't find them.
+        #
+        # ‼️ Without this route, release finds such a claim and delivery doesn't — meaning a finding
+        # sent to the address is accepted with a report of "it'll get there on its own", and never
+        # reaches the session: the stream's address is taken from ITS OWN claim, and without it the
+        # hook doesn't know what the stream is called.
+        #
+        # ‼️ The hook MARKS the record it finds (liveness and the list of touched files), but never
+        # creates, deletes or renames files under any circumstances: it takes no lock, it is already
+        # a second writer, and it must not become a second arbiter of names. Marking it is allowed
+        # precisely because it was found by an EXACT match on the worktree folder — so it belongs to
+        # this very session, and no second writer appears for the file.
+        try {
+            $found = Find-ClaimByWorktree -Claims $claims -Paths @((Get-TreeRoot), $PWD.Path)
+            if ($found) {
+                $claim = $found.Record
+                # ‼️ Both the liveness mark and the list of touched files go RIGHT HERE, on the file
+                # we found. Both marks above go by the canonical key, and this claim's key is a
+                # different one — so it worked out that it gets the mail and never gets a mark: after
+                # a day it landed in the owner's stuck summary, and neighbours stopped counting the
+                # session as alive. No second writer appears here: the record was found by an EXACT
+                # match on the worktree folder, so it belongs to this very session. The ban on
+                # writing into SOMEONE ELSE'S file still stands.
+                Update-ClaimSeen -Path $found.File -Claims $claims
+                Update-ClaimFiles -Path $found.File -Claims $claims
+            }
+        } catch {
+            # An ambiguity (two unclosed claims on one folder) is a finding to show, not a reason to
+            # wreck the delivery of everything else. The hook must stay mute: we behave as before.
+            $claim = $null
+        }
+    }
 
-    # The blocks the hook puts into context. There are three, and they appear independently: what
-    # arrived from the board, an overlap with a neighbour, a summary of what's stuck for the owner.
-    # The hook used to exit immediately when the board was empty — the last two would then never be
-    # seen at all.
+    # The blocks the hook puts into context. There are four, and they appear independently: the
+    # notice to a session that lost its address, what arrived from the board, an overlap with a
+    # neighbour, a summary of what's stuck for the owner. The hook used to exit immediately when the
+    # board was empty — the last three would then never be seen at all.
     $blocks = [System.Collections.Generic.List[string]]::new()
+
+    # ‼️ NOTICE TO A SESSION THAT LOST ITS ADDRESS. Its claim on disk still looks open — a handover
+    # doesn't touch someone else's file by a single byte — while in the registry the record is
+    # cancelled. Without this line the losing side goes SILENT: no findings are brought to it any
+    # more, release answers "handed over", an attempt to close a finding is refused — and why, the
+    # session doesn't know, and goes on believing it is running the stream. Worse, it will announce
+    # to its neighbours and to the owner that it works at an address it doesn't have.
+    #
+    # Printed on EVERY turn, not once per session like the overlap warning: that one is an event,
+    # and saying it once is enough; this is a state the session goes on living in. It costs two
+    # lines.
+    #
+    # The state comes from the REGISTRY: the handover isn't visible in its own file at all. If we
+    # trip, we stay silent, just as we were: the hook must stay mute.
+    if ($claim -and [string]$claim.state -ne 'released') {
+        try {
+            $myEntry = Get-ClaimEntry -Claims $claims -Claim $claim
+            if ($myEntry -and $myEntry.Superseded) {
+                # ‼️ "Taken over into such-and-such folder" is true exactly when that folder IS
+                # RUNNING THE SAME address. It could have moved on, released, or taken up the next
+                # stream — and then no record leads the address at all, and the session must not be
+                # sent there.
+                $fate = Get-ClaimAddressFate -Claim $myEntry
+                # ‼️ We print the way out according to whoever ACTUALLY holds the address. The
+                # take-over switch takes it away from the leading claim of another folder; with no
+                # leader, the switch answers "wasn't needed", and the session goes in circles
+                # following the one piece of advice printed for it. A printed way out has to work.
+                $lines = if ($fate.StillLed) {
+                    @(
+                        "‼️ Your stream $($claim.wave)/$($claim.stream) was taken over into $($fate.Holder.Record.worktree) — this session is no longer addressable: findings for that address arrive there, and they can't be closed from here."
+                        "This is your stream and it was taken over by mistake — take the address back: pwsh scripts/wave-board.ps1 -Mode Claim -Wave $($claim.wave) -Stream $($claim.stream) -TakeOver"
+                    )
+                } else {
+                    @(
+                        "‼️ Your stream $($claim.wave)/$($claim.stream) is no longer run from here: $($fate.Text). No record leads the address any more — this session isn't addressable from outside, and intake won't accept a finding for it."
+                        'There is nothing to take the address back from — the folder that took it has moved on or finished the stream. For new work, announce yourself under a free number: pwsh scripts/wave-board.ps1 -Mode Claim'
+                    )
+                }
+                $blocks.Add($lines -join "`n")
+            }
+        } catch {
+            # Muteness matters more than the notice: an unparsed registry is no reason to wreck the
+            # delivery of everything else.
+        }
+    }
 
     $overlapText = Get-OverlapBlock -Claims $claims -MyClaim $claim -StateDir $stateDir -SessionId $sessionId
     if ($overlapText) { $blocks.Add($overlapText) }
@@ -233,12 +332,18 @@ try {
     # accepted it at that very moment and promised the author "a session is running this stream —
     # it'll most likely get there on its own."
     $keys = @(Get-StreamNames -Claim $claim -Claims $claims)
-    # ‼️ We don't carry findings to a released stream. The session that ran it is gone, and if it's
-    # still open, it's already been told "findings won't be accepted anymore." Delivering someone
-    # else's finding to it used to end in the worst possible way: the delivery text tells the reader
-    # outright to close the record if it doesn't apply to their work, and closing a name-addressed
-    # record is SHARED — so a released stream would snuff out a finding meant for a live neighbour.
-    $released = $claim -and ([string]$claim.state -eq 'released')
+    # ‼️ We don't carry findings to a CLOSED stream — neither a released one nor a handed-over one.
+    # A released one has no session left, and if one is still open, it's already been told "findings
+    # won't be accepted anymore"; a handed-over one had its address taken by another folder, and the
+    # findings for it belong to that folder. Delivering someone else's finding ends in the worst
+    # possible way: the delivery text tells the reader outright to close the record if it doesn't
+    # apply to their work, and closing a name-addressed record is SHARED — so a closed stream snuffs
+    # out a finding meant for a live one.
+    #
+    # ‼️ The state comes from the REGISTRY, not from our own file: the handover isn't visible in our
+    # own file at all, and the losing session would go on receiving the mail of the address's new
+    # owner.
+    $released = Test-ClaimClosed -Claims $claims -Claim $claim
     $mine = if ($released) {
         @()
     } else {

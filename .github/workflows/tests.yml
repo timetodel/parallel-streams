@@ -26,6 +26,41 @@ jobs:
         # -rs prints why each test skipped itself: a skip here is a hole in coverage that otherwise
         # reads as green.
         run: python -m pytest skills/parallel-streams/coordination/tests -q -rs
+
+      - name: Coordination channel tests (Russian source)
+        # The Russian tree is the declared source of truth, and until now nothing ran it: the suite
+        # carried a project-specific path to the kit, so in this repository it could not even find
+        # the tool. Green here means the source of truth is guarded, not just its translation.
+        run: python -m pytest localization/ru/parallel-streams/coordination/tests -q -rs
+
+      - name: The two trees carry the same files
+        # A file added to one tree and forgotten in the other is invisible otherwise: both suites
+        # stay green while the copies drift apart.
+        run: |
+          python - <<'EOF'
+          from pathlib import Path
+          import sys
+
+          def listing(root: Path) -> set[str]:
+              return {
+                  str(p.relative_to(root)).replace("\\", "/")
+                  for p in root.rglob("*")
+                  if p.is_file() and "__pycache__" not in p.parts
+              }
+
+          english = listing(Path("skills/parallel-streams"))
+          russian = listing(Path("localization/ru/parallel-streams"))
+          only_english = sorted(english - russian)
+          only_russian = sorted(russian - english)
+          if only_english or only_russian:
+              print("the two trees have drifted apart:")
+              for name in only_english:
+                  print(f"  only in skills/: {name}")
+              for name in only_russian:
+                  print(f"  only in localization/ru/: {name}")
+              sys.exit(1)
+          print(f"both trees carry the same {len(english)} files")
+          EOF
       - name: Renderer smoke test
         run: |
           printf '1:\n2: 1\n3: 1\n4: 2, 3\n5: 4\n' \

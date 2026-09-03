@@ -42,10 +42,33 @@ from pathlib import Path
 
 import pytest
 
-# The file sits in skills/parallel-streams/coordination/tests/ — four levels up to the repository
-# root (tests -> coordination -> parallel-streams -> skills -> root).
-REPO_ROOT = Path(__file__).resolve().parents[4]
-COORDINATION_DIR = REPO_ROOT / "skills" / "parallel-streams" / "coordination"
+# The bundle does not live only here: it also exists in five other copies, and each has its own
+# prefix to the coordination folder's path (for example, in the public repository —
+# localization/ru/parallel-streams/coordination and skills/parallel-streams/coordination, with no
+# .claude/skills/ prefix of this project at all). The old count of levels upward (parents[4]) was a
+# prefix hard-wired to this one project: in a foreign copy it landed in the wrong folder, the
+# installer was never found, and the whole suite failed red. The tests folder sits INSIDE
+# coordination always and everywhere, so the bundle folder itself is now taken from the test file's
+# own location — one level up, with no prefix counting.
+COORDINATION_DIR = Path(__file__).resolve().parent.parent
+
+
+def _find_repo_root(start: Path) -> Path:
+    """The repository root: the first folder walking upward where a `.git` is set up.
+
+    Needed as the working folder for the installer and to compare against this project's real files
+    (REAL_SETTINGS, REAL_BRIDGE below). Counting levels upward would again be a prefix hard-wired to
+    one project — different copies of the bundle sit at different depths from the root; look for the
+    `.git` marker instead of counting folders. Not found — fall back to this file's own old level
+    count.
+    """
+    for candidate in start.parents:
+        if (candidate / ".git").exists():
+            return candidate
+    return start.parents[4]
+
+
+REPO_ROOT = _find_repo_root(Path(__file__).resolve())
 INSTALLER = COORDINATION_DIR / "install.ps1"
 NUDGE = COORDINATION_DIR / "hooks" / "pretooluse-wave-board-nudge.ps1"
 REAL_SETTINGS = REPO_ROOT / ".claude" / "settings.json"

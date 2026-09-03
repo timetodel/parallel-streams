@@ -65,6 +65,24 @@ one either, the session joins whatever work is already running nearby, or, if no
 wave is opened under today's date. The stream number is optional too — the next free one is handed
 out.
 
+## One claim per folder, one leading record per address
+
+A session's key is the root of its worktree, and the unit of accounting is the stream. Three rules
+follow from that:
+
+- announcing under a DIFFERENT address from a folder that already holds an unclosed claim is
+  refused before it gets recorded: otherwise the previous stream would vanish silently, taking its
+  inbox and its tasks with it;
+- announcing under an address already held by another folder's claim is refused the same way: two
+  leading records for one address would mean a directory listing's order decides who gets the
+  finding;
+- relocating is legitimate, and done with the takeover key (`-TakeOver`): the session announces from
+  the new folder under the same address, the address and the inbox travel with it, and the
+  abandoned record in the old folder goes dark — from the outside it no longer answers and receives
+  no findings.
+
+Both refusals print ready-made commands, whole lines: run them without reading the code.
+
 ## Known limitation: two sessions can carry the same branch name
 
 A stream is called by three names: its number in the wave (`wave6/3`), its branch name, and its
