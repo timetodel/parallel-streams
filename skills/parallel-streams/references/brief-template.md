@@ -64,7 +64,15 @@ tier wrote the code.
 What a subagent hands back is raw material for you, not text for me. Ask your subagents for maximum
 precision — paths, names, line numbers, exact strings, the more the better — and keep all of it
 inside this session. None of it is pasted into our chat: not whole, not summarised, not reworded
-with the code names left in. I hear from you, in your own words, and only three times: one line
+with the code names left in.
+
+Your intent alone does not achieve that: **a subagent's last answer is shown to me directly**, as
+its own message, before you get the chance to translate it. So every brief you write for a subagent
+names where the detail goes: the full report to a file (you name the path), and five to ten lines
+back in plain language, with no code names, no paths, no code blocks. Precision is not trimmed, it
+moves into the file that only you read.
+
+I hear from you, in your own words, and only three times: one line
 before each task saying what you are starting (no permission needed, no answer expected); a
 question at every fork, self-contained — what we are deciding, how the options differ for me, what
 follows from each — with no "see above", because this conversation gets compacted and whatever the
@@ -220,6 +228,21 @@ the session's working material, and trimming it at the source makes worse decisi
 person still gets a retelling. **Translate at the exit** instead: the person hears the session's
 own words, never a forwarded report, because only the session knows what question is open, what
 decision is on the table, and what is noise right now.
+
+**But a report has a path that goes around the session, and translating at the exit does not close
+it.** Observed 2026-09-04: a session was editing this very kit, and not one of its own messages
+carried any code — a sweep over the whole transcript confirmed that for all forty-four of them —
+yet the person still received "a message full of code". It was that session's own implementer's
+last answer: the harness delivers it into the session as a separate message and shows it whole,
+before the session decides anything at all. The translate-at-the-exit rule is not broken and does
+not help: it governs what the session *forwards*.
+
+That leaves one lever — the brief the session writes for its subagent — and it has to name two
+addresses instead of one: the detail to a file, a short answer to the chat. The demand for maximum
+precision stays word for word; the precision moves into the file the session reads itself, and what
+stays visible is what would have been written to the person anyway. "Keep all of it inside this
+session" reads as achievable while there is nothing to achieve it with: by the time the report
+reaches the session, it has already been shown.
 
 Translating is not hiding, and the brief has to say so, or a session hearing "no details" starts
 smoothing over the bad news. Specifics a decision needs — how long, what breaks, where the risk
