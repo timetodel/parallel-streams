@@ -5,7 +5,7 @@
 [![tests](https://github.com/timetodel/parallel-streams/actions/workflows/tests.yml/badge.svg)](https://github.com/timetodel/parallel-streams/actions/workflows/tests.yml)
 [![license](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![skill](https://img.shields.io/badge/Claude%20Code-skill-orange.svg)](https://code.claude.com/docs/en/skills)
-[![version](https://img.shields.io/badge/version-1.10.0-brightgreen.svg)](CHANGELOG.md)
+[![version](https://img.shields.io/badge/version-1.11.0-brightgreen.svg)](CHANGELOG.md)
 
 You open six agent sessions on one repository because the plan is big and the model is fast. An hour
 later two of them have rewritten the same file, a third built a helper the fourth had already
@@ -139,7 +139,9 @@ Delegate the reading — sweeps, prior art, broad searches go to a subagent, so 
 back instead of a dozen files parked in this session's context. Delegate the writing too: a fresh
 implementation subagent per task, one reviewing subagent per finished task — reading it against
 this brief, not hunting for logic bugs — its findings back in a single round of fixes. Research, mechanical work and review lists on the cheap fast tier; new logic
-on the session's own; review never below the session's tier.
+on the session's own; review never below the session's tier. Every brief you write for a subagent
+names two addresses: the detailed report to a file, five to ten lines in plain language back — that
+answer is shown to me directly.
 
 Stream 2 is adding endpoints in the same area. Different files, but rebase before you open the PR.
 
@@ -368,6 +370,17 @@ research subagent and ran no implementers at all, hand-writing hundreds of lines
 past the person the stream reports to. So the brief names both halves, and names them as permission:
 no session should have to ask whether it may look something up or hand a task to an implementer. It
 also fixes the model tier per kind of work, so neighbouring sessions don't each pick by taste.
+
+**Why does the brief make the session tell its subagents where to put the detail?**
+Because a subagent's last answer is shown to you directly: it arrives in the session as its own
+message and is displayed whole, ahead of anything the session decides — and that subagent was asked
+for maximum precision, so the message is paths, names and code. Observed 2026-09-04: a session
+editing this kit wrote forty-four messages, not one of which carried any code, and the person still
+received "a message full of code" — its own implementer's report. No rule was broken: the rule about
+never forwarding reports governs what the session *forwards*, and this text went around it. So each
+brief now names two addresses instead of one — the detailed report to a file the session reads
+itself, five to ten lines in plain language back as the answer. The demand for precision is
+unchanged; only its address is.
 
 It fixes the *shape* too, because the intuitive shape is the expensive one: one reviewer per
 finished task rather than per round of fixes, a fresh subagent per task rather than an old one woken

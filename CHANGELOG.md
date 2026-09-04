@@ -3,6 +3,26 @@
 All notable changes to this project are documented here.
 This project follows [Semantic Versioning](https://semver.org/).
 
+## [1.11.0] — 2026-09-04
+
+### Fixed
+
+- **A subagent's report no longer reaches the person raw.** Every brief now tells the session to
+  name two addresses in the briefs it writes for its own subagents: the detailed report goes to a
+  file the session reads itself, and five to ten lines in plain language come back as the answer.
+  Observed the same day, in a session editing this kit: not one of its own forty-four messages
+  carried any code — a sweep over the whole transcript confirmed it — and the person still received
+  "a message full of code". It was that session's implementer's last answer, which the harness
+  delivers as its own message and displays whole, ahead of anything the session decides. The
+  existing rule ("a subagent's report is raw material, never text to forward") was not broken and
+  could not help: it governs what the session *forwards*, and this text went around it. The demand
+  for maximum precision is unchanged word for word — only its address moved.
+
+- **The wording that could not be honoured is gone.** "Keep all of it inside this session" read as
+  achievable while there was nothing to achieve it with; the brief, the skill's self-check, the
+  block offered for a project's permanent rules file, the README and the worked example now all
+  carry the two addresses instead.
+
 ## [1.10.0] — 2026-09-04
 
 ### Fixed

@@ -67,6 +67,10 @@ subagent then reads the finished task and returns everything it found as one lis
 in a single round of fixes. Research, mechanical work and working through a review list run on the
 cheap fast tier; new logic on this session's tier; review never below this session's tier.
 
+Every brief you write for a subagent names two addresses: the detailed report goes to a file — you
+name the path — and five to ten lines in plain language come back as the answer. That answer is
+shown to me directly, before you can translate it.
+
 ## What to do
 1. Add the `workspaces` table and the `workspace_members` table, with the role column carrying
    `owner`, `admin`, or `member`.
@@ -124,6 +128,10 @@ Delegate the writing too. Each task below goes to a fresh implementation subagen
 subagent then reads the finished task and returns everything it found as one list, which goes back
 in a single round of fixes. Research, mechanical work and working through a review list run on the
 cheap fast tier; new logic on this session's tier; review never below this session's tier.
+
+Every brief you write for a subagent names two addresses: the detailed report goes to a file — you
+name the path — and five to ten lines in plain language come back as the answer. That answer is
+shown to me directly, before you can translate it.
 
 Stream 2 is adding endpoints in the same area of the codebase. Different files, but rebase before
 you open the pull request.
@@ -192,6 +200,10 @@ Delegate the writing too. Each task below goes to a fresh implementation subagen
 subagent then reads the finished task and returns everything it found as one list, which goes back
 in a single round of fixes. Research, mechanical work and working through a review list run on the
 cheap fast tier; new logic on this session's tier; review never below this session's tier.
+
+Every brief you write for a subagent names two addresses: the detailed report goes to a file — you
+name the path — and five to ten lines in plain language come back as the answer. That answer is
+shown to me directly, before you can translate it.
 
 ## What to do
 1. Count active seats daily and prorate a seat added mid-cycle.

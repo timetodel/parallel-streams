@@ -45,6 +45,11 @@ reports success either way.
   session decides on, and it is not trimmed on the way in. It is trimmed on the way out: no
   subagent report reaches the person whole, summarised, or reworded with the code names left in.
   The person hears the session's own words.
+  - ‼️ **A brief for a subagent names two addresses, not one.** The full report goes to a file, the
+    session names the path; five to ten lines in plain language come back as the answer, with no
+    code names and no paths. A subagent's last answer is shown to the person directly, as its own
+    message, ahead of the session — so translating at the exit does not close that path: by the
+    time the report reaches the session, it has already been shown.
   - **Translating is not hiding.** Specifics a decision needs — how long, what breaks, where the
     risk is, what is still unknown — are given in full, in plain words.
   - **Bad news is stated plainly**: what is not done, what broke, what was never checked, where the

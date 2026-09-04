@@ -3,7 +3,7 @@ name: parallel-streams
 description: Split an approved plan into parallel work streams that different agent sessions can run at the same time without merge conflicts or duplicated work. Produces a dependency map (table plus diagram) and one self-contained brief per stream, ready to paste into a fresh session. Use when asked to "split the plan into streams", "parallelize this plan", "what can I run in parallel", "hand this plan to several agents", or "show me the stream map".
 ---
 
-<!-- parallel-streams 1.10.0 — https://github.com/timetodel/parallel-streams
+<!-- parallel-streams 1.11.0 — https://github.com/timetodel/parallel-streams
      Shipped as a skill: this directory is the whole thing. Update by copying a newer
      copy of it over this one; changes are listed in the repository's CHANGELOG.md.
      Project rules come from the profile `.parallel-streams.md` in the repository root.
@@ -190,7 +190,10 @@ the exact shape is in *Output format* below. Fixed block order, nothing skipped,
    planned for another stream; they will say yes. This block also settles what reaches the person:
    a subagent's report is raw material for the session, never text to forward — subagents are asked
    for maximum precision, and none of it is pasted into the chat, whole, summarised, or reworded
-   with the code names left in. The person hears the session's own words, and only three times: one
+   with the code names left in. The session's intent alone is not enough for that: a subagent's last
+   answer is shown to the person directly, as its own message, ahead of the session — so the brief
+   the session writes for a subagent names two addresses, the full report to a file and a few lines
+   in plain language back. The person hears the session's own words, and only three times: one
    line per task saying what it is starting, a self-contained question at every fork, and a summary
    at the end. Asking for the deeper mode — on before its span, off at the end of it — is a fork
    question, not extra status: both stop the work until they are answered.
@@ -231,6 +234,8 @@ Each brief:
 - [ ] reporting line present — subagent reports stay inside the session, subagents are still asked
       for maximum precision, and the person gets the session's own words: a line per task, a
       self-contained question at each fork, a summary at the end?
+- [ ] does it say that a brief for a subagent names two addresses — the full report to a file, a few
+      lines in plain language back — because that answer is shown to the person directly?
 - [ ] explicit escalation line — `none` with a reason, or the span plus both of its stops: ask to
       turn the mode on before the span, stop at its end and ask to turn it off?
 - [ ] explicit review line — a gate, or `none` with its reason plus the line that restores the gate
