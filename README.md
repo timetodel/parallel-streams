@@ -208,8 +208,11 @@ to cut a cycle when you find one.
 An ASCII diagram drifts by one character and the drift is invisible to whoever wrote it. It is only
 ever caught by the reader — the person you were trying to help.
 
-So the skill doesn't draw one. It runs the bundled renderer, which computes every character
-position and then **verifies its own output**:
+So the skill doesn't draw one. It runs the bundled renderer over **the map's own table**
+(`--format table`), so the picture and the table cannot disagree — the renderer computes every
+character position, **verifies its own output**, and settles the table while it is there: six
+columns in the fixed order, "waits for" and "blocks" agreeing in both directions, no blank cells, no
+transitive edges. The short notation below still works when there is no table yet:
 
 ```console
 $ python render_map.py streams.txt --check

@@ -65,3 +65,18 @@ jobs:
         run: |
           printf '1:\n2: 1\n3: 1\n4: 2, 3\n5: 4\n' \
             | python skills/parallel-streams/scripts/render_map.py --check
+
+      - name: The worked example's own map holds together
+        # The example is what a reader copies from. Checking it here means its table and its diagram
+        # can no longer drift apart unnoticed — which is the very failure the table format exists to
+        # prevent.
+        run: |
+          python skills/parallel-streams/scripts/render_map.py examples/example-output.md \
+            --format table --check > /dev/null
+
+      - name: Renderer smoke test (the map's own table)
+        # The table is what the skill actually feeds it now — and a table in the OTHER language
+        # copy's headings must work too, since both copies ship one script.
+        run: |
+          printf '| Поток | Название | Ждёт | Держит | Усиленный режим | Разбор |\n|---|---|---|---|---|---|\n| 1 | Признак | ничего | 2 | не нужен | обычный |\n| 2 | Приёмка | 1 | — | весь поток | глубокий |\n' \
+            | python skills/parallel-streams/scripts/render_map.py --format table --check
