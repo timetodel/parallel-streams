@@ -95,6 +95,20 @@ try {
     # refusing it for as long as the trouble lasted. Strict turns every one of those into an
     # exception, and the catch below turns the exception into silence.
     $registry = Get-RegistryDir -BoardOverride $BoardPath
+
+    # ‼️ And the registry's own shape is checked separately, before reading it — because strictness
+    # alone does not answer the same way on every system. A FILE standing where the claims folder
+    # belongs raises one kind of failure on Windows (strict reading refuses out loud) and another on
+    # Linux, where it is indistinguishable from "the folder does not exist yet" — and there the
+    # strict read comes back with an empty list and no error at all. On that answer the guard would
+    # refuse every commit in the project, and the refusal would be wrong. Asking what actually sits
+    # at the path settles it the same way everywhere.
+    #
+    # "Nothing there" is NOT one of these cases: an empty registry means nobody has announced yet,
+    # and that includes the first stream of a wave — the very one the guard exists for.
+    $registryState = Get-PathState -Path $registry
+    if ($registryState.Kind -eq 'leaf' -or $registryState.Kind -eq 'unknown') { exit 0 }
+
     $claims = @(Get-Claims -Dir $registry -Strict)
     $claim = Get-CurrentClaim -Dir $registry -Strict
     if (-not $claim) {
