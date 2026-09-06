@@ -3,7 +3,7 @@ name: parallel-streams
 description: Split an approved plan into parallel work streams that different agent sessions can run at the same time without merge conflicts or duplicated work. Produces a dependency map (table plus diagram) and one self-contained brief per stream, ready to paste into a fresh session. Use when asked to "split the plan into streams", "parallelize this plan", "what can I run in parallel", "hand this plan to several agents", or "show me the stream map".
 ---
 
-<!-- parallel-streams 1.11.0 — https://github.com/timetodel/parallel-streams
+<!-- parallel-streams 1.12.0 — https://github.com/timetodel/parallel-streams
      Shipped as a skill: this directory is the whole thing. Update by copying a newer
      copy of it over this one; changes are listed in the repository's CHANGELOG.md.
      Project rules come from the profile `.parallel-streams.md` in the repository root.
@@ -53,6 +53,11 @@ brief, filled in for that stream: announce the stream on start, send a finding t
 close what arrives, ask who owns a task before proposing work outside your own, release the stream
 before saying done. No such section — skip it entirely and say nothing about coordination; the
 skill carries the protocol, never the mechanism.
+
+Announcing is the one thing here that is enforced rather than agreed: with the channel installed, a
+commit from a stream that never announced itself is refused, and the refusal hands back the command
+that fixes it. So the announcement in block 4 is not a courtesy — a stream that skips it stops at
+its first commit.
 
 Each stream's address in that channel is `<wave>/<stream number>` — the wave id from the plan's file
 name and the number from column 1 of the table. Names of branches and folders drift within a wave;

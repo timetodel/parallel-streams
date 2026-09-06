@@ -8033,3 +8033,176 @@ def test_a_forgotten_move_is_named_aloud_when_the_memory_overflows(tmp_path: Pat
     assert "wave9/1" in out and "folder-1" in out, (
         f"the forgotten takeover isn't named: neither address nor the folder it left: {out!r}"
     )
+
+
+# ─── The commit guard: an unannounced stream is stopped before its work lands ─────────────────────
+
+CLAIM_GUARD = HOOKS_DIR / "pretooluse-claim-before-publish.ps1"
+
+
+def guard_call(
+    board: Path, cwd: Path, command: str, session: str = "s-guard", valve: bool = False
+) -> subprocess.CompletedProcess[str]:
+    """Runs the commit guard the way the harness does: the call arrives as JSON on stdin."""
+    assert pwsh
+    env = dict(os.environ)
+    # ‼️ The valve is cleared explicitly, not merely left unset: set in the environment of whoever
+    # runs the suite, it would silence the guard everywhere — and every check below would pass on an
+    # empty answer while proving nothing at all.
+    env.pop("PARALLEL_STREAMS_ALLOW_UNCLAIMED", None)
+    if valve:
+        env["PARALLEL_STREAMS_ALLOW_UNCLAIMED"] = "1"
+    cwd.mkdir(parents=True, exist_ok=True)
+    return subprocess.run(
+        [pwsh, "-NoProfile", "-File", str(CLAIM_GUARD), "-BoardPath", str(board)],
+        input=json.dumps(
+            {"session_id": session, "cwd": str(cwd), "tool_input": {"command": command}}
+        ),
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        cwd=str(cwd),
+        env=env,
+        timeout=60,
+    )
+
+
+def refusal(board: Path, cwd: Path, command: str, valve: bool = False) -> str:
+    """The refusal text, or an empty string when the guard let the call through.
+
+    A guard that trips must never turn into a project that cannot commit, so a non-zero exit code is
+    a defect in itself — it is checked here rather than in each caller.
+    """
+    done = guard_call(board, cwd, command, valve=valve)
+    assert done.returncode == 0, f"the guard exited non-zero — it would break the call: {done.stderr}"
+    text = done.stdout.strip()
+    if not text:
+        return ""
+    answer = json.loads(text)["hookSpecificOutput"]
+    assert answer["permissionDecision"] == "deny", f"an answer that is not a refusal: {answer}"
+    return str(answer["permissionDecisionReason"])
+
+
+@needs_pwsh
+def test_a_commit_from_an_unannounced_stream_is_refused(tmp_path: Path) -> None:
+    """An unannounced stream is stopped at the commit — and handed the line that fixes it.
+
+    Announcing is what makes a session reachable at all. Skip it, and the session is invisible: a
+    neighbour has nowhere to send a finding, its tasks show as unowned, and a neighbour asking who
+    owns them is told nobody does. It cannot be reminded either — there is nothing to send a
+    reminder to. The commit is the first moment the omission stops being that session's private
+    business.
+    """
+    board = tmp_path / "board.jsonl"
+    silent = tmp_path / "wave9-silent"
+
+    said = refusal(board, silent, 'git commit -m "the work"')
+
+    assert said, "the commit from an unannounced stream went through — nobody outside knows it exists"
+    assert "-Mode Claim" in said, f"the refusal does not hand back the command that fixes it: {said!r}"
+    assert "PARALLEL_STREAMS_ALLOW_UNCLAIMED" in said, (
+        f"the refusal does not name the deliberate way past it: {said!r}"
+    )
+
+
+@needs_pwsh
+def test_an_announced_stream_commits_freely(tmp_path: Path) -> None:
+    """The stream announced itself — the guard has nothing to say, on any publishing command.
+
+    Silence is ambiguous here: a guard that died looks exactly the same. So the same folder is
+    checked in both states — before announcing it refuses, after announcing it keeps quiet.
+    """
+    board = tmp_path / "board.jsonl"
+    mine = tmp_path / "wave9-announced"
+    assert refusal(board, mine, "git commit -m x"), "the guard was mute before the announcement too"
+
+    claim(board, mine, "wave9", "4", "-StreamName", "Intake")
+
+    for command in ('git commit -m "the work"', "git push -u origin HEAD", "gh pr create --fill"):
+        assert refusal(board, mine, command) == "", (
+            f"an announced stream was refused the command {command!r}"
+        )
+
+
+@needs_pwsh
+@pytest.mark.parametrize(
+    "command",
+    ["git status", "git log --oneline -5", "ls -la", "pytest -q", "git switch -c feat/next"],
+)
+def test_the_guard_minds_only_the_commands_that_publish(tmp_path: Path, command: str) -> None:
+    """Everything short of publishing is none of the guard's business — it runs before every call.
+
+    Local work is reversible and private; a refusal there would be pure noise on a hook that fires
+    on every single shell command in the session.
+    """
+    board = tmp_path / "board.jsonl"
+    silent = tmp_path / "wave9-local"
+
+    assert refusal(board, silent, command) == "", f"the guard got in the way of {command!r}"
+    assert refusal(board, silent, "git commit -m x"), (
+        "the guard is mute on the commit as well — then its silence above proves nothing"
+    )
+
+
+@needs_pwsh
+def test_the_valve_lets_a_deliberate_commit_through(tmp_path: Path) -> None:
+    """The deliberate exception works — the guard cannot tell every non-stream apart from a stream.
+
+    Committing from the repository's main folder, fixing the channel itself, a bulk chore: in each
+    of those there is no stream to announce, and without a way past it the kit would be refusing
+    work it has no business refusing.
+    """
+    board = tmp_path / "board.jsonl"
+    silent = tmp_path / "wave9-deliberate"
+    assert refusal(board, silent, "git commit -m x"), "there is nothing for the valve to lift"
+
+    assert refusal(board, silent, "git commit -m x", valve=True) == "", (
+        "the deliberate exception does not work — the kit refuses work it has no business refusing"
+    )
+
+
+@needs_pwsh
+def test_a_released_stream_is_told_its_address_leads_nowhere(tmp_path: Path) -> None:
+    """A released stream gets its own refusal: from the outside it no longer exists.
+
+    Nothing leads the address any more — a finding sent to it is refused at intake, and the tasks it
+    was running show as unowned again. Committing on afterwards leaves work behind an address nobody
+    can reach, so the way out has to be one that actually works: take the address back, or take a
+    free number.
+    """
+    board = tmp_path / "board.jsonl"
+    mine = tmp_path / "wave9-finished"
+    claim(board, mine, "wave9", "7", "-StreamName", "Wrapping up")
+    done = release(board, mine)
+    assert done.returncode == 0, done.stderr
+
+    said = refusal(board, mine, 'git commit -m "one more thing"')
+
+    assert said, "a commit from a released stream went through as if the stream were still running"
+    assert "wave9/7" in said, f"the refusal does not name which address is gone: {said!r}"
+    assert "-TakeOver" in said, f"the refusal does not offer taking the address back: {said!r}"
+
+
+@needs_pwsh
+def test_the_guard_stays_out_of_the_way_when_it_cannot_answer(tmp_path: Path) -> None:
+    """A registry that cannot be read leaves the guard silent — never a project that cannot commit.
+
+    The kit installs itself into someone else's project, where its own trouble may not turn into
+    work that has stopped. The check goes through the same path a real failure would: the registry
+    folder is replaced by a FILE, so every attempt to read claims fails outright.
+    """
+    board = tmp_path / "board.jsonl"
+    mine = tmp_path / "wave9-broken"
+    claim(board, mine, "wave9", "9", "-StreamName", "Probe")
+    registry = registry_dir(board)
+    shutil.rmtree(registry)
+    registry.write_text("not a folder at all\n", encoding="utf-8")
+
+    done = guard_call(board, mine, 'git commit -m "the work"')
+
+    assert done.returncode == 0, (
+        f"the guard broke the call instead of staying out of the way: {done.stderr}"
+    )
+    assert done.stdout.strip() == "", (
+        f"an unreadable registry turned into a refusal — the project cannot commit: {done.stdout!r}"
+    )

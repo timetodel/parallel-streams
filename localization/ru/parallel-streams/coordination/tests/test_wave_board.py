@@ -7816,3 +7816,175 @@ def test_a_forgotten_move_is_named_aloud_when_the_memory_overflows(tmp_path: Pat
     assert "wave9/1" in out and "папка-1" in out, (
         f"не назван сам забытый переезд: ни адрес, ни папка, у которой его забирали: {out!r}"
     )
+
+
+# ─── Сторож фиксации: необъявленный поток останавливают до того, как работа уедет ─────────────────
+
+CLAIM_GUARD = HOOKS_DIR / "pretooluse-claim-before-publish.ps1"
+
+
+def guard_call(
+    board: Path, cwd: Path, command: str, session: str = "s-guard", valve: bool = False
+) -> subprocess.CompletedProcess[str]:
+    """Запускает сторожа фиксации так же, как среда: вызов приходит на вход в виде JSON."""
+    assert pwsh
+    env = dict(os.environ)
+    # ‼️ Клапан снимаем явно, а не полагаемся на то, что его нет: выставленный в окружении того, кто
+    # гоняет проверки, он заглушил бы сторожа везде — и каждая проверка ниже проходила бы на пустом
+    # ответе, не доказывая ровным счётом ничего.
+    env.pop("PARALLEL_STREAMS_ALLOW_UNCLAIMED", None)
+    if valve:
+        env["PARALLEL_STREAMS_ALLOW_UNCLAIMED"] = "1"
+    cwd.mkdir(parents=True, exist_ok=True)
+    return subprocess.run(
+        [pwsh, "-NoProfile", "-File", str(CLAIM_GUARD), "-BoardPath", str(board)],
+        input=json.dumps(
+            {"session_id": session, "cwd": str(cwd), "tool_input": {"command": command}}
+        ),
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        cwd=str(cwd),
+        env=env,
+        timeout=60,
+    )
+
+
+def refusal(board: Path, cwd: Path, command: str, valve: bool = False) -> str:
+    """Текст отказа или пустая строка, если сторож пропустил вызов.
+
+    Споткнувшийся сторож не вправе превращаться в проект, где нельзя зафиксировать работу, поэтому
+    ненулевой код возврата — сам по себе дефект: он проверяется здесь, а не в каждом месте вызова.
+    """
+    done = guard_call(board, cwd, command, valve=valve)
+    assert done.returncode == 0, f"сторож вышел ненулём — он сорвал бы вызов: {done.stderr}"
+    text = done.stdout.strip()
+    if not text:
+        return ""
+    answer = json.loads(text)["hookSpecificOutput"]
+    assert answer["permissionDecision"] == "deny", f"ответ, который не является отказом: {answer}"
+    return str(answer["permissionDecisionReason"])
+
+
+@needs_pwsh
+def test_a_commit_from_an_unannounced_stream_is_refused(tmp_path: Path) -> None:
+    """Необъявленный поток останавливают на фиксации — и дают строку, которой это лечится.
+
+    Объявление и делает вкладку достижимой. Пропустили — вкладки снаружи нет: соседу некуда прислать
+    находку, её задачи числятся ничьими, а на вопрос соседа «чей это кусок» приходит ответ «ничей».
+    Напомнить ей тоже нельзя — напоминание некуда слать. Фиксация — первый момент, когда пропуск
+    перестаёт быть личным делом этой вкладки.
+    """
+    board = tmp_path / "board.jsonl"
+    silent = tmp_path / "wave9-silent"
+
+    said = refusal(board, silent, 'git commit -m "работа"')
+
+    assert said, "фиксация из необъявленного потока прошла — снаружи о нём никто не знает"
+    assert "-Mode Claim" in said, f"отказ не возвращает команду, которой он лечится: {said!r}"
+    assert "PARALLEL_STREAMS_ALLOW_UNCLAIMED" in said, (
+        f"отказ не называет осознанный обход: {said!r}"
+    )
+
+
+@needs_pwsh
+def test_an_announced_stream_commits_freely(tmp_path: Path) -> None:
+    """Поток объявился — сторожу сказать нечего, на любой публикующей команде.
+
+    Молчание здесь двусмысленно: умерший сторож выглядит точно так же. Поэтому одна и та же папка
+    проверяется в обоих состояниях — до объявления он отказывает, после объявления молчит.
+    """
+    board = tmp_path / "board.jsonl"
+    mine = tmp_path / "wave9-announced"
+    assert refusal(board, mine, "git commit -m x"), "сторож молчал и до объявления"
+
+    claim(board, mine, "wave9", "4", "-StreamName", "Приём")
+
+    for command in ('git commit -m "работа"', "git push -u origin HEAD", "gh pr create --fill"):
+        assert refusal(board, mine, command) == "", (
+            f"объявившемуся потоку отказали в команде {command!r}"
+        )
+
+
+@needs_pwsh
+@pytest.mark.parametrize(
+    "command",
+    ["git status", "git log --oneline -5", "ls -la", "pytest -q", "git switch -c feat/next"],
+)
+def test_the_guard_minds_only_the_commands_that_publish(tmp_path: Path, command: str) -> None:
+    """Всё, что не публикует, сторожа не касается — он идёт перед каждым вызовом.
+
+    Местная работа обратима и никого не касается; отказ там был бы чистым шумом на хуке, который
+    срабатывает на каждую команду оболочки в сессии.
+    """
+    board = tmp_path / "board.jsonl"
+    silent = tmp_path / "wave9-local"
+
+    assert refusal(board, silent, command) == "", f"сторож помешал команде {command!r}"
+    assert refusal(board, silent, "git commit -m x"), (
+        "сторож молчит и на фиксации — тогда его молчание выше ничего не доказывает"
+    )
+
+
+@needs_pwsh
+def test_the_valve_lets_a_deliberate_commit_through(tmp_path: Path) -> None:
+    """Осознанное исключение работает — сторож отличит от потока не всякое «не поток».
+
+    Фиксация из главной папки репозитория, починка самого канала, разовая рутина: в каждом из этих
+    случаев объявлять нечего, и без обхода набор отказывал бы в работе, отказывать в которой не
+    вправе.
+    """
+    board = tmp_path / "board.jsonl"
+    silent = tmp_path / "wave9-deliberate"
+    assert refusal(board, silent, "git commit -m x"), "клапану нечего снимать"
+
+    assert refusal(board, silent, "git commit -m x", valve=True) == "", (
+        "осознанное исключение не работает — набор отказывает в работе, отказывать в которой не вправе"
+    )
+
+
+@needs_pwsh
+def test_a_released_stream_is_told_its_address_leads_nowhere(tmp_path: Path) -> None:
+    """У сданного потока свой отказ: снаружи его больше нет.
+
+    Адрес никто не ведёт — находку для него на приёме отклоняют, а задачи снова числятся ничьими.
+    Продолжать фиксировать работу — значит оставлять её за адресом, до которого никому не
+    достучаться, поэтому выход должен быть тем, который действительно работает: вернуть адрес себе
+    или взять свободный номер.
+    """
+    board = tmp_path / "board.jsonl"
+    mine = tmp_path / "wave9-finished"
+    claim(board, mine, "wave9", "7", "-StreamName", "Завершение")
+    done = release(board, mine)
+    assert done.returncode == 0, done.stderr
+
+    said = refusal(board, mine, 'git commit -m "ещё одно"')
+
+    assert said, "фиксация из сданного потока прошла так, будто поток ещё ведётся"
+    assert "wave9/7" in said, f"отказ не называет, какого адреса больше нет: {said!r}"
+    assert "-TakeOver" in said, f"отказ не предлагает вернуть адрес себе: {said!r}"
+
+
+@needs_pwsh
+def test_the_guard_stays_out_of_the_way_when_it_cannot_answer(tmp_path: Path) -> None:
+    """Нечитаемый реестр оставляет сторожа немым — но не проект, в котором нельзя зафиксировать.
+
+    Набор ставят в чужой проект, и своя беда не вправе превращаться там в остановленную работу.
+    Проверка идёт тем же путём, каким пошёл бы настоящий сбой: папку реестра подменяют ФАЙЛОМ, и
+    любая попытка прочитать заявки проваливается напрочь.
+    """
+    board = tmp_path / "board.jsonl"
+    mine = tmp_path / "wave9-broken"
+    claim(board, mine, "wave9", "9", "-StreamName", "Проба")
+    registry = registry_dir(board)
+    shutil.rmtree(registry)
+    registry.write_text("это вовсе не папка\n", encoding="utf-8")
+
+    done = guard_call(board, mine, 'git commit -m "работа"')
+
+    assert done.returncode == 0, (
+        f"сторож сорвал вызов вместо того, чтобы уйти с дороги: {done.stderr}"
+    )
+    assert done.stdout.strip() == "", (
+        f"нечитаемый реестр превратился в отказ — в проекте нельзя зафиксировать работу: {done.stdout!r}"
+    )

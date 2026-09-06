@@ -10,8 +10,8 @@ in any one of them looks equally harmless: "the neighbour has nothing to say". H
 a report that names EVERY action.
 
 What the install does:
-  1. settings   `<project>/.claude/settings.json` — two guards: delivering findings and nudging on
-     wave-plan edits;
+  1. settings   `<project>/.claude/settings.json` — three guards: delivering findings, nudging on
+     wave-plan edits, and refusing a commit from a stream that never announced itself;
   2. profile    `<project>/.parallel-streams.md`  — the `## Coordination` and `## Plans` sections;
   3. bridge     `<project>/scripts/wave-board.ps1` — so the launch command is equally short in every
      project: `pwsh scripts/wave-board.ps1 ...`.
@@ -57,7 +57,11 @@ $CoordDir = (Resolve-Path -LiteralPath $PSScriptRoot).Path
 # a foreign hook as ours if it happened to sit in a folder with the same name — and uninstalling would
 # carry it away along with our own. Going by the file name alone would fail to recognize OUR prior
 # entry after the skill moved, and a second (dead) copy would end up sitting next to the old one.
-$OurHookFiles = @('wave-board-deliver.ps1', 'pretooluse-wave-board-nudge.ps1')
+$OurHookFiles = @(
+    'wave-board-deliver.ps1',
+    'pretooluse-wave-board-nudge.ps1',
+    'pretooluse-claim-before-publish.ps1'
+)
 $OurMark = 'coordination/hooks/(' +
     (($OurHookFiles | ForEach-Object { [regex]::Escape($_) }) -join '|') + ')'
 
@@ -286,6 +290,7 @@ function Get-HookWhat {
     switch (Get-HookKind $Hook) {
         'deliver' { return 'delivering findings' }
         'nudge' { return 'nudge on wave-plan edits' }
+        'claim' { return 'refusal to commit from an unannounced stream' }
         default { return 'channel entry' }
     }
 }
@@ -295,6 +300,7 @@ function Get-HookKind {
     $command = Get-SlashPath ([string](Get-Prop $Hook 'command'))
     if ($command -match 'wave-board-deliver\.ps1') { return 'deliver' }
     if ($command -match 'pretooluse-wave-board-nudge\.ps1') { return 'nudge' }
+    if ($command -match 'pretooluse-claim-before-publish\.ps1') { return 'claim' }
     return 'other'
 }
 
@@ -314,6 +320,9 @@ function Get-HookMark {
         if ($tool.Success) { return "nudge:$($tool.Groups[1].Value)" }
         return 'nudge:'
     }
+    # There is exactly one entry of the commit guard, and it has no condition to tell copies apart
+    # by: the kind alone IS the distinguisher.
+    if ($kind -eq 'claim') { return 'claim:' }
     return 'other'
 }
 
@@ -603,6 +612,7 @@ function Get-Wanted {
     $base = if ($inside) { '$PWD/' + $inside } else { Get-SlashPath $CoordDir }
     $deliver = "& `"$base/hooks/wave-board-deliver.ps1`""
     $nudge = "& `"$base/hooks/pretooluse-wave-board-nudge.ps1`""
+    $beforePublish = "& `"$base/hooks/pretooluse-claim-before-publish.ps1`""
 
     $wanted = @(
         [pscustomobject]@{
@@ -626,6 +636,25 @@ function Get-Wanted {
             Status  = ''
             If      = ''
             Title   = 'delivering findings before every human prompt'
+        }
+        # The commit guard is connected unconditionally: unlike the nudge, it needs no plans folder —
+        # a stream announces itself in a project with no waves and no plans at all, and there the
+        # channel supplies the wave itself.
+        #
+        # No `if` condition: the shell command is examined by the guard itself. A condition would
+        # have to spell out every shape a publishing command comes in (`git -C … commit`, a chain of
+        # commands, `gh pr create`), and every shape missed would be a guard that looks connected and
+        # is silent exactly where it is needed.
+        [pscustomobject]@{
+            Event   = 'PreToolUse'
+            Matcher = 'Bash|PowerShell'
+            Kind    = 'claim'
+            Mark    = 'claim:'
+            Command = $beforePublish
+            Timeout = 15
+            Status  = ''
+            If      = ''
+            Title   = 'refusal to commit from an unannounced stream'
         }
     )
     # The nudge guard depends on the plans folder: without knowing it, it cannot tell a wave plan apart
