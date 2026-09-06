@@ -3,6 +3,28 @@
 All notable changes to this project are documented here.
 This project follows [Semantic Versioning](https://semver.org/).
 
+## [1.13.0] — 2026-09-06
+
+### Added
+
+- **The wave now has an ending.** Until now the skill split a plan and stopped there: the map is
+  built once, at the start, and every mechanism in the kit works only while sessions are live. What
+  a wave leaves behind is invisible by construction — a task a stream gave up on produces no merge
+  conflict, no red test and no duplicated work, so the loss surfaces a wave later, if at all. A new
+  mode ("close the wave", "what is left of it", "gather the loose ends") asks the channel for the
+  state of every stream, compares the plan's tasks against the merge history, and gathers three
+  kinds of remainder: a task nobody finished and nobody is running, a finding whose addressee is
+  closed, an inbox left behind by a released stream. Each becomes its own item with ready-made text
+  for opening a new session — a line in somebody else's task is not an option, because the stream
+  that owned it is gone.
+
+- **The plan's `## Wave Loose Ends` section is now asked for.** The channel's own refusals have been
+  sending findings there by name — a released addressee, a stream with no worktree, an inbox left
+  behind — while nothing ever required the section to exist. Where it does not, every one of those
+  refusals points at nothing and the session following the advice has nowhere to put what it holds.
+  The skill now checks for it and offers to add it, the same way it already does for the plan's
+  rules section.
+
 ## [1.12.0] — 2026-09-06
 
 ### Added
