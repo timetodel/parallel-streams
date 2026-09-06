@@ -3,6 +3,36 @@
 All notable changes to this project are documented here.
 This project follows [Semantic Versioning](https://semver.org/).
 
+## [1.14.0] — 2026-09-06
+
+### Added
+
+- **A whole class of collisions was missing: what streams share while VERIFYING.** Every dependency
+  category asked what a stream *changes*; none asked what it *uses while checking itself*. Two
+  streams running the test suite at the same moment can share one local database, one container
+  name, one port, one build lock, one cache — and the failure looks nothing like a dependency: tests
+  go red in a stream that touched nothing related, or green because a neighbour's migration had
+  already been applied to the database both of them use. The dependency reference now carries the
+  class, with a table of the usual ones and what separates each.
+
+- **It is deliberately not a column, and never a "waits for".** Serializing streams over a shared
+  test database costs hours and fixes nothing; separating them costs a line. So it goes in one line
+  under the map's table — what to separate and how — and in the brief of every stream it applies to,
+  before the first test run. A column would have read `none` in nearly every row, and the reader who
+  acts on it is the stream, not the map.
+
+### Fixed
+
+- **The line that had quietly closed the door on this whole class.** "Shared review capacity is a
+  scheduling limit, not a dependency" was written about the queue for a person's attention, and read
+  as covering every shared resource — including the ones the tests themselves reach for. It now says
+  which of the two it means.
+
+- **Watching what the test command opens is an investigation, not a gate.** Where the list of usual
+  suspects stays silent, tracing file access can settle the question — but it must not become a
+  condition for starting a wave: it runs before the wave begins, and the most frequent collision of
+  the class, a migration one stream adds mid-wave, does not exist yet at that moment.
+
 ## [1.13.0] — 2026-09-06
 
 ### Added
