@@ -9,8 +9,8 @@
 сказать». Поэтому одна команда и отчёт, в котором названо КАЖДОЕ действие.
 
 Что делает установка:
-  1. настройки  `<проект>/.claude/settings.json` — два сторожа: доставка находок и подсказка при
-     правке плана волны;
+  1. настройки  `<проект>/.claude/settings.json` — три сторожа: доставка находок, подсказка при
+     правке плана волны и отказ фиксировать работу из необъявленного потока;
   2. профиль    `<проект>/.parallel-streams.md`  — разделы `## Coordination` и `## Plans`;
   3. переходник `<проект>/scripts/wave-board.ps1` — чтобы команда запуска везде была одинаково
      короткой: `pwsh scripts/wave-board.ps1 ...`.
@@ -54,7 +54,11 @@ $CoordDir = (Resolve-Path -LiteralPath $PSScriptRoot).Path
 # половины признака не хватает. По одной папке своим сочли бы чужой хук, случайно положенный в папку
 # с таким же именем, — и снятие унесло бы его вместе с нашими. По одному имени файла не узнали бы
 # СВОЮ прежнюю запись после переезда скилла, и рядом со старой (мёртвой) легла бы вторая.
-$OurHookFiles = @('wave-board-deliver.ps1', 'pretooluse-wave-board-nudge.ps1')
+$OurHookFiles = @(
+    'wave-board-deliver.ps1',
+    'pretooluse-wave-board-nudge.ps1',
+    'pretooluse-claim-before-publish.ps1'
+)
 $OurMark = 'coordination/hooks/(' +
     (($OurHookFiles | ForEach-Object { [regex]::Escape($_) }) -join '|') + ')'
 
@@ -276,6 +280,7 @@ function Get-HookWhat {
     switch (Get-HookKind $Hook) {
         'deliver' { return 'доставка находок' }
         'nudge' { return 'подсказка при правке плана волны' }
+        'claim' { return 'отказ фиксировать работу из необъявленного потока' }
         default { return 'запись канала' }
     }
 }
@@ -285,6 +290,7 @@ function Get-HookKind {
     $command = Get-SlashPath ([string](Get-Prop $Hook 'command'))
     if ($command -match 'wave-board-deliver\.ps1') { return 'deliver' }
     if ($command -match 'pretooluse-wave-board-nudge\.ps1') { return 'nudge' }
+    if ($command -match 'pretooluse-claim-before-publish\.ps1') { return 'claim' }
     return 'other'
 }
 
@@ -303,6 +309,9 @@ function Get-HookMark {
         if ($tool.Success) { return "nudge:$($tool.Groups[1].Value)" }
         return 'nudge:'
     }
+    # Запись у сторожа фиксации ровно одна, и различать копии по условию не по чему: сам вид записи
+    # и есть различитель.
+    if ($kind -eq 'claim') { return 'claim:' }
     return 'other'
 }
 
@@ -588,6 +597,7 @@ function Get-Wanted {
     $base = if ($inside) { '$PWD/' + $inside } else { Get-SlashPath $CoordDir }
     $deliver = "& `"$base/hooks/wave-board-deliver.ps1`""
     $nudge = "& `"$base/hooks/pretooluse-wave-board-nudge.ps1`""
+    $beforePublish = "& `"$base/hooks/pretooluse-claim-before-publish.ps1`""
 
     $wanted = @(
         [pscustomobject]@{
@@ -611,6 +621,24 @@ function Get-Wanted {
             Status  = ''
             If      = ''
             Title   = 'доставка находок перед каждым обращением человека'
+        }
+        # Сторож фиксации подключается безусловно: в отличие от подсказки, папка планов ему не
+        # нужна — поток объявляется и в проекте, где нет ни волн, ни планов, и там канал сам даёт
+        # волну.
+        #
+        # Без условия `if`: команду разбирает сам сторож. Условие пришлось бы расписать на все виды
+        # публикующей команды (`git -C … commit`, цепочка команд, `gh pr create`), и каждый
+        # пропущенный вид — это сторож, который выглядит подключённым и молчит ровно там, где нужен.
+        [pscustomobject]@{
+            Event   = 'PreToolUse'
+            Matcher = 'Bash|PowerShell'
+            Kind    = 'claim'
+            Mark    = 'claim:'
+            Command = $beforePublish
+            Timeout = 15
+            Status  = ''
+            If      = ''
+            Title   = 'отказ фиксировать работу из необъявленного потока'
         }
     )
     # Сторож-подсказка держится на папке планов: не зная её, он не отличит план волны от любого

@@ -73,7 +73,11 @@ SKILL_INSIDE = Path(".claude") / "skills" / "parallel-streams" / "coordination"
 PLANS = "планы-волн/"
 
 # Файлы сторожей канала. По ним узнаётся «наша» запись — и в установщике, и здесь.
-OUR_HOOK_FILES = ("wave-board-deliver.ps1", "pretooluse-wave-board-nudge.ps1")
+OUR_HOOK_FILES = (
+    "wave-board-deliver.ps1",
+    "pretooluse-wave-board-nudge.ps1",
+    "pretooluse-claim-before-publish.ps1",
+)
 
 pwsh = shutil.which("pwsh")
 needs_pwsh = pytest.mark.skipif(not pwsh, reason="pwsh не найден — запускать скрипты нечем")
@@ -176,6 +180,14 @@ def nudge_hooks(data: dict) -> list[dict]:
         hook
         for hook in ours(data, "PreToolUse")
         if "pretooluse-wave-board-nudge.ps1" in hook.get("command", "")
+    ]
+
+
+def claim_hooks(data: dict) -> list[dict]:
+    return [
+        hook
+        for hook in ours(data, "PreToolUse")
+        if "pretooluse-claim-before-publish.ps1" in hook.get("command", "")
     ]
 
 
@@ -394,6 +406,7 @@ def test_second_run_changes_nothing(project: Path) -> None:
     assert len(ours(data, "SessionStart")) == 1
     assert len(ours(data, "UserPromptSubmit")) == 1
     assert len(nudge_hooks(data)) == 2, "записи сторожа-подсказки размножились"
+    assert len(claim_hooks(data)) == 1, "записи сторожа фиксации размножились"
     assert "уже подключено" in out, "повторный прогон промолчал о том, что всё уже на месте"
 
 
@@ -714,6 +727,10 @@ def test_without_a_plans_folder_the_nudge_stays_out(project: Path, plans: str) -
         "всегда, и это сойдёт за исправную работу"
     )
     assert ours(data, "SessionStart"), "доставка находок обязана подключаться и без планов"
+    assert len(claim_hooks(data)) == 1, (
+        "сторож фиксации не подключён без папки планов — а она ему не нужна: поток объявляется и в "
+        "проекте, где нет ни волн, ни планов, и там канал сам даёт волну"
+    )
     assert "сторож-подсказка не подключён" in out, "пропуск прошёл молча"
     assert "обратными кавычками" in out and "## Plans" in out, (
         f"отчёт не говорит, что вписать в профиль, чтобы сторож подключился: {out!r}"
@@ -761,6 +778,34 @@ def test_the_plans_folder_comes_from_the_profile(project: Path) -> None:
 
 
 @needs_pwsh
+def test_the_commit_guard_watches_the_shell_with_no_condition(project: Path) -> None:
+    """Сторож фиксации стоит на инструментах оболочки и без собственного условия.
+
+    Условие в настройках пришлось бы расписать на все виды публикующей команды (`git -C … commit`,
+    цепочка команд, `gh pr create`), и каждый пропущенный вид — это сторож, который читается
+    подключённым и молчит ровно в том случае, ради которого заведён. Команду вместо этого разбирает
+    сам сторож, а значит он обязан ВИДЕТЬ каждый вызов оболочки.
+    """
+    with_plans(project)
+    install(project)
+
+    wired = claim_hooks(settings_of(project))
+    assert len(wired) == 1, f"запись сторожа фиксации должна быть ровно одна, а не {len(wired)}"
+    assert not wired[0].get("if"), (
+        f"сторожу фиксации задали условие — отсеянных им вызовов он не увидит: {wired[0]}"
+    )
+    matchers = [
+        entry.get("matcher", "")
+        for entry in settings_of(project)["hooks"]["PreToolUse"]
+        for hook in entry.get("hooks", [])
+        if "pretooluse-claim-before-publish.ps1" in hook.get("command", "")
+    ]
+    assert matchers and "Bash" in matchers[0], (
+        f"сторож фиксации не подключён к инструменту оболочки: {matchers}"
+    )
+
+
+@needs_pwsh
 def test_inside_project_paths_are_written_relative(project_with_skill: Path) -> None:
     """Скилл лежит внутри проекта — путь пишется от рабочей папки, а не полным.
 
@@ -770,8 +815,13 @@ def test_inside_project_paths_are_written_relative(project_with_skill: Path) -> 
     install_in(project_with_skill)
 
     data = settings_of(project_with_skill)
-    wired = ours(data, "SessionStart") + ours(data, "UserPromptSubmit") + nudge_hooks(data)
-    assert len(wired) == 4, f"подключено не то число записей: {len(wired)}"
+    wired = (
+        ours(data, "SessionStart")
+        + ours(data, "UserPromptSubmit")
+        + nudge_hooks(data)
+        + claim_hooks(data)
+    )
+    assert len(wired) == 5, f"подключено не то число записей: {len(wired)}"
     for hook in wired:
         command = hook["command"]
         assert command.startswith('& "$PWD/.claude/skills/parallel-streams/coordination/hooks/'), (

@@ -84,7 +84,11 @@ SKILL_INSIDE = Path(".claude") / "skills" / "parallel-streams" / "coordination"
 PLANS = "wave-plans/"
 
 # The channel's guard files. An "our" entry is recognized by them — both in the installer and here.
-OUR_HOOK_FILES = ("wave-board-deliver.ps1", "pretooluse-wave-board-nudge.ps1")
+OUR_HOOK_FILES = (
+    "wave-board-deliver.ps1",
+    "pretooluse-wave-board-nudge.ps1",
+    "pretooluse-claim-before-publish.ps1",
+)
 
 pwsh = shutil.which("pwsh")
 needs_pwsh = pytest.mark.skipif(not pwsh, reason="pwsh not found — nothing to run the scripts with")
@@ -187,6 +191,14 @@ def nudge_hooks(data: dict) -> list[dict]:
         hook
         for hook in ours(data, "PreToolUse")
         if "pretooluse-wave-board-nudge.ps1" in hook.get("command", "")
+    ]
+
+
+def claim_hooks(data: dict) -> list[dict]:
+    return [
+        hook
+        for hook in ours(data, "PreToolUse")
+        if "pretooluse-claim-before-publish.ps1" in hook.get("command", "")
     ]
 
 
@@ -405,6 +417,7 @@ def test_second_run_changes_nothing(project: Path) -> None:
     assert len(ours(data, "SessionStart")) == 1
     assert len(ours(data, "UserPromptSubmit")) == 1
     assert len(nudge_hooks(data)) == 2, "the nudge guard's entries multiplied"
+    assert len(claim_hooks(data)) == 1, "the commit guard's entries multiplied"
     assert "already connected" in out, "running it again said nothing about everything already being in place"
 
 
@@ -743,6 +756,11 @@ def test_without_a_plans_folder_the_nudge_stays_out(project: Path, plans: str) -
         "stay silent forever, and that would pass for working correctly"
     )
     assert ours(data, "SessionStart"), "delivering findings must be connected even without plans"
+    assert len(claim_hooks(data)) == 1, (
+        "the commit guard is not connected without a plans folder — yet it needs none: a stream "
+        "announces itself in a project with no waves and no plans, and there the channel supplies "
+        "the wave itself"
+    )
     assert "nudge guard is not connected" in out, "the omission passed silently"
     assert "backtick-quoted" in out and "## Plans" in out, (
         f"the report does not say what to fill into the profile for the guard to connect: {out!r}"
@@ -791,6 +809,34 @@ def test_the_plans_folder_comes_from_the_profile(project: Path) -> None:
 
 
 @needs_pwsh
+def test_the_commit_guard_watches_the_shell_with_no_condition(project: Path) -> None:
+    """The commit guard sits on the shell tools and carries no condition of its own.
+
+    A condition in the settings would have to spell out every shape a publishing command comes in
+    (`git -C … commit`, a chain of commands, `gh pr create`) — and every shape missed is a guard that
+    reads as connected while staying silent in exactly the case it exists for. The command is
+    examined by the guard itself instead, and it must therefore SEE every shell call.
+    """
+    with_plans(project)
+    install(project)
+
+    wired = claim_hooks(settings_of(project))
+    assert len(wired) == 1, f"there must be exactly one commit-guard entry, not {len(wired)}"
+    assert not wired[0].get("if"), (
+        f"the commit guard was given a condition — it will not see the calls it filters out: {wired[0]}"
+    )
+    matchers = [
+        entry.get("matcher", "")
+        for entry in settings_of(project)["hooks"]["PreToolUse"]
+        for hook in entry.get("hooks", [])
+        if "pretooluse-claim-before-publish.ps1" in hook.get("command", "")
+    ]
+    assert matchers and "Bash" in matchers[0], (
+        f"the commit guard is not wired to the shell tool: {matchers}"
+    )
+
+
+@needs_pwsh
 def test_inside_project_paths_are_written_relative(project_with_skill: Path) -> None:
     """The skill sits inside the project — the path is written from the working folder, not in full.
 
@@ -800,8 +846,13 @@ def test_inside_project_paths_are_written_relative(project_with_skill: Path) -> 
     install_in(project_with_skill)
 
     data = settings_of(project_with_skill)
-    wired = ours(data, "SessionStart") + ours(data, "UserPromptSubmit") + nudge_hooks(data)
-    assert len(wired) == 4, f"the number of connected entries is wrong: {len(wired)}"
+    wired = (
+        ours(data, "SessionStart")
+        + ours(data, "UserPromptSubmit")
+        + nudge_hooks(data)
+        + claim_hooks(data)
+    )
+    assert len(wired) == 5, f"the number of connected entries is wrong: {len(wired)}"
     for hook in wired:
         command = hook["command"]
         assert command.startswith('& "$PWD/.claude/skills/parallel-streams/coordination/hooks/'), (

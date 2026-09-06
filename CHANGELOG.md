@@ -3,6 +3,39 @@
 All notable changes to this project are documented here.
 This project follows [Semantic Versioning](https://semver.org/).
 
+## [1.12.0] — 2026-09-06
+
+### Added
+
+- **An unannounced stream is now stopped at the commit.** Until now every part of this kit was an
+  agreement a session keeps of its own accord, and the announcement — the one thing all the rest
+  rests on — was no exception. A session that skipped it is invisible from the outside: a neighbour
+  has nowhere to send a finding, its tasks show as unowned, and a neighbour asking who owns them is
+  told nobody does, so they get offered to the person, who cannot know they were planned for that
+  stream. It could not even be reminded, because there was nothing to send a reminder to. The
+  channel now refuses exactly once, at the moment the omission stops being that session's private
+  business — `git commit`, and failing that `git push` or opening a pull request — and the refusal
+  hands back the whole command that fixes it. Local work is never touched.
+
+- **The refusal costs nothing to get past when there is genuinely no stream.** Committing from the
+  repository's main folder, fixing the channel itself, a bulk chore: the deliberate exception is
+  `PARALLEL_STREAMS_ALLOW_UNCLAIMED=1` for that session, and the refusal names it. The guard catches
+  forgetfulness, not intent — which is enough, because forgetfulness is what actually happens.
+
+- **A released stream gets its own refusal.** Its address leads nowhere: findings for it are refused
+  at intake and its tasks show as unowned again, so committing on would leave the work behind an
+  address nobody can reach. The way out offered is the one that works — take the address back, or
+  take a free number.
+
+### Fixed
+
+- **"Couldn't find out" is never taken for "didn't announce".** The guard reads the claim registry
+  strictly: an unreadable registry, a dropped drive, or a claim file busy for a moment leave it
+  silent and let the commit through. Read tolerantly, all three come back empty — indistinguishable
+  from a stream that never announced itself — and the kit, installed into someone else's project,
+  would have turned its own trouble into a project that cannot commit. Caught by the check that
+  replaces the registry folder with a file.
+
 ## [1.11.0] — 2026-09-04
 
 ### Fixed

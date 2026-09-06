@@ -19,13 +19,14 @@ pwsh .claude/skills/parallel-streams/coordination/install.ps1
 
 The installer does exactly three things and reports what it did:
 
-1. wires two hooks into the project settings (`.claude/settings.json`) — without duplicating them
-   if they're already wired; the second one (the wave-plan-edit nudge) only when the profile names
-   a plans folder and it exists in the project: not knowing the folder, it would stay silent
-   forever anyway. It removes its own entry once that entry is no longer needed, and reports that
-   too. It leaves other entries and their order alone, but reassembles the file in its own layout —
-   a file written in a different style will show up whole in the diff after the first install; the
-   report calls this out on its own line;
+1. wires three hooks into the project settings (`.claude/settings.json`) — without duplicating them
+   if they're already wired. The wave-plan-edit nudge goes in only when the profile names a plans
+   folder and it exists in the project: not knowing the folder, it would stay silent forever
+   anyway. The other two — delivery and the commit guard — always: a stream announces itself in a
+   project with no waves and no plans at all. The installer removes its own entry once that entry
+   is no longer needed, and reports that too. It leaves other entries and their order alone, but
+   reassembles the file in its own layout — a file written in a different style will show up whole
+   in the diff after the first install; the report calls this out on its own line;
 2. drops a profile scaffold, `.parallel-streams.md`, or, if a profile already exists, adds only the
    missing coordination sections, changing nothing in what's already there;
 3. drops a short bridge script, `scripts/wave-board.ps1`, so the launch command is equally short in
@@ -47,6 +48,7 @@ script point at the folder, not at its contents.
 | `lib/hook-io.ps1` | Reads the data that reaches a hook |
 | `hooks/wave-board-deliver.ps1` | Delivery: brings a session the records addressed to it at session start and before every human turn |
 | `hooks/pretooluse-wave-board-nudge.ps1` | A nudge when the wave plan is edited: an addition to the plan doesn't catch up with a live neighbour |
+| `hooks/pretooluse-claim-before-publish.ps1` | The one refusal in the kit: a commit from a stream that never announced itself is stopped, and handed the line that fixes it |
 | `install.ps1` | Install, uninstall, and check wiring |
 | `templates/profile.md` | Profile scaffold for a new project |
 | `templates/profile-coordination.md` | Coordination sections — the ones the installer adds to a profile that already exists |
@@ -64,6 +66,30 @@ Naming a wave is optional. It's taken from the name of the document that got spl
 one either, the session joins whatever work is already running nearby, or, if nobody's nearby, a
 wave is opened under today's date. The stream number is optional too — the next free one is handed
 out.
+
+## An unannounced stream is stopped at the commit
+
+Everything else in this kit is an agreement a session keeps of its own accord. The announcement is
+the one thing the rest rests on — a session that skipped it is invisible: a neighbour has nowhere to
+send a finding, its tasks show as unowned, and a neighbour asking who owns them is told nobody does.
+It can't even be reminded, because there's nothing to send a reminder to.
+
+So the channel refuses exactly once, at the one moment an unannounced stream stops being that
+session's private business: `git commit` (and, failing that, `git push` or opening a pull request).
+Local work is never touched. The refusal hands back the whole command that fixes it, and nothing has
+to be worked out — with no wave and no plan, `-Mode Claim` on its own supplies the wave and hands out
+a free number.
+
+It catches forgetfulness, not intent: one deliberate line of shell gets around it, and that's fine —
+forgetfulness is what actually happens. Where there is genuinely no stream to announce — a commit
+from the repository's main folder, a fix to the channel itself, a bulk chore — the deliberate
+exception is the environment variable `PARALLEL_STREAMS_ALLOW_UNCLAIMED=1` for that session, and the
+refusal names it.
+
+The guard asks the registry STRICTLY: an unreadable registry, a dropped drive, a claim file busy for
+a moment all mean "couldn't find out", never "the stream didn't announce". In every one of those it
+stays silent and lets the commit through — a kit installed into someone else's project has no
+business turning its own trouble into a project that can't commit.
 
 ## One claim per folder, one leading record per address
 

@@ -291,7 +291,7 @@ That gives a project five commands, which the skill then writes into every brief
 
 | Command | What it does |
 |---|---|
-| `-Mode Claim` | announce this stream on start — otherwise a running session is indistinguishable from one nobody opened |
+| `-Mode Claim` | announce this stream on start — otherwise a running session is indistinguishable from one nobody opened, so an unannounced stream is refused its first commit |
 | `-Mode Add` | send a finding to a live neighbour, addressed by stream number (`wave6/3`), not by branch name |
 | `-Mode Done` | close what arrived, so it stops coming back after each context compaction |
 | `-Mode Release` | hand the stream back before saying done — refused while the inbox still has open entries |
@@ -304,7 +304,7 @@ A profile with no `## Coordination` section leaves all of this out: the skill pr
 commands and behaves exactly as it did before. Full description, including one known limitation
 stated in the open: [coordination/README.md](skills/parallel-streams/coordination/README.md).
 
-Requirements: PowerShell 7 (the tool and both hooks are `.ps1`; it runs on Windows, macOS and
+Requirements: PowerShell 7 (the tool and all three hooks are `.ps1`; it runs on Windows, macOS and
 Linux) and a git repository.
 
 ---
