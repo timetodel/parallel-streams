@@ -7,12 +7,20 @@ Input is a tiny dependency notation, one stream per line:
     4: 1            # stream 4 waits for stream 1
     9: 5, 6, 7, 8   # stream 9 waits for four streams
 
+With --format table the input is the map's own markdown table instead,
+and then the diagram comes from the very table the reader is looking at
+— not from dependencies retyped beside it, where the two could disagree
+and each still pass its own check.
+
 Output is a single connected diagram where a column is a start moment:
 every stream in the leftmost column can be opened right now, the next
 column opens once its dependencies land, and so on.
 
 Alignment is computed from character positions, never typed by hand.
-Run with --check to verify the result instead of eyeballing it.
+Run with --check to verify the result instead of eyeballing it; on a
+table it also settles what a checklist used to ask a human to verify by
+eye — six columns in order, "waits for" and "blocks" agreeing with each
+other, no blank cells where "none" is the answer, no transitive edges.
 """
 
 from __future__ import annotations
@@ -183,6 +191,193 @@ def parse_json(source: str) -> list[Stream]:
         label = str(entry.get("label") or key)
         streams.append(Stream(key, label, [str(dep).strip() for dep in deps]))
     return streams
+
+
+# The map table's six columns, in order, with every heading each one answers to. Both language
+# copies of the skill ship the same script, so both sets of headings live here: a script that knew
+# only one of them would refuse the very table the copy beside it tells sessions to write.
+TABLE_COLUMNS: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ("stream", ("stream", "поток")),
+    ("name", ("name", "название", "имя")),
+    ("waits", ("waits for", "waits", "ждёт", "ждет")),
+    ("blocks", ("blocks", "держит", "блокирует")),
+    ("escalation", ("escalation", "усиленный режим", "ультракод")),
+    ("review", ("review", "разбор")),
+)
+
+# "This cell is deliberately empty" — an answer, unlike a blank. Both columns take it; neither
+# takes emptiness.
+NONE_WORDS = frozenset(
+    {"none", "no", "not needed", "нет", "не нужен", "не нужна", "не нужно", "-", "—", "–"}
+)
+
+# "Waits for nobody" — the same distinction on the dependency side.
+NOTHING_WORDS = frozenset({"nothing", "none", "-", "—", "–", "ничего", "нет", "никого"})
+
+
+class TableRow:
+    def __init__(self, key: str, cells: dict[str, str], line: int) -> None:
+        self.key = key
+        self.cells = cells
+        self.line = line
+
+    def waits_on(self) -> list[str]:
+        return _split_refs(self.cells["waits"])
+
+    def blocks(self) -> list[str]:
+        return _split_refs(self.cells["blocks"])
+
+
+def _split_refs(value: str) -> list[str]:
+    """Stream numbers out of a cell. 'nothing', a dash and an empty cell all mean none."""
+    text = value.strip()
+    if not text or text.lower() in NOTHING_WORDS:
+        return []
+    parts = [part.strip() for part in text.replace(";", ",").split(",")]
+    return [part for part in parts if part and part.lower() not in NOTHING_WORDS]
+
+
+def _table_lines(source: str) -> list[tuple[int, list[str]]]:
+    """Markdown table rows: line number and cells, with the outer pipes stripped."""
+    found: list[tuple[int, list[str]]] = []
+    for number, raw in enumerate(source.splitlines(), start=1):
+        line = raw.strip()
+        if not line.startswith("|"):
+            continue
+        cells = [cell.strip() for cell in line.strip("|").split("|")]
+        found.append((number, cells))
+    return found
+
+
+def parse_table(source: str) -> tuple[list[Stream], list[TableRow], list[str]]:
+    """Read the map's own markdown table — the table IS the source of the diagram.
+
+    Before this, the dependencies were retyped by hand into a separate notation, and nothing
+    compared the two: a table saying one thing and a diagram drawn from another passed every check
+    there was, because each was checked on its own.
+    """
+    rows = _table_lines(source)
+    if not rows:
+        raise DiagramError("no markdown table found in the input")
+
+    header_at = None
+    for index, (number, cells) in enumerate(rows):
+        lowered = [cell.lower() for cell in cells]
+        if any(word in lowered for word in ("stream", "поток")):
+            header_at = index
+            break
+    if header_at is None:
+        raise DiagramError(
+            "the table has no header row — the first column must be 'Stream' (or 'Поток')"
+        )
+
+    header_line, header = rows[header_at]
+    if len(header) != len(TABLE_COLUMNS):
+        raise DiagramError(
+            f"line {header_line}: the table has {len(header)} columns, expected exactly "
+            f"{len(TABLE_COLUMNS)}"
+        )
+    index_of: dict[str, int] = {}
+    for position, (name, spellings) in enumerate(TABLE_COLUMNS):
+        actual = header[position].lower().strip("*_ ")
+        if actual not in spellings:
+            raise DiagramError(
+                f"line {header_line}: column {position + 1} is '{header[position]}', expected "
+                f"'{spellings[0]}' — the six columns are fixed and their order is fixed"
+            )
+        index_of[name] = position
+
+    body: list[TableRow] = []
+    for number, cells in rows[header_at + 1 :]:
+        if all(set(cell) <= set("-: ") for cell in cells):
+            continue  # the separator row under the header
+        if len(cells) != len(TABLE_COLUMNS):
+            raise DiagramError(
+                f"line {number}: the row has {len(cells)} cells, expected {len(TABLE_COLUMNS)}"
+            )
+        values = {name: cells[position] for name, position in index_of.items()}
+        key = values["stream"].strip()
+        if not key:
+            raise DiagramError(f"line {number}: the row has no stream number")
+        body.append(TableRow(key, values, number))
+    if not body:
+        raise DiagramError("the table has a header but no streams")
+
+    streams = [Stream(row.key, row.cells["stream"].strip(), row.waits_on()) for row in body]
+    return streams, body, check_table(body)
+
+
+def check_table(rows: list[TableRow]) -> list[str]:
+    """Everything about the table a machine can settle, so the checklist need not ask a human.
+
+    Each of these was a checklist item answered by eye, and each is exactly the kind of thing an eye
+    gets wrong on a table of nine streams: a dependency listed on one side and not the other, a
+    blank cell reading as "nothing to say", a transitive edge repeated until the diagram is a mesh.
+    """
+    problems: list[str] = []
+    seen: dict[str, TableRow] = {}
+    for row in rows:
+        if row.key in seen:
+            problems.append(
+                f"stream {row.key} appears twice (lines {seen[row.key].line} and {row.line})"
+            )
+        seen[row.key] = row
+
+    for row in rows:
+        for side in ("waits", "blocks"):
+            for ref in _split_refs(row.cells[side]):
+                if ref not in seen:
+                    problems.append(
+                        f"line {row.line}: stream {row.key} names {ref} in "
+                        f"'{side}', and there is no such stream in the table"
+                    )
+        for side in ("escalation", "review"):
+            if not row.cells[side].strip():
+                problems.append(
+                    f"line {row.line}: stream {row.key} has an empty '{side}' cell — that column "
+                    f"takes 'none' with a reason, never a blank"
+                )
+
+    # Symmetry: B waits for A ⇔ A blocks B. Checked both ways, because each direction fails on its
+    # own — a stream can be waited on by somebody it never lists, and list somebody who never waits.
+    for row in rows:
+        for ref in row.waits_on():
+            other = seen.get(ref)
+            if other and row.key not in other.blocks():
+                problems.append(
+                    f"stream {row.key} waits for {ref}, but {ref} does not list {row.key} in "
+                    f"'blocks' — the two columns disagree"
+                )
+        for ref in row.blocks():
+            other = seen.get(ref)
+            if other and row.key not in other.waits_on():
+                problems.append(
+                    f"stream {row.key} blocks {ref}, but {ref} does not list {row.key} in "
+                    f"'waits for' — the two columns disagree"
+                )
+
+    # Transitive edges: if 9 waits for 5 and 5 waits for 1, then 9 waiting for 1 as well says
+    # nothing new and turns the diagram into a mesh nobody can read.
+    direct = {row.key: set(row.waits_on()) for row in rows}
+    for row in rows:
+        for ref in sorted(direct[row.key]):
+            reachable: set[str] = set()
+            queue = [dep for dep in direct.get(ref, set())]
+            while queue:
+                current = queue.pop()
+                if current in reachable:
+                    continue
+                reachable.add(current)
+                queue.extend(direct.get(current, set()))
+            repeated = sorted(direct[row.key] & reachable)
+            if repeated:
+                problems.append(
+                    f"stream {row.key} waits for {', '.join(repeated)} as well as {ref}, which "
+                    f"already waits for {'them' if len(repeated) > 1 else 'it'} — drop the "
+                    f"transitive entr{'ies' if len(repeated) > 1 else 'y'}"
+                )
+                break
+    return problems
 
 
 def assign_columns(streams: list[Stream]) -> None:
@@ -438,9 +633,10 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument(
         "--format",
-        choices=("text", "json"),
+        choices=("text", "json", "table"),
         default="text",
-        help="input format (default: text)",
+        help="input format (default: text). 'table' reads the map's own markdown table, so the "
+        "diagram comes from the same source as the table and --check verifies the table too",
     )
     parser.add_argument(
         "--prefix",
@@ -454,9 +650,15 @@ def main(argv: list[str] | None = None) -> int:
     )
     args = parser.parse_args(argv)
 
+    table_problems: list[str] = []
     try:
         source = sys.stdin.read() if args.input == "-" else _read_file(args.input)
-        streams = parse_json(source) if args.format == "json" else parse_text(source)
+        if args.format == "table":
+            streams, _, table_problems = parse_table(source)
+        elif args.format == "json":
+            streams = parse_json(source)
+        else:
+            streams = parse_text(source)
         for stream in streams:
             if stream.label == stream.key and args.prefix:
                 stream.label = f"{args.prefix}{stream.key}"
@@ -470,7 +672,9 @@ def main(argv: list[str] | None = None) -> int:
 
     print(diagram)
     if args.check:
-        problems = check_diagram(streams, diagram)
+        # The table's problems come first: they are about the map itself, and a diagram drawn from a
+        # table that disagrees with itself is correct rendering of a wrong answer.
+        problems = table_problems + check_diagram(streams, diagram)
         if problems:
             for problem in problems:
                 print(f"render_map: check failed: {problem}", file=sys.stderr)

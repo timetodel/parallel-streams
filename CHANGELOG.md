@@ -3,6 +3,29 @@
 All notable changes to this project are documented here.
 This project follows [Semantic Versioning](https://semver.org/).
 
+## [1.15.0] — 2026-09-06
+
+### Added
+
+- **The renderer now reads the map's own table** (`--format table`), so the diagram comes from the
+  very table the reader is looking at. Until now the dependencies were retyped into a separate
+  notation beside the table, and nothing ever compared the two: a table saying one thing and a
+  diagram drawn from another both passed, because each was checked alone.
+
+- **`--check` settles the table too, and the checklist stopped asking.** Six columns in the fixed
+  order, "waits for" and "blocks" agreeing in both directions, blank cells where an answer belongs,
+  transitive edges, references to streams that are not in the table — each of these was a checklist
+  line answered by eye, and the eye is exactly what fails on a table of nine streams. Both language
+  copies of the table are read by the one script.
+
+### Changed
+
+- **The self-check list is shorter, and stopped repeating the step above it.** Its map half now
+  asks only what needs judgement — review depth, `none` carrying its reason, what the streams share
+  while verifying — and its brief half asks one question per line instead of restating, in three
+  or four lines each, the requirement step 5 already states. Two wordings of one requirement drift
+  apart, and nobody notices which is the real one.
+
 ## [1.14.0] — 2026-09-06
 
 ### Added

@@ -34,6 +34,19 @@ Then render and verify in one go:
 python scripts/render_map.py streams.txt --check
 ```
 
+**Preferred: feed it the map's table instead** — `--format table` reads the six-column markdown
+table directly, so the diagram comes from the same source the reader sees, and `--check` settles the
+table as well (columns and their order, the two dependency columns agreeing, blank cells, transitive
+edges):
+
+```
+python scripts/render_map.py map.md --format table --check
+```
+
+The short notation above stays supported, and stays the thing to use when there is no table yet.
+But once a table exists, nothing compares it against a separately typed notation: both would pass
+their own checks while saying different things.
+
 Output:
 
 ```
