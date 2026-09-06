@@ -46,7 +46,44 @@ common way a split quietly loses its point.
 **"It feels safer to do them in order."** If you cannot name what breaks, there is no dependency.
 
 **Shared review capacity.** That is a scheduling limit, not a dependency. The map describes the
-work, not the calendar.
+work, not the calendar. This is about the QUEUE for a person's attention — not about a shared thing
+the tests themselves reach for. That one is real, and the next section is about it.
+
+## Shared while verifying — separate it, do not serialize it
+
+Every category above asks what a stream **changes**. None asks what it **uses while checking
+itself** — and two streams running the project's test command at the same moment can share a great
+deal: one local database, one container name, one port, one build lock, one cache.
+
+The failure does not look like a dependency at all. Tests go red in a stream that touched nothing
+related, and the session spends an hour hunting a bug it did not write; or, worse, they go green
+because a neighbour's migration was already applied to the database both of them use — and the same
+suite fails for the next person, on a clean checkout.
+
+**This is not a "waits for" relationship, and it must never be written as one.** Serializing here
+costs hours and buys nothing: the answer is to give each stream its own, which is usually one line
+in the brief.
+
+| Shared while verifying | Separate by |
+|---|---|
+| One local database or schema the suite migrates | Its own database name per stream |
+| A container or service under a fixed name, or a fixed port | Its own name, and a port taken at run time |
+| A build lock, or one shared build/dependency cache directory | Its own cache directory |
+| A long-running build daemon or language server shared across worktrees | Its own instance, or one that is not shared |
+| Fixtures, dumps or golden files rewritten in place by a run | A copy inside the stream's own workspace |
+| A shared temp directory with fixed file names | Names carrying the stream's own id |
+| One account, API key or sandbox tenant with a rate limit | A separate key or tenant — or agreed windows, said out loud |
+
+The list is the cheap part and catches most of it. Where it stays silent and the suspicion remains,
+run each stream's test command once and watch which paths it opens — but as an **investigation, not
+a gate**. That check runs before the wave starts, and the commonest collision of the whole class —
+a migration one stream adds mid-wave — does not exist yet at that moment. A check that is blind to
+the most frequent case cannot be the thing that lets a wave start.
+
+Where it goes: **one line under the map's table**, naming what to separate and how, and a line in
+the brief of every stream it applies to, among the first steps — before the first test run. Not a
+column: it would read "none" in nearly every row, and the reader who has to act on it is the
+stream, not the map.
 
 ## Traps that look independent and are not
 

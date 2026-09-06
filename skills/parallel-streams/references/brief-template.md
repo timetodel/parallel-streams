@@ -30,6 +30,10 @@ Create an isolated workspace first — sessions share one project directory, and
 they overwrite each other's checkout. Branch, commits, pull request, and merge are yours to do
 without asking. Ask only about the decisions listed below.
 
+[If the streams share anything while verifying: separate it BEFORE the first test run — your own
+database name / cache directory / container name, as named under the map's table. Skipped, it shows
+up as tests failing on work you did not do, or passing on a neighbour's migration.]
+
 Delegate the reading. Anything that ends in a summary rather than an edit — "find every place
 that…", "how is this already done here", "list the consumers of X", a broad search — goes to a
 subagent, and you get a few lines back instead of a dozen files parked in this session's context,
