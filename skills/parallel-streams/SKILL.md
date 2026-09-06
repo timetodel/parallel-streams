@@ -3,7 +3,7 @@ name: parallel-streams
 description: Split an approved plan into parallel work streams that different agent sessions can run at the same time without merge conflicts or duplicated work. Produces a dependency map (table plus diagram) and one self-contained brief per stream, ready to paste into a fresh session. Use when asked to "split the plan into streams", "parallelize this plan", "what can I run in parallel", "hand this plan to several agents", or "show me the stream map".
 ---
 
-<!-- parallel-streams 1.12.0 — https://github.com/timetodel/parallel-streams
+<!-- parallel-streams 1.13.0 — https://github.com/timetodel/parallel-streams
      Shipped as a skill: this directory is the whole thing. Update by copying a newer
      copy of it over this one; changes are listed in the repository's CHANGELOG.md.
      Project rules come from the profile `.parallel-streams.md` in the repository root.
@@ -21,7 +21,9 @@ Output: a dependency map, and one brief per stream that a fresh session can exec
 
 **Map only** — the user asked "show me the map", "how would this split", "what can run in parallel":
 do steps 1-4 and 6. Do not write briefs.
-**Full split** — the user asked to split the plan: do all steps.
+**Full split** — the user asked to split the plan: do steps 0-6.
+**Closing the wave** — the user asked "close the wave", "what is left of it", "gather the loose
+ends", "is this wave finished": do steps 0, 1 and 7. Do not rebuild the map and do not write briefs.
 
 ## Step 0. Load the profile
 
@@ -81,6 +83,13 @@ every stream. Missing — say so in the summary and offer to add it, built from 
 current and both said a subagent's report is never forwarded, and every session in that wave pasted
 its subagents' reports — paths, tables of files, lines of configuration — to a person who does not
 read code. Nothing was violating a rule; the rule was simply nowhere those sessions could see it.
+
+**The plan also needs a `## Wave Loose Ends` section — it is an address the channel already sends
+things to.** Several of the channel's refusals point at it by name: a finding for a released stream,
+a finding for a stream whose worktree is gone, an inbox left behind by a stream that was released.
+With no such section, every one of those points at nothing, and the session following the advice
+has nowhere to put what it is holding. Missing — say so once in the summary and offer to add it; an
+empty section with one line saying what belongs in it is enough.
 
 ## Step 2. Find dependencies between streams
 
@@ -259,10 +268,52 @@ Delivery:
       summary with the ready-made block offered?
 - [ ] plan in the `## Plans` folder carries a rules-for-every-stream section — or its absence said
       once, with the offer to add it?
+- [ ] plan carries a `## Wave Loose Ends` section — the address the channel's own refusals point at —
+      or its absence said once, with the offer to add it?
 - [ ] map and briefs printed in this reply, copyable without opening a file?
 - [ ] every brief under a heading naming its launch moment — `start now`, or the streams it waits for?
 
 Any "no" — fix it before showing. Never show a draft.
+
+Closing the wave — that mode only:
+
+- [ ] stream states asked of the channel, not guessed from folder names or branch names?
+- [ ] every remainder is a separate item carrying ready-made text for a NEW session?
+- [ ] anything that could not be found out is named as unknown, not left out?
+
+## Step 7. Close the wave: gather what is left
+
+A wave ends the way it starts — by hand — and nothing in the flow asks the closing question. The map
+is built once, at the beginning, and every mechanism here works only while sessions are LIVE.
+
+What that leaves behind is invisible by construction. A task a stream gave up on produces no merge
+conflict, no red test, no duplicated work: it is simply gone, and the loss surfaces a wave later, if
+at all. A finding addressed to a stream that has since been released stays on the board with nobody
+to receive it. An inbox left unopened when its stream was released goes with it.
+
+Ask the channel — never guess, and never read state off folder names:
+
+- `pwsh scripts/wave-board.ps1 -Mode Streams -Wave <wave>` — who ran which stream, which are
+  released, which addresses are doubled or lead nowhere at all;
+- `pwsh scripts/wave-board.ps1 -Mode Show` — what is still open on the board, and what is stuck
+  because its addressee is closed.
+
+Then compare the plan's tasks against the merge history, the same way step 4.3 does, and say plainly
+where the comparison is approximate.
+
+Three kinds of remainder, each its own item:
+
+- a task nobody finished and nobody is running now — including one a released stream never closed;
+- a finding on the board whose addressee is closed: it will never arrive;
+- a stream released with a non-empty inbox: whatever was in it went nowhere.
+
+Every item goes into the plan's `## Wave Loose Ends` section, and each carries ready-made text for
+opening a NEW session. A line added to somebody's task is not an option here: the stream that owned
+it is gone, and an edit to a plan reaches no live session anyway. No such section — create it, or
+say so and offer to.
+
+Print the same list in the reply, and end with the one line that matters: is this wave finished, or
+does it have open ends someone must pick up.
 
 ## Output format
 
@@ -282,6 +333,10 @@ new session, without opening a file first.
    work is the brief's own title, the first line inside the block. Each brief goes in a fenced block
    so one gesture copies it whole. Skipped when only the map was asked for.
 5. One closing line: which streams can be opened right now.
+
+Closing the wave prints something else entirely: the state of each stream as the channel reports it,
+the remainders grouped by kind, where each one was written down, and one closing line — the wave is
+finished, or it has open ends and here is who opens them. No map, no briefs.
 
 Asked for a file as well — write it, and print everything here too.
 
