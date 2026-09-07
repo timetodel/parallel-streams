@@ -297,7 +297,7 @@ That gives a project five commands, which the skill then writes into every brief
 | `-Mode Claim` | announce this stream on start — otherwise a running session is indistinguishable from one nobody opened, so an unannounced stream is refused its first commit |
 | `-Mode Add` | send a finding to a live neighbour, addressed by stream number (`wave6/3`), not by branch name |
 | `-Mode Done` | close what arrived, so it stops coming back after each context compaction |
-| `-Mode Release` | hand the stream back before saying done — refused while the inbox still has open entries |
+| `-Mode Release` | hand the stream back with the very last command, once nothing is left to commit — refused while the inbox still has open entries |
 | `-Mode Streams` | ask who owns which task, before proposing work outside your own |
 
 The board and the claims live in the repository's shared internal directory, so every worktree sees

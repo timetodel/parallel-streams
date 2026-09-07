@@ -2935,9 +2935,12 @@ def test_release_without_a_plan_sends_the_result_to_the_owner(tmp_path: Path) ->
         done.stdout
     ), f"строка про отсутствие плана переписана или пропала: {done.stdout!r}"
     assert (
-        "Последнее действие — строка своего потока в разделе «Состояние потоков» плана волны."
+        "Строка своего потока в разделе «Состояние потоков» плана волны вписывается и фиксируется ДО сдачи."
         not in said(done.stdout)
     ), "сдача без плана всё равно послала вписывать строку в план"
+    assert "Фиксировать из этой папки больше нельзя — сторож видит поток сданным." in said(
+        done.stdout
+    ), f"сдача не предупредила, что фиксация из этой папки больше не пройдёт: {done.stdout!r}"
     assert f"Поток {today_wave()}/1 сдан. Находки ему больше не примут." in said(done.stdout), (
         f"строка о сдаче без плана переписана или пропала: {done.stdout!r}"
     )
@@ -2958,9 +2961,14 @@ def test_release_of_a_named_wave_keeps_the_line_in_the_plan(tmp_path: Path) -> N
     done = release(board, mine)
     assert done.returncode == 0, done.stderr
     assert (
-        "Последнее действие — строка своего потока в разделе «Состояние потоков» плана волны."
+        "Строка своего потока в разделе «Состояние потоков» плана волны вписывается и фиксируется ДО сдачи."
         in said(done.stdout)
-    ), f"у потока названной волны пропала прежняя последняя строка сдачи: {done.stdout!r}"
+    ), f"у потока названной волны пропала строка сдачи про порядок: {done.stdout!r}"
+    assert "Фиксировать из этой папки больше нельзя — сторож видит поток сданным." in said(
+        done.stdout
+    ), (
+        f"поток с планом не предупредили, что фиксация из этой папки больше не пройдёт: {done.stdout!r}"
+    )
     assert "Поток wave9/1 сдан. Находки ему больше не примут — их место в «Хвостах волны»." in said(
         done.stdout
     ), f"у потока названной волны переписана строка о сдаче: {done.stdout!r}"
@@ -2993,9 +3001,9 @@ def test_a_wave_taken_from_the_plan_name_is_not_an_invented_one(tmp_path: Path) 
     done = release(board, mine)
     assert done.returncode == 0, done.stderr
     assert (
-        "Последнее действие — строка своего потока в разделе «Состояние потоков» плана волны."
+        "Строка своего потока в разделе «Состояние потоков» плана волны вписывается и фиксируется ДО сдачи."
         in said(done.stdout)
-    ), f"у потока с планом пропала прежняя последняя строка сдачи: {done.stdout!r}"
+    ), f"у потока с планом пропала строка сдачи про порядок: {done.stdout!r}"
 
 
 @needs_pwsh
@@ -4567,9 +4575,9 @@ def test_an_old_claim_outside_a_wave_is_told_that_it_has_no_plan(tmp_path: Path)
     kept = release(board, planned)
     assert kept.returncode == 0, kept.stderr
     assert (
-        "Последнее действие — строка своего потока в разделе «Состояние потоков» плана волны."
+        "Строка своего потока в разделе «Состояние потоков» плана волны вписывается и фиксируется ДО сдачи."
         in said(kept.stdout)
-    ), f"у заявки старого вида с волной плана пропала прежняя строка сдачи: {kept.stdout!r}"
+    ), f"у заявки старого вида с волной плана пропала строка сдачи про порядок: {kept.stdout!r}"
 
 
 @needs_pwsh
@@ -5755,7 +5763,7 @@ def test_a_short_reclaim_continues_a_stream_of_a_named_wave(tmp_path: Path) -> N
     done = release(board, tab)
     assert done.returncode == 0, done.stderr
     assert (
-        "Последнее действие — строка своего потока в разделе «Состояние потоков» плана волны."
+        "Строка своего потока в разделе «Состояние потоков» плана волны вписывается и фиксируется ДО сдачи."
         in said(done.stdout)
     ), f"после переобъявления поток волны из плана остался без плана: {done.stdout!r}"
 
@@ -5791,7 +5799,7 @@ def test_a_short_reclaim_continues_a_stream_whose_wave_came_from_the_plan_name(
     done = release(board, tab)
     assert done.returncode == 0, done.stderr
     assert (
-        "Последнее действие — строка своего потока в разделе «Состояние потоков» плана волны."
+        "Строка своего потока в разделе «Состояние потоков» плана волны вписывается и фиксируется ДО сдачи."
         in said(done.stdout)
     ), f"после переобъявления поток потерял план, взятый из имени файла: {done.stdout!r}"
 
