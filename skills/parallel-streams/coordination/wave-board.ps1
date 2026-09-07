@@ -1455,11 +1455,19 @@ $notMine
             }
             foreach ($record in $left) { Format-BoardRecord -Record $record }
         }
+        # ‼️ This names the ORDER, not the next thing to do. Release closes the claim, and from this
+        # moment the guard in front of commits refuses commit, push, and pull-request creation alike
+        # from the stream's folder. While this used to say "last step — a line for your stream in the
+        # plan", the advice led straight into that refusal: a session would edit the plan, hit the
+        # refusal, take the address back with the takeover switch, and release the stream a second
+        # time (caught 2026-09-07).
         if ($hasPlan) {
-            'Last step — a line for your stream in the wave plan''s "Stream status" section.'
+            'The line for your stream in the wave plan''s "Stream status" section is written and committed BEFORE release.'
         } else {
             'No wave plan — nowhere to write a stream line; the summary goes in your reply to the owner.'
         }
+        'Committing from this folder is no longer possible — the guard sees the stream as released.'
+        'Left an uncommitted edit — take the address back with the same announcement using -TakeOver, commit, and release again.'
     }
 
     'Streams' {

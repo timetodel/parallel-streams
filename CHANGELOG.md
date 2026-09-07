@@ -3,6 +3,31 @@
 All notable changes to this project are documented here.
 This project follows [Semantic Versioning](https://semver.org/).
 
+## [1.16.0] — 2026-09-07
+
+### Fixed
+
+- **Release now names the order, not just the next step.** Until now, release's final line told a
+  session that its last step was writing a line for its stream into the wave plan's "Stream status"
+  section — printed *after* the claim was already closed. But the commit guard blocks commit, push,
+  and pull-request creation alike from a released stream's folder, so that advice walked straight
+  into its own refusal: a session would edit the plan, hit the refusal, take its address back with
+  the takeover switch, and release the same stream a second time. The plan line is now written and
+  committed *before* release runs — release is the very last command, once there is nothing left to
+  commit — and release prints two lines of its own: that committing from this folder no longer works,
+  and that a session which notices an uncommitted edit too late takes its address back with the same
+  announcement using `-TakeOver`, commits, and releases again.
+
+- **The Russian tree caught up with the project it lives in.** Its board library now defers reading
+  the claim registry until an address actually needs parsing, instead of reading it on every board
+  call — a change made in the project this kit is developed in and never carried back here. The
+  English tree still reads eagerly; porting it is the next change, not this one.
+
+- **The brief template and the skill's own text follow the same order.** The `## Coordination`
+  section's release bullet, the skill's step-0 summary of what a brief copies verbatim, and its
+  "Done when" block all said "release before saying done" — the exact phrasing the fix above retires.
+  All three now state release as the last command, run once there is nothing left to commit.
+
 ## [1.15.0] — 2026-09-06
 
 ### Added

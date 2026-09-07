@@ -3,7 +3,7 @@ name: parallel-streams
 description: Split an approved plan into parallel work streams that different agent sessions can run at the same time without merge conflicts or duplicated work. Produces a dependency map (table plus diagram) and one self-contained brief per stream, ready to paste into a fresh session. Use when asked to "split the plan into streams", "parallelize this plan", "what can I run in parallel", "hand this plan to several agents", or "show me the stream map".
 ---
 
-<!-- parallel-streams 1.15.0 — https://github.com/timetodel/parallel-streams
+<!-- parallel-streams 1.16.0 — https://github.com/timetodel/parallel-streams
      Shipped as a skill: this directory is the whole thing. Update by copying a newer
      copy of it over this one; changes are listed in the repository's CHANGELOG.md.
      Project rules come from the profile `.parallel-streams.md` in the repository root.
@@ -53,8 +53,8 @@ running sessions to reach each other — sessions cannot see each other's contex
 after a session started never reaches it. Copy those commands verbatim into blocks 4 and 9 of every
 brief, filled in for that stream: announce the stream on start, send a finding to a live neighbour,
 close what arrives, ask who owns a task before proposing work outside your own, release the stream
-before saying done. No such section — skip it entirely and say nothing about coordination; the
-skill carries the protocol, never the mechanism.
+last, once there is nothing left to commit. No such section — skip it entirely and say nothing about
+coordination; the skill carries the protocol, never the mechanism.
 
 Announcing is the one thing here that is enforced rather than agreed: with the channel installed, a
 commit from a stream that never announced itself is refused, and the refusal hands back the command
@@ -242,7 +242,9 @@ the exact shape is in *Output format* below. Fixed block order, nothing skipped,
    instruction, paired with the requirement to mark verified apart from assumed in every report.
 9. **Done when** — tests, gates, review completed, pull request merged; and, where the profile has a
    coordination channel, the stream released — releasing is what forces the question "is everything
-   that arrived actually handled", which nothing else in the flow asks.
+   that arrived actually handled", which nothing else in the flow asks. Release happens as the VERY
+   LAST step, once there is nothing left to commit in this folder: after it the guard blocks commit,
+   push, and pull-request creation alike.
 
 Template and the rules behind blocks 4 and 6-8: `references/brief-template.md`.
 

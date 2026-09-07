@@ -2995,9 +2995,13 @@ def test_release_without_a_plan_sends_the_result_to_the_owner(tmp_path: Path) ->
         in said(done.stdout)
     ), f"the line about having no plan was rewritten or lost: {done.stdout!r}"
     assert (
-        'Last step — a line for your stream in the wave plan\'s "Stream status" section.'
+        'The line for your stream in the wave plan\'s "Stream status" section is written and '
+        "committed BEFORE release."
         not in said(done.stdout)
     ), "release with no plan still sent the tab to write a line into the plan"
+    assert "Committing from this folder is no longer possible — the guard sees the stream as released." in said(
+        done.stdout
+    ), f"release didn't warn that committing from this folder no longer works: {done.stdout!r}"
     assert f"Stream {today_wave()}/1 released. Findings will no longer be accepted for it." in said(
         done.stdout
     ), f"the release-with-no-plan line was rewritten or lost: {done.stdout!r}"
@@ -3019,9 +3023,13 @@ def test_release_of_a_named_wave_keeps_the_line_in_the_plan(tmp_path: Path) -> N
     done = release(board, mine)
     assert done.returncode == 0, done.stderr
     assert (
-        'Last step — a line for your stream in the wave plan\'s "Stream status" section.'
+        'The line for your stream in the wave plan\'s "Stream status" section is written and '
+        "committed BEFORE release."
         in said(done.stdout)
     ), f"a named wave's stream lost its previous final release line: {done.stdout!r}"
+    assert "Committing from this folder is no longer possible — the guard sees the stream as released." in said(
+        done.stdout
+    ), f"a stream with a plan wasn't warned that committing from this folder no longer works: {done.stdout!r}"
     assert (
         "Stream wave9/1 released. Findings will no longer be accepted for it — their place is now "
         "the Wave Loose Ends."
@@ -3057,7 +3065,8 @@ def test_a_wave_taken_from_the_plan_name_is_not_an_invented_one(tmp_path: Path) 
     done = release(board, mine)
     assert done.returncode == 0, done.stderr
     assert (
-        'Last step — a line for your stream in the wave plan\'s "Stream status" section.'
+        'The line for your stream in the wave plan\'s "Stream status" section is written and '
+        "committed BEFORE release."
         in said(done.stdout)
     ), f"a stream with a plan lost its previous final release line: {done.stdout!r}"
 
@@ -4678,7 +4687,8 @@ def test_an_old_claim_outside_a_wave_is_told_that_it_has_no_plan(tmp_path: Path)
     kept = release(board, planned)
     assert kept.returncode == 0, kept.stderr
     assert (
-        'Last step — a line for your stream in the wave plan\'s "Stream status" section.'
+        'The line for your stream in the wave plan\'s "Stream status" section is written and '
+        "committed BEFORE release."
         in said(kept.stdout)
     ), f"an old-format claim with a plan's wave lost its previous release line: {kept.stdout!r}"
 
@@ -5897,7 +5907,8 @@ def test_a_short_reclaim_continues_a_stream_of_a_named_wave(tmp_path: Path) -> N
     done = release(board, tab)
     assert done.returncode == 0, done.stderr
     assert (
-        'Last step — a line for your stream in the wave plan\'s "Stream status" section.'
+        'The line for your stream in the wave plan\'s "Stream status" section is written and '
+        "committed BEFORE release."
         in said(done.stdout)
     ), f"after the reclaim a stream of a planned wave was left with no plan: {done.stdout!r}"
 
@@ -5934,7 +5945,8 @@ def test_a_short_reclaim_continues_a_stream_whose_wave_came_from_the_plan_name(
     done = release(board, tab)
     assert done.returncode == 0, done.stderr
     assert (
-        'Last step — a line for your stream in the wave plan\'s "Stream status" section.'
+        'The line for your stream in the wave plan\'s "Stream status" section is written and '
+        "committed BEFORE release."
         in said(done.stdout)
     ), f"after the reclaim the stream lost the plan taken from the file name: {done.stdout!r}"
 
