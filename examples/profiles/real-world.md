@@ -96,8 +96,10 @@ Coordination channel between sessions. Five commands, folded into every task bri
 - **Incoming — handle it, then close:** `pwsh scripts/wave-board.ps1 -Mode Done -Id <id>`, otherwise
   the entry keeps coming back after every context compaction. Decided it is out of scope — close it
   anyway.
-- **Release the stream — before saying "done":** `pwsh scripts/wave-board.ps1 -Mode Release`. It
-  refuses while the inbox still has something open: it lists exactly what.
+- **Release the stream — as the VERY LAST command, once there is nothing left to commit:**
+  `pwsh scripts/wave-board.ps1 -Mode Release`. It refuses while the inbox still has something open:
+  it lists exactly what. After release, nothing commits, pushes, or opens a pull request from this
+  folder — the guard sees the stream as released.
 - **Whose piece of work this is:** `pwsh scripts/wave-board.ps1 -Mode Streams [-Task <task number>]`.
   Asking is MANDATORY before proposing work outside your own tasks to its owner: they do not know the
   task was planned for another stream, and will say yes.
