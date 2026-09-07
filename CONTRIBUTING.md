@@ -72,6 +72,29 @@ Two rules that are not negotiable:
 - Tests green before you open it.
 - English for everything in the repository — code, comments, docs, commit messages.
 
+## Releasing
+
+A version bump is not done when the PR merges. Four surfaces carry the version, and they drift apart
+in silence, because each one looks right on its own:
+
+- **Both `SKILL.md` headers** — `skills/parallel-streams/` and `localization/ru/parallel-streams/`.
+  This is the number a session reports when asked which version it is running.
+- **`CHANGELOG.md`** — one section per version, written for someone deciding whether to update.
+- **The version badge in `README.md`** — the number the front page shows. It sat at 1.11.0 while the
+  skill was at 1.16.0, because nothing ever compared the two.
+- **The GitHub release** — tag `vX.Y.Z` plus notes. Releases stopped at 1.9.1 while seven versions
+  landed on main behind them, so the front page said "released a week ago" for a kit that had
+  changed six times that week.
+
+The first three go in the PR that bumps the version. The release is published right after the merge:
+
+```bash
+git switch main && git pull --ff-only
+gh release create vX.Y.Z --title "vX.Y.Z — <the one-line reason>" --notes-file <that version's changelog section>
+```
+
+Skipping it is what produced both of the gaps named above.
+
 ## Code of conduct
 
 Be straightforward and be kind. Disagree with the idea, not the person. That's the whole policy.
