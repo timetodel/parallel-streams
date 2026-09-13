@@ -3,7 +3,7 @@ name: parallel-streams
 description: Split an approved plan into parallel work streams that different agent sessions can run at the same time without merge conflicts or duplicated work. Produces a dependency map (table plus diagram) and one self-contained brief per stream, ready to paste into a fresh session. Use when asked to "split the plan into streams", "parallelize this plan", "what can I run in parallel", "hand this plan to several agents", or "show me the stream map".
 ---
 
-<!-- parallel-streams 1.16.0 — https://github.com/timetodel/parallel-streams
+<!-- parallel-streams 1.17.0 — https://github.com/timetodel/parallel-streams
      Shipped as a skill: this directory is the whole thing. Update by copying a newer
      copy of it over this one; changes are listed in the repository's CHANGELOG.md.
      Project rules come from the profile `.parallel-streams.md` in the repository root.
@@ -316,7 +316,9 @@ Ask the channel — never guess, and never read state off folder names:
 - `pwsh scripts/wave-board.ps1 -Mode Streams -Wave <wave>` — who ran which stream, which are
   released, which addresses are doubled or lead nowhere at all;
 - `pwsh scripts/wave-board.ps1 -Mode Show` — what is still open on the board, and what is stuck
-  because its addressee is closed.
+  because its addressee is closed;
+- `pwsh scripts/wave-board.ps1 -Mode Who -To <wave/stream>` — which tab ran a stream and when a
+  person last wrote there: ask that tab about the leftovers while it is still open.
 
 Then compare the plan's tasks against the merge history, the same way step 4.3 does, and say plainly
 where the comparison is approximate.

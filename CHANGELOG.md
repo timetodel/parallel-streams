@@ -3,6 +3,48 @@
 All notable changes to this project are documented here.
 This project follows [Semantic Versioning](https://semver.org/).
 
+## [1.17.0] — 2026-09-13
+
+### Added
+
+- **The board now says which tab runs a stream, by the name you gave the tab.** People keep dozens
+  of tabs open and name them by hand ("O1-3-1"), but the board knew a stream only by its folder and
+  branch — so "which tab is running wave9/3?" had no answer short of searching every session
+  transcript, which took minutes. Now a claim remembers the session it was made from (the host puts
+  the session id into the environment of every command a tab runs), and the delivery hook keeps a
+  small record per tab: its name, its folder, and when a person last wrote in it. The stream
+  listing, the board listing, the owner's stuck summary, the intake refusals and both claim refusals
+  say "tab O1-3-1" next to a stream; a released one says "was run by tab O1-3-1"; a tab with only an
+  automatic name shows as "unnamed tab (auto: …)"; an unknown tab adds nothing to the line.
+
+- **Two new questions: `-Mode Who` and `-Mode Tabs`.** `Who -To <wave/stream, branch or folder>`
+  answers in one line per record: address, tab, folder, branch, and when a person last wrote there.
+  `Tabs` lists the project's tabs, freshest first, with the claimed stream; tabs silent for over a
+  day go into a short separate tail rather than disappearing, and two tabs with the same name are
+  both shown and marked.
+
+- **Claims filed before this pick their session up on their own** — on the next human message in
+  that worktree. Not in the repository's main folder: many tabs live there at once, and whichever
+  came first would name itself for someone else's stream.
+
+### Notes
+
+- **Only the name is read from a transcript.** Exactly two service records — the name a person
+  gave the tab and the automatic one — are read; nothing from the conversation is read or stored. A
+  per-session cache means each message reads only the transcript's new tail, not the whole file.
+  The first read looks back at most 64 MB: in today's largest transcripts (up to 270 MB) the host
+  repeats the name record at least every 30 MB.
+
+- **The cost is on every human message, and it isn't zero.** Measured on a machine under full load
+  from neighbouring test runs: the delivery hook spends about 0.15–0.2 s more CPU per message than
+  before (the hook itself spends 1.1–1.4 s there). The first read of a session's transcript costs
+  0.2–0.6 s once. Almost all of it is PowerShell's first-call overhead in a fresh process, not disk
+  work — which is why the hot path is written as one function with as few calls as possible.
+
+- **Tests never see the real session.** The suite is often run from inside the host, which exports
+  its own session id; every check now runs with that variable removed and with its own temporary
+  config directory, so no check ever reads the real transcripts of whoever runs it.
+
 ## [1.16.0] — 2026-09-07
 
 ### Fixed
