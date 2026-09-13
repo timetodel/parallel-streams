@@ -42,8 +42,9 @@ script point at the folder, not at its contents.
 
 | File | What it holds |
 |---|---|
-| `wave-board.ps1` | The tool: announce, post a finding, close what arrived, release a stream, ask who owns this task |
+| `wave-board.ps1` | The tool: announce, post a finding, close what arrived, release a stream, ask who owns this task and which tab runs a stream |
 | `lib/wave-board-lib.ps1` | How the board and the claim registry are built: where they live, how they're read, who's alive, who's silent |
+| `lib/tab-titles.ps1` | Which tab runs a stream: reading the tab's name from its session transcript, and the tab registry |
 | `lib/git-env-clean.ps1` | Strips git environment variables — otherwise the board would end up in someone else's repository |
 | `lib/hook-io.ps1` | Reads the data that reaches a hook |
 | `hooks/wave-board-deliver.ps1` | Delivery: brings a session the records addressed to it at session start and before every human turn |
@@ -59,6 +60,29 @@ script point at the folder, not at its contents.
 The board and the claim registry sit in the repository's shared internal directory
 (`.git/wave-board/`). That's why every worktree can see them at once, they never land in any
 branch, and they need no merge.
+
+## Which tab runs a stream
+
+People name their tabs ("O1-3-1"), and the board answers by that name: the stream listing, the board
+listing, the stuck summary and the refusals say "tab O1-3-1" next to a stream; an automatically
+named tab shows as "unnamed tab (auto: …)"; a tab nobody knows adds nothing to the line. Two questions
+ask about tabs directly:
+
+- `-Mode Who -To <wave/stream, branch or folder>` — one line per answer: address, tab, folder, branch,
+  and when a person last wrote in that tab;
+- `-Mode Tabs` — the project's tabs, freshest first; tabs silent for over a day in a short separate
+  tail, and matching names marked.
+
+How the board knows. A claim records the session it was made from — the host puts the session id into
+the environment of every command a tab runs. The delivery hook keeps a small record per session in
+`.git/wave-board/tabs/`: folder, tab name, time of the last human message. The name is read from the
+session's transcript, and exactly two service records are read from it — the name a person gave the
+tab and the automatic one; nothing from the conversation is read or kept. A per-session cache means
+each message reads only the transcript's new tail.
+
+A claim filed before this (or without the variable) gets its session from the delivery hook on the
+next human message — but only in a separate worktree: the repository's main folder hosts many tabs
+at once, and whichever came first would name itself for someone else's stream.
 
 ## Working without a wave
 

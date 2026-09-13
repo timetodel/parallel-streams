@@ -29,6 +29,8 @@ Coordination channel between sessions. Five commands, folded into every task bri
 - **Whose piece of work this is:** `pwsh scripts/wave-board.ps1 -Mode Streams [-Task <task number>]`.
   Asking is MANDATORY before proposing work outside your own tasks to its owner: they do not know the
   task was planned for another stream, and will say yes.
+- **Which tab runs a stream:** `pwsh scripts/wave-board.ps1 -Mode Who -To <wave/stream>` — the tab's
+  name, folder, branch, and when a person last wrote there; every tab in the project — `-Mode Tabs`.
 
 The board and the claims registry live in the repository's shared service directory: visible to every
 worktree at once, require no merging, and never land inside someone else's claim.
