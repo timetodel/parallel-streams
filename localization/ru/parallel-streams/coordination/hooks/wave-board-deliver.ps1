@@ -20,6 +20,9 @@
 по нему инструмент и напоминание при правке плана отличают работающую вкладку от брошенного
 дерева. Отметка ставится на каждом ходу и до любых ранних выходов — см. комментарий у неё.
 
+И ведёт запись своей вкладки в реестре вкладок: название, данное человеком, папку и время
+последнего сообщения. По ней доска отвечает, КАКАЯ вкладка ведёт поток (`lib/tab-titles.ps1`).
+
 Хук НИЧЕГО не блокирует и при любой неожиданности молча выходит нулём: сорванный сторож не должен
 мешать работе.
 #>
@@ -73,7 +76,9 @@ function Get-OverlapBlock {
             $names = @($overlap.Files | Select-Object -First 3) -join ', '
             $more = if ($overlap.Files.Count -gt 3) { " … и ещё $($overlap.Files.Count - 3)" } else { '' }
             $who = $overlap.Claim.Record
-            "  • поток $($who.wave)/$($who.stream)$(if ($who.name) { " «$($who.name)»" }) — общие файлы: $names$more"
+            # Какая вкладка — чтобы владелец мог сразу пойти к соседу, а не искать его перебором.
+            $tab = Get-ClaimTabText -Claim $overlap.Claim
+            "  • поток $($who.wave)/$($who.stream)$(if ($who.name) { " «$($who.name)»" })$(if ($tab) { ", $tab" }) — общие файлы: $names$more"
         }
         return @(
             'Соседний поток правит те же файлы прямо сейчас:'
@@ -184,9 +189,28 @@ try {
     # находка не дошла бы до вкладки, которая её ждёт.
     Set-KnownWaves -Keys @($claims | ForEach-Object { $_.WaveKey })
 
+    # Запись своей вкладки в реестре вкладок: название, папка, время последнего сообщения человека.
+    # По ней все показы называют вкладку, ведущую поток. Время сообщения двигает только ход
+    # человека; начало сессии — нет. Немая при любой неудаче, как и всё в стороже.
+    $tabsDir = Get-TabsDir -RegistryDir $registry
+    # Заглушка «nosession» сессией не считается: запись вкладки без номера сессии никому не нужна.
+    $realSession = $call -and $call.session_id -and (Test-SessionId $sessionId)
+    if ($realSession) {
+        $cwd = if ($call -and $call.cwd -is [string] -and $call.cwd) { [string]$call.cwd } else { $PWD.Path }
+        Update-TabRecord -Dir $tabsDir -SessionId $sessionId -Cwd $cwd -Tree (Get-TreeRoot) -Prompt:($Stage -eq 'Prompt')
+    }
+    if ($Stage -eq 'Start') { Remove-StaleTabRecords -Dir $tabsDir }
+
+    # Подхват заявки без сессии. ‼️ Только на ходе ЧЕЛОВЕКА и только в ОТДЕЛЬНОМ рабочем дереве (это
+    # проверяет сама отметка — и только у заявки, которой сессия действительно нужна): в главной
+    # папке репозитория живёт много вкладок сразу, и первая попавшаяся вписала бы себя в чужой поток
+    # — ответ «кто ведёт» стал бы уверенной неправдой. В отдельном дереве вкладка одна, и человек в
+    # ней прямо сейчас пишет.
+    $adopt = if ($realSession -and $Stage -eq 'Prompt') { $sessionId } else { '' }
+
     # Та же отметка, но в заявке потока: маячок говорит о ПАПКЕ, заявка — о ПОТОКЕ, и переживает
     # удаление папки. Заявки нет (вкладка не объявлялась) — тихо ничего не делаем.
-    Update-ClaimSeen -Dir $registry -TreePath (Get-TreeRoot) -Claims $claims
+    Update-ClaimSeen -Dir $registry -TreePath (Get-TreeRoot) -Claims $claims -AdoptSession $adopt -AdoptTree (Get-TreeRoot)
 
     # Отметка живой сессии: время правки журнала обновляем на КАЖДОМ ходу, а не только когда есть
     # что показать. Иначе долгая сессия, которой сутками не приходило находок, попадала под чистку
@@ -233,7 +257,7 @@ try {
                 # в сводку застрявшего у владельца, а соседи переставали считать вкладку живой.
                 # Второго писателя тут не появляется: запись найдена по ТОЧНОМУ совпадению рабочей
                 # папки, значит принадлежит этой же вкладке. Запрет писать в ЧУЖОЙ файл остаётся.
-                Update-ClaimSeen -Path $found.File -Claims $claims
+                Update-ClaimSeen -Path $found.File -Claims $claims -AdoptSession $adopt -AdoptTree (Get-TreeRoot)
                 Update-ClaimFiles -Path $found.File -Claims $claims
             }
         } catch {
@@ -275,8 +299,9 @@ try {
                 # понадобился», и вкладка пойдёт по кругу, выполняя единственный напечатанный ей
                 # совет. Напечатанный выход обязан работать.
                 $lines = if ($fate.StillLed) {
+                    $holderTab = Get-ClaimTabText -Claim $fate.Holder
                     @(
-                        "‼️ Ваш поток $($claim.wave)/$($claim.stream) забран в $($fate.Holder.Record.worktree) — эта вкладка больше не адресуема: находки по адресу приходят туда, и закрывать их отсюда нельзя."
+                        "‼️ Ваш поток $($claim.wave)/$($claim.stream) забран в $($fate.Holder.Record.worktree)$(if ($holderTab) { " ($holderTab)" }) — эта вкладка больше не адресуема: находки по адресу приходят туда, и закрывать их отсюда нельзя."
                         "Это ваш поток и переносили его по ошибке — верните адрес себе: pwsh scripts/wave-board.ps1 -Mode Claim -Wave $($claim.wave) -Stream $($claim.stream) -TakeOver"
                     )
                 } else {

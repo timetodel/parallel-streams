@@ -30,6 +30,10 @@ Modes:
             an entry whose worktree folder is no longer on disk: folder still there (even if it has
             been silent for five days) — refused.
   Streams — who is running which stream: [-Wave …] [-Task <task number>]
+  Who     — which tab runs a stream: -To <wave/stream, branch, or folder>. One line per answer:
+            address, tab name, folder, branch, when a person last wrote in that tab.
+  Tabs    — the project's tabs: name, folder, claimed stream, last human message; freshest first,
+            ones silent for over a day in a separate tail.
   Add     — place a finding:  -To <wave/stream, branch, or folder> -Title <one line> [-Where …]
   Show    — show open entries
   Done    — close a handled finding: -Id <id>; one addressed to everyone can only be closed for
@@ -37,18 +41,24 @@ Modes:
   Compact — compact the board: keep only the open entries
   Path    — print the board's path
 
-How the board and the claim registry work — in `lib/wave-board-lib.ps1`.
+A tab's name comes from its session transcript: a claim remembers the session it was made from (the
+environment variable the host sets for every command of a tab), and the delivery hook keeps the tab
+registry. Session unknown — the listing simply doesn't name the tab.
+
+How the board and the claim registry work — in `lib/wave-board-lib.ps1`; tab names — in
+`lib/tab-titles.ps1`.
 #>
 
 [CmdletBinding()]
 param(
     [Parameter(Mandatory)]
-    [ValidateSet('Add', 'Show', 'Done', 'Compact', 'Path', 'Claim', 'Release', 'Streams')]
+    [ValidateSet('Add', 'Show', 'Done', 'Compact', 'Path', 'Claim', 'Release', 'Streams', 'Who', 'Tabs')]
     [string]$Mode,
 
     # To whom: the stream's number in the wave (`wave6/3`), the stream's branch name
     # (`feat/wave3-plan-clock`), its worktree folder name, `*` for every stream in your own wave, or
-    # `**` for every session in the project.
+    # `**` for every session in the project. In the "who runs it" question (`Who`) — the same forms,
+    # except the two broadcast ones.
     [string]$To,
 
     # Place a finding by a branch or folder name that doesn't exist on this machine at all. An
@@ -194,6 +204,10 @@ function Assert-Addressee {
         if ($closed.Count -gt 0) {
             $released = $closed[0].Record
             $when = if ($released.released_at) { Format-Stamp -Raw $released.released_at } else { 'unknown when' }
+            # Which tab ran it — the finding's author often wants to ask that tab directly while it's
+            # still open.
+            $tab = Get-ClaimTabText -Claim $closed[0]
+            if ($tab) { $when = "$when, $tab" }
             Deny-Call @"
 stream "$Raw" was RELEASED ($when) — the session that ran it is gone, and the entry would have stayed on the board forever.
 $advice
@@ -205,6 +219,8 @@ Who's running what now: pwsh scripts/wave-board.ps1 -Mode Streams
         # that took it may have released itself since, or picked up the next stream, and "moved to it"
         # would send the sender somewhere nobody runs that address.
         $where = Get-ClaimTakenAwayText -Claim $moved
+        $tab = Get-ClaimTabText -Claim $moved
+        if ($tab) { $where = "$where ($tab)" }
         Deny-Call @"
 address "$Raw" has no leading entry: $where — the entry would lie on the board forever.
 $advice
@@ -310,6 +326,73 @@ function Select-Asked {
     return @($result)
 }
 
+function Get-ShortSession {
+    param([string]$SessionId)
+    # The start of a session id — to tell two tabs with the same name apart without printing the whole id.
+    if (-not $SessionId) { return '' }
+    return $SessionId.Substring(0, [math]::Min(8, $SessionId.Length))
+}
+
+function Get-TabMessageText {
+    param($Tab)
+    if (-not $Tab) { return 'when a person last wrote there — unknown' }
+    if ([string]$Tab.prompt_at) { return "last human message $(Format-Stamp -Raw $Tab.prompt_at)" }
+    return 'no human messages on record'
+}
+
+function Format-WhoLine {
+    param($Claim, [string]$TabsDir)
+    # One line of the "who runs it" answer: address, tab, folder, branch, when a person wrote there.
+    # Here the tab name IS the answer, so not knowing it is said in words rather than left out.
+    $record = $Claim.Record
+    $name = if ($record.name) { " `"$($record.name)`"" } else { '' }
+    $state = if ($Claim.TakenBy -and $Claim.Superseded) { Get-ClaimTakenAwayText -Claim $Claim } else { $Claim.State }
+    $sessionId = [string]$record.session_id
+    $tab = if (Test-SessionId $sessionId) { Get-TabRecord -Dir $TabsDir -SessionId $sessionId } else { $null }
+    $tabText = Format-TabTitle -Tab $tab -Past:([bool]$Claim.Closed)
+    if (-not $tabText) {
+        $tabText = if (-not (Test-SessionId $sessionId)) {
+            'tab unknown — the claim was filed without a session'
+        } elseif (-not $tab) {
+            "tab unknown — session $(Get-ShortSession $sessionId) isn't in the tab registry"
+        } else {
+            "tab name not found (session $(Get-ShortSession $sessionId))"
+        }
+    }
+    $folder = if ($record.worktree) { "folder $($record.worktree)" } else { 'folder not named in the claim' }
+    $branch = if ($record.branch) { "branch $($record.branch)" } else { 'branch not named in the claim' }
+    return "  $($record.wave)/$($record.stream)$name — $state, $tabText, $folder, $branch, $(Get-TabMessageText -Tab $tab)"
+}
+
+function Get-TabMoment {
+    param($Tab)
+    # The latest thing known about a tab: a human message, or if there was none — its last turn.
+    $raw = if ([string]$Tab.prompt_at) { $Tab.prompt_at } else { $Tab.seen_at }
+    $moment = Get-ClaimMoment -Raw $raw
+    if ($moment) { return $moment }
+    return [datetime]::MinValue
+}
+
+function Format-TabListLine {
+    param($Tab, $Claims, [string[]]$Duplicated)
+    $sessionId = [string]$Tab.session_id
+    $name = Format-TabTitle -Tab $Tab
+    if (-not $name) { $name = "tab without a name (session $(Get-ShortSession $sessionId))" }
+    # A stream — only an UNCLOSED claim with this session: a released stream isn't run by the tab any more.
+    $led = @($Claims | Where-Object { -not $_.Closed -and [string]$_.Record.session_id -eq $sessionId } |
+            ForEach-Object {
+                $streamName = if ($_.Record.name) { ' "' + $_.Record.name + '"' } else { '' }
+                "$($_.Record.wave)/$($_.Record.stream)$streamName"
+            })
+    $streams = if ($led.Count -gt 0) { "stream $($led -join ', ')" } else { 'no stream claimed' }
+    $folder = if ([string]$Tab.tree) { [string]$Tab.tree } else { [string]$Tab.cwd }
+    $twin = ''
+    if ([string]$Tab.title -and ([string]$Tab.title).ToLowerInvariant() -in $Duplicated) {
+        $twin = " — ‼️ another tab has the same name; this one is session $(Get-ShortSession $sessionId)"
+    }
+    return "  $name — $streams, folder $folder, $(Get-TabMessageText -Tab $Tab)$twin"
+}
+
 trap { Deny-Call $_.Exception.Message }
 
 $board = Get-BoardPath -Override $BoardPath
@@ -342,6 +425,13 @@ switch ($Mode) {
         } catch {
             # Detached HEAD: the claim will do with just the worktree path.
         }
+        # Which session is announcing. The host puts the session id into the environment of every
+        # command a tab runs — so the claim recognizes its own tab by itself, with no separate hook and
+        # no beacon file passed between "before" and "after". No variable (another client, an older
+        # version, a manual run from a terminal) — the claim goes through as before, with no session,
+        # and nothing breaks.
+        $envSession = if (Test-SessionId $env:CLAUDE_CODE_SESSION_ID) { [string]$env:CLAUDE_CODE_SESSION_ID } else { '' }
+        $claimSession = $envSession
         # ‼️ From here to the end of dispute resolution — under the claim registry's lock. Number
         # selection works off a snapshot of the registry, and without the lock, sessions opened at
         # the same moment read the SAME snapshot: everyone picks the same number, and the dispute
@@ -565,6 +655,13 @@ switch ($Mode) {
                 if (-not $claimName) { $claimName = [string]$previousSelf.Record.name }
                 if (-not $claimTasks) { $claimTasks = [string]$previousSelf.Record.tasks }
                 if (-not $claimPlan) { $claimPlan = [string]$previousSelf.Record.plan }
+                # The session — like the rest: announced again without the environment variable (by hand
+                # from a terminal) — the tab that ran the stream is still the best thing known about it.
+                # From the variable the session always arrives fresh: the tab was reopened — the claim
+                # knows it.
+                if (-not $claimSession -and (Test-SessionId ([string]$previousSelf.Record.session_id))) {
+                    $claimSession = [string]$previousSelf.Record.session_id
+                }
                 if ($waveSource -eq 'own') {
                     # ‼️ The "wave was self-supplied" flag is taken AS IT LAY — together with its
                     # absence — and only when the wave wasn't named. The whole "Wave Loose Ends or a
@@ -630,8 +727,12 @@ switch ($Mode) {
                     } else {
                         ', branch not named in the claim'
                     }
+                    # Which tab runs the previous stream — the first clue a person uses to decide whether
+                    # that stream is finished or being run right now in the next window.
+                    $prevTab = Get-ClaimTabText -Claim $previous
+                    if ($prevTab) { $prevTab = ", $prevTab" }
                     Deny-Call @"
-this worktree folder already holds a different stream: $prevWave/$prevStream$prevName$prevTasks — $($previous.State)$prevBranch, claimed $(Format-Stamp -Raw $previous.Record.claimed_at).
+this worktree folder already holds a different stream: $prevWave/$prevStream$prevName$prevTasks — $($previous.State)$prevTab$prevBranch, claimed $(Format-Stamp -Raw $previous.Record.claimed_at).
 There is ONE claim per folder: announcing stream $waveKey/$streamKey would erase it silently — the previous stream's tasks would look untaken, no one would address findings to it, and its release at the end would close someone else's entry.
 The previous stream is finished — release it right here: pwsh scripts/wave-board.ps1 -Mode Release
 This is that same stream and you're announcing it again — name its address: pwsh scripts/wave-board.ps1 -Mode Claim -Wave $prevWave -Stream $prevStream
@@ -709,6 +810,10 @@ The work is new — set up a separate worktree and announce from there.
                     }
                     default { 'could not look at whether the folder is there' }
                 }
+                # The rival's tab — right next to its state: "live, tab O1-3-1" is recognized among one's
+                # own windows at a glance.
+                $rivalTab = Get-ClaimTabText -Claim $rival
+                if ($rivalTab) { $rivalTab = ", $rivalTab" }
                 if (-not $TakeOver) {
                     # ‼️ Order of the ways out: the harmless one FIRST, the destructive one LAST. The
                     # session uses the first one printed, and the case is live — wave9/2 and wave9/2k
@@ -721,7 +826,7 @@ The work is new — set up a separate worktree and announce from there.
                         "A different split of the same wave — announce under your own number: pwsh scripts/wave-board.ps1 -Mode Claim -Wave $waveKey -Stream <free number>"
                     }
                     Deny-Call @"
-address $waveKey/$streamKey is already run by an unclosed claim of a DIFFERENT worktree folder: $rivalFolder — $($rival.State), checked in $(Format-Stamp -Raw $rival.Record.seen_at), $onDisk.
+address $waveKey/$streamKey is already run by an unclosed claim of a DIFFERENT worktree folder: $rivalFolder — $($rival.State)$rivalTab, checked in $(Format-Stamp -Raw $rival.Record.seen_at), $onDisk.
 There is ONE leading entry per address: announce as a second one, and which of you got a finding would be decided by the directory listing order — half of what is addressed would vanish with a cheerful report of success.
 $another
 That stream is finished — release it, standing in exactly its folder $($rivalFolder): pwsh scripts/wave-board.ps1 -Mode Release
@@ -738,7 +843,7 @@ This is your stream and you moved here (or are picking up an abandoned session) 
                 # after the address had been taken from it — a neighbour's fresh, lawful claim included.
                 $takenAt = (Get-Date).ToString('s')
                 $takenRival = $rival
-                $takeOverNotes.Add("Address $waveKey/$streamKey taken from folder $rivalFolder ($($rival.State), checked in $(Format-Stamp -Raw $rival.Record.seen_at), $onDisk).")
+                $takeOverNotes.Add("Address $waveKey/$streamKey taken from folder $rivalFolder ($($rival.State)$rivalTab, checked in $(Format-Stamp -Raw $rival.Record.seen_at), $onDisk).")
                 if ($rival.State -eq 'live') {
                     # Loudly: taking over from a working neighbour is lawful, but it must be named, and
                     # it is reversible (their file wasn't touched; with the same switch they take the
@@ -835,6 +940,12 @@ This is your stream and you moved here (or are picking up an abandoned session) 
                 claimed_at      = $claimedAt
                 seen_at         = (Get-Date).ToString('s')
                 state           = 'open'
+            }
+            if ($claimSession) {
+                # The session of the tab running the stream: listings name the tab by it. The field goes
+                # in only when the session is known — every copy of the kit reads its absence the same
+                # way: "tab unknown".
+                $claim.session_id = $claimSession
             }
             if ($takenFrom) {
                 # ‼️ We put the field in ONLY when a takeover actually happened. An empty field on every
@@ -980,8 +1091,19 @@ This is your stream and you moved here (or are picking up an abandoned session) 
             # announcements for the rest of its life.
             Exit-RegistryLock -Handle $lockHandle
         }
+        # This tab's record — right away, not with the next human message: neighbours will ask "who
+        # runs it" within a minute. AFTER the lock: reading a session transcript the first time takes
+        # noticeable time, and neighbours' announcements must not wait on it. Mute on any failure — the
+        # claim is already written, and a tab name is no reason to report a failure.
+        $myTab = ''
+        if ($envSession) {
+            $tabsDir = Get-TabsDir -RegistryDir $registry
+            Update-TabRecord -Dir $tabsDir -SessionId $envSession -Cwd $PWD.Path -Tree $tree
+            $myTab = Format-TabTitle -Tab (Get-TabRecord -Dir $tabsDir -SessionId $envSession)
+        }
         $rivals = @(Get-NumberRivals -Claims $claims -WaveKey $waveKey -StreamKey $streamKey -TreePath $tree)
-        "Stream $waveKey/$streamKey announced for this session (branch $branch)."
+        # The tab name in the report confirms the board recognized the tab and will name it to neighbours.
+        "Stream $waveKey/$streamKey announced for this session (branch $branch$(if ($myTab) { ", $myTab" }))."
         # Moving the address comes first, right after the announcement itself: it is the only thing the
         # tool did FOR the session that touches a neighbour, and everything it does by itself it must
         # say out loud in the very command where it happened.
@@ -1130,7 +1252,8 @@ This is your stream and you moved here (or are picking up an abandoned session) 
         # either — two streams sharing one number split the addressing, and half the findings go to
         # the wrong place.
         foreach ($rival in $rivals) {
-            "‼️ Another worktree has an open claim on this same stream: $($rival.Record.worktree) — $($rival.State)."
+            $rivalTab = Get-ClaimTabText -Claim $rival
+            "‼️ Another worktree has an open claim on this same stream: $($rival.Record.worktree) — $($rival.State)$(if ($rivalTab) { ", $rivalTab" })."
             '   Two streams sharing one number split the addressing: work out which session is actually running it.'
         }
         # The neighbour map prints right away, not on request: a session learns the boundaries of its
@@ -1532,6 +1655,89 @@ $notMine
         '"live" — the session checked in within the last few hours; "silent" — it may have closed without releasing, or it may just be working quietly.'
     }
 
+    'Who' {
+        # Which tab runs a stream. There used to be no answer at all: the board knew a stream by
+        # folder and branch, and the tab was hunted for through every session transcript, for minutes.
+        if (-not $To) {
+            Deny-Call 'need -To: the stream''s number in the wave (wave6/3), the stream''s branch or worktree folder'
+        }
+        if ((Get-StreamKey -Raw $To) -in @('*', '**')) {
+            Deny-Call 'who runs it is a question about one stream; every tab in the project: pwsh scripts/wave-board.ps1 -Mode Tabs'
+        }
+        # Strict, like the "whose task is this" question: let the read skip a neighbour's claim, and the
+        # answer would sound like "nobody runs this stream" while it's being run in the next window.
+        $claims = @(Get-Claims -Dir $registry -Strict)
+        Set-KnownWaves -Keys @($claims | ForEach-Object { $_.WaveKey })
+        $tabsDir = Get-TabsDir -RegistryDir $registry
+        $found = @(Find-Claims -Claims $claims -Raw $To)
+        if ($found.Count -gt 0) {
+            # Leading entries first: the question is about who runs it NOW, and released or moved entries
+            # of the same address are history, shown after.
+            $ordered = @(@($found | Where-Object { -not $_.Closed }) + @($found | Where-Object { $_.Closed }))
+            "Who runs `"$To`":"
+            foreach ($entry in $ordered) { Format-WhoLine -Claim $entry -TabsDir $tabsDir }
+            return
+        }
+        # No claim — tabs may still be working in that folder, the stream just never announced (the
+        # repo's main folder, one-off work). The tab registry knows them — by folder name.
+        $key = Get-StreamKey -Raw $To
+        $here = @(Get-TabRecords -Dir $tabsDir | Where-Object {
+                $key -and ((Get-StreamKey -Raw ([string]$_.tree)) -eq $key -or (Get-StreamKey -Raw ([string]$_.cwd)) -eq $key)
+            } | Sort-Object -Property @{ Expression = { Get-TabMoment -Tab $_ } } -Descending)
+        if ($here.Count -eq 0) {
+            "No claim for `"$To`", and the tab registry knows no tabs in a worktree folder by that name."
+            'Who runs which stream: pwsh scripts/wave-board.ps1 -Mode Streams; every tab in the project: -Mode Tabs'
+            return
+        }
+        "No claim for `"$To`". Tabs that worked in a worktree folder by that name:"
+        foreach ($tab in $here) { Format-TabListLine -Tab $tab -Claims $claims -Duplicated @() }
+    }
+
+    'Tabs' {
+        # The project's tabs from the tab registry: name, folder, claimed stream, last human message. A
+        # listing for the eye, so the claim registry is read forgivingly: a busy claim costs one
+        # unnamed "stream" cell, not a refusal to show the tabs.
+        $tabsDir = Get-TabsDir -RegistryDir $registry
+        $tabs = @(Get-TabRecords -Dir $tabsDir)
+        if ($tabs.Count -eq 0) {
+            "No tabs in the registry ($tabsDir). A tab record is created by the delivery hook on the tab's first turn and by a stream announcement."
+            return
+        }
+        $claims = @()
+        try { $claims = @(Get-Claims -Dir $registry) } catch { $claims = @() }
+        $sorted = @($tabs | Sort-Object -Property @{ Expression = { Get-TabMoment -Tab $_ } } -Descending)
+        # Matching names get marked: two "O1-3" tabs are exactly the case where the name sends a person
+        # to the wrong window. Compared case-insensitively — "o1-3" and "O1-3" look the same to the eye.
+        $counts = @{}
+        foreach ($tab in $tabs) {
+            # Not `$title`: it would collide with the finding-title parameter — the shell ignores case.
+            $tabName = ([string]$tab.title).ToLowerInvariant()
+            if (-not $tabName) { continue }
+            $counts[$tabName] = 1 + [int]$counts[$tabName]
+        }
+        $duplicated = @($counts.Keys | Where-Object { $counts[$_] -gt 1 })
+        # ‼️ Tabs silent for over a day go into a separate tail rather than disappearing. They can't be
+        # hidden: "where's that tab" is asked about a stream released yesterday and about a window left
+        # open over the weekend — without the tail the answer would read "no such tab". But they can't be
+        # mixed in either: live tabs would drown among a hundred closed ones. The tail is short — for
+        # details there's the "who runs it" question.
+        $silentSince = (Get-Date).AddHours(-$script:TabSilentHours)
+        $fresh = @($sorted | Where-Object { (Get-TabMoment -Tab $_) -ge $silentSince })
+        $silent = @($sorted | Where-Object { (Get-TabMoment -Tab $_) -lt $silentSince })
+        "Tabs in the registry: $($tabs.Count) — freshest first."
+        foreach ($tab in $fresh) { Format-TabListLine -Tab $tab -Claims $claims -Duplicated $duplicated }
+        if ($fresh.Count -eq 0) { '  nobody has written in any of them in the last day' }
+        if ($silent.Count -gt 0) {
+            ''
+            "Long silent (over a day without a human message): $($silent.Count)"
+            $shownSilent = @($silent | Select-Object -First $MaxHints)
+            foreach ($tab in $shownSilent) { Format-TabListLine -Tab $tab -Claims $claims -Duplicated $duplicated }
+            if ($silent.Count -gt $shownSilent.Count) {
+                "  … and $($silent.Count - $shownSilent.Count) more — about a specific stream: pwsh scripts/wave-board.ps1 -Mode Who -To <wave/stream>"
+            }
+        }
+    }
+
     'Add' {
         if (-not $To) {
             Deny-Call 'need -To: the stream''s number in the wave (wave6/3), the stream''s branch or worktree folder, * for your own wave, ** for the whole project'
@@ -1862,6 +2068,10 @@ Topic's closed and the addressee doesn't need it — clear it for everyone delib
         }
         "Open entries on the wave board: $($open.Count) ($board)"
         $anyBroadcast = $false
+        # The registry — only for the name of the addressee's tab, so read forgivingly and not before
+        # it's needed: the board listing works as before without it, and a busy claim costs one unnamed
+        # addressee, not a refusal to show the board.
+        $showClaims = $null
         foreach ($record in $open) {
             $tail = if ($record.where) { " — $($record.where)" } else { '' }
             $wave = if ($record.wave) { "wave $($record.wave), " } else { '' }
@@ -1869,8 +2079,22 @@ Topic's closed and the addressee doesn't need it — clear it for everyone delib
             # them, and staying silent about it would pass "no one's handled this yet" off as true.
             $seen = $states.Closings.By[[string]$record.id]
             $mark = if ($seen -and $seen.Count -gt 0) { " (handled by: $($seen -join ', '))" } else { '' }
-            if ((Get-StreamKey -Raw ([string]$record.to)) -eq '*') { $anyBroadcast = $true }
-            "  [$($record.id)] ${wave}to: $($record.to) — `"$($record.title)`"$tail$mark"
+            $toKey = Get-StreamKey -Raw ([string]$record.to)
+            if ($toKey -eq '*') { $anyBroadcast = $true }
+            # Which tab runs the addressee — a person goes straight to whoever is waiting for the
+            # finding. Only a LEADING entry: a released address has no tab that will receive it.
+            $toTab = ''
+            if ($toKey -and $toKey -notin @('*', '**')) {
+                if ($null -eq $showClaims) {
+                    $showClaims = @()
+                    try { $showClaims = @(Get-Claims -Dir $registry) } catch { $showClaims = @() }
+                }
+                $leadTabs = @(Find-Claims -Claims $showClaims -Raw ([string]$record.to) |
+                        Where-Object { -not $_.Closed } | ForEach-Object { Get-ClaimTabText -Claim $_ } |
+                        Where-Object { $_ })
+                if ($leadTabs.Count -gt 0) { $toTab = " ($($leadTabs[0]))" }
+            }
+            "  [$($record.id)] ${wave}to: $($record.to)$toTab — `"$($record.title)`"$tail$mark"
         }
         if ($asideLine) { $asideLine }
         if ($brokenLine) { $brokenLine }

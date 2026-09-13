@@ -21,6 +21,11 @@ The file does nothing by itself: it only declares functions.
 # The full breakdown of this trap is in the included file.
 . (Join-Path $PSScriptRoot 'git-env-clean.ps1')
 
+# The name of the tab running a stream, and the tab registry — in a file of their own: reading a
+# session transcript is a boundary of its own, and everything taken from a transcript has to be
+# visible in one place.
+. (Join-Path $PSScriptRoot 'tab-titles.ps1')
+
 function Get-BoardPath {
     param([string]$Override)
     if ($Override) { return $Override }
@@ -2371,7 +2376,7 @@ function Write-ClaimFile {
 }
 
 function Update-ClaimSeen {
-    param([string]$Dir, [string]$TreePath, [string]$Path, $Claims)
+    param([string]$Dir, [string]$TreePath, [string]$Path, $Claims, [string]$AdoptSession, [string]$AdoptTree)
     # The "session is active" mark. Called by the delivery hook on every move and has to stay quiet:
     # a failed mark update is no reason to get in the way of work.
     #
@@ -2394,6 +2399,19 @@ function Update-ClaimSeen {
         # Through `Add-Member -Force`, not assignment: a previous-version claim may have no mark
         # field at all, and assignment would fail — that is, such a claim would stay silent forever.
         $claim | Add-Member -NotePropertyName seen_at -NotePropertyValue ((Get-Date).ToString('s')) -Force
+        # Adopting a claim filed without a session (by a previous version, or without the environment
+        # variable): the session working in this worktree writes itself in — as part of the same
+        # mark, so the file isn't written twice per turn. A session already recorded is left alone:
+        # only an announcement has the right to change it.
+        #
+        # ‼️ Only in a SEPARATE worktree (`-AdoptTree`): the repo's main folder hosts many tabs at
+        # once, and whichever came first would write itself into someone else's stream. The worktree
+        # check goes last — it touches the disk, and only a claim without a session needs it, which is
+        # rare.
+        if ($AdoptSession -and -not [string]$claim.session_id -and (Test-SessionId $AdoptSession) -and
+            (Test-LinkedWorktree -TreePath $AdoptTree)) {
+            $claim | Add-Member -NotePropertyName session_id -NotePropertyValue $AdoptSession -Force
+        }
         Write-ClaimFile -Path $Path -Claim $claim
     } catch {
         return
@@ -2576,9 +2594,15 @@ function Get-StuckRecords {
         $parsed = [datetime]::TryParse([string]$record.at, [cultureinfo]::InvariantCulture,
             [System.Globalization.DateTimeStyles]::None, [ref]$when)
         $reason = ''
-        if (@($addressed | Where-Object { $_.State -eq 'released' }).Count -gt 0) {
+        # Which tab ran the stream — right next to the reason: that's the tab the owner goes to sort
+        # things out in, and hunting for it through transcripts takes minutes. Session unknown — the
+        # line stays uncluttered.
+        $releasedEntries = @($addressed | Where-Object { $_.State -eq 'released' })
+        if ($releasedEntries.Count -gt 0) {
             # Released is a case with nothing left to wait for at all: the session is gone and won't be back.
             $reason = 'the stream was released'
+            $tab = @($releasedEntries | ForEach-Object { Get-ClaimTabText -Claim $_ } | Where-Object { $_ })
+            if ($tab.Count -gt 0) { $reason += ", $($tab[0])" }
         } elseif (@($addressed | Where-Object { $_.Closed }).Count -eq $addressed.Count -and
             $addressed.Count -gt 0) {
             # Every record on the address is superseded, and no leader is left. The chain of
@@ -2587,9 +2611,13 @@ function Get-StuckRecords {
             # for on it. The reason is not "released", and lying about a release is not allowed — the
             # human would go looking for the outcome of a released stream that nobody ever wrote.
             $reason = 'the address was handed on, and no record leads it any more'
+            $tab = @($addressed | ForEach-Object { Get-ClaimTabText -Claim $_ } | Where-Object { $_ })
+            if ($tab.Count -gt 0) { $reason += ", $($tab[0])" }
         } elseif ($addressed.Count -gt 0) {
             if ($parsed -and $when -gt $deadline) { continue }
             $reason = "the stream has been silent since $(Format-Stamp -Raw $addressed[0].Record.seen_at)"
+            $tab = Get-ClaimTabText -Claim $addressed[0]
+            if ($tab) { $reason += ", $tab" }
         } else {
             if ($parsed -and $when -gt $deadline) { continue }
             # The keys passed in here are ones that CHECKED IN: a tree by itself doesn't make a
@@ -2808,5 +2836,9 @@ function Format-ClaimLine {
     } else {
         $Claim.State
     }
+    # Which tab runs the stream — right after the state: that answers "where is it being run", the
+    # question the listing gets opened for. Session unknown (a previous-version claim) — add nothing.
+    $tab = Get-ClaimTabText -Claim $Claim
+    if ($tab) { $state = "$state, $tab" }
     return "  $($record.wave)/$($record.stream)$name$tasks — $state (checked in $(Format-Stamp -Raw $record.seen_at), branch $($record.branch)$folder$memory)"
 }

@@ -22,6 +22,10 @@ Along the way the hook also marks its own worktree as alive (the beacon
 working session apart from an abandoned worktree. The mark is set on every turn, before any early
 exit — see the comment next to it.
 
+It also keeps this session's record in the tab registry: the name the person gave the tab, the
+folder, and the time of the last message. That is how the board answers WHICH tab runs a stream
+(`lib/tab-titles.ps1`).
+
 The hook blocks NOTHING, and on any unexpected condition it exits silently with zero: a hook that
 misfires must not get in the way of the work.
 #>
@@ -78,7 +82,9 @@ function Get-OverlapBlock {
             $names = @($overlap.Files | Select-Object -First 3) -join ', '
             $more = if ($overlap.Files.Count -gt 3) { " … and $($overlap.Files.Count - 3) more" } else { '' }
             $who = $overlap.Claim.Record
-            "  • stream $($who.wave)/$($who.stream)$(if ($who.name) { ' "' + $who.name + '"' }) — shared files: $names$more"
+            # Which tab — so the owner can go straight to the neighbour instead of hunting for it.
+            $tab = Get-ClaimTabText -Claim $overlap.Claim
+            "  • stream $($who.wave)/$($who.stream)$(if ($who.name) { ' "' + $who.name + '"' })$(if ($tab) { ", $tab" }) — shared files: $names$more"
         }
         return @(
             'A neighbouring stream is editing the same files right now:'
@@ -195,10 +201,30 @@ try {
     # for it.
     Set-KnownWaves -Keys @($claims | ForEach-Object { $_.WaveKey })
 
+    # This session's record in the tab registry: name, folder, time of the last human message. Every
+    # listing names the tab running a stream from it. Only a human turn moves the message time; a
+    # session start doesn't. Mute on any failure, like everything else in the hook.
+    $tabsDir = Get-TabsDir -RegistryDir $registry
+    # The "nosession" placeholder is not a session: a tab record with no session id is no use to
+    # anyone.
+    $realSession = $call -and $call.session_id -and (Test-SessionId $sessionId)
+    if ($realSession) {
+        $cwd = if ($call -and $call.cwd -is [string] -and $call.cwd) { [string]$call.cwd } else { $PWD.Path }
+        Update-TabRecord -Dir $tabsDir -SessionId $sessionId -Cwd $cwd -Tree (Get-TreeRoot) -Prompt:($Stage -eq 'Prompt')
+    }
+    if ($Stage -eq 'Start') { Remove-StaleTabRecords -Dir $tabsDir }
+
+    # Adopting a claim filed without a session. ‼️ Only on a HUMAN turn and only in a SEPARATE
+    # worktree (the mark itself checks that — and only for a claim that actually needs a session): the
+    # repo's main folder hosts many tabs at once, and whichever came first would write itself into
+    # someone else's stream — the answer to "who runs it" would become a confident falsehood. A
+    # separate worktree holds one tab, and the person in it is typing right now.
+    $adopt = if ($realSession -and $Stage -eq 'Prompt') { $sessionId } else { '' }
+
     # The same mark, but in the stream's claim: the beacon speaks about the FOLDER, the claim speaks
     # about the STREAM, and it survives the folder being deleted. No claim (the session never
     # announced) — quietly do nothing.
-    Update-ClaimSeen -Dir $registry -TreePath (Get-TreeRoot) -Claims $claims
+    Update-ClaimSeen -Dir $registry -TreePath (Get-TreeRoot) -Claims $claims -AdoptSession $adopt -AdoptTree (Get-TreeRoot)
 
     # Live-session mark: we bump the log's write time on EVERY turn, not only when there's something
     # to show. Otherwise a long session that went days without a finding would fall under cleanup
@@ -247,7 +273,7 @@ try {
                 # session as alive. No second writer appears here: the record was found by an EXACT
                 # match on the worktree folder, so it belongs to this very session. The ban on
                 # writing into SOMEONE ELSE'S file still stands.
-                Update-ClaimSeen -Path $found.File -Claims $claims
+                Update-ClaimSeen -Path $found.File -Claims $claims -AdoptSession $adopt -AdoptTree (Get-TreeRoot)
                 Update-ClaimFiles -Path $found.File -Claims $claims
             }
         } catch {
@@ -290,8 +316,9 @@ try {
                 # leader, the switch answers "wasn't needed", and the session goes in circles
                 # following the one piece of advice printed for it. A printed way out has to work.
                 $lines = if ($fate.StillLed) {
+                    $holderTab = Get-ClaimTabText -Claim $fate.Holder
                     @(
-                        "‼️ Your stream $($claim.wave)/$($claim.stream) was taken over into $($fate.Holder.Record.worktree) — this session is no longer addressable: findings for that address arrive there, and they can't be closed from here."
+                        "‼️ Your stream $($claim.wave)/$($claim.stream) was taken over into $($fate.Holder.Record.worktree)$(if ($holderTab) { " ($holderTab)" }) — this session is no longer addressable: findings for that address arrive there, and they can't be closed from here."
                         "This is your stream and it was taken over by mistake — take the address back: pwsh scripts/wave-board.ps1 -Mode Claim -Wave $($claim.wave) -Stream $($claim.stream) -TakeOver"
                     )
                 } else {
