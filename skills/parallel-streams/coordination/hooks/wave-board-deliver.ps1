@@ -24,7 +24,9 @@ exit — see the comment next to it.
 
 It also keeps this session's record in the tab registry: the name the person gave the tab, the
 folder, and the time of the last message. That is how the board answers WHICH tab runs a stream
-(`lib/tab-titles.ps1`).
+(`lib/tab-titles.ps1`). ‼️ This is done LAST, after the delivery has been printed: the name is a
+convenience, delivery is what the hook is for, and a slow transcript read has no right to hold up the
+neighbours' findings.
 
 The hook blocks NOTHING, and on any unexpected condition it exits silently with zero: a hook that
 misfires must not get in the way of the work.
@@ -201,30 +203,42 @@ try {
     # for it.
     Set-KnownWaves -Keys @($claims | ForEach-Object { $_.WaveKey })
 
-    # This session's record in the tab registry: name, folder, time of the last human message. Every
-    # listing names the tab running a stream from it. Only a human turn moves the message time; a
-    # session start doesn't. Mute on any failure, like everything else in the hook.
+    # Who this tab is for the tab registry. The "nosession" placeholder is not a session: a tab record
+    # with no session id is no use to anyone.
     $tabsDir = Get-TabsDir -RegistryDir $registry
-    # The "nosession" placeholder is not a session: a tab record with no session id is no use to
-    # anyone.
     $realSession = $call -and $call.session_id -and (Test-SessionId $sessionId)
-    if ($realSession) {
-        $cwd = if ($call -and $call.cwd -is [string] -and $call.cwd) { [string]$call.cwd } else { $PWD.Path }
-        Update-TabRecord -Dir $tabsDir -SessionId $sessionId -Cwd $cwd -Tree (Get-TreeRoot) -Prompt:($Stage -eq 'Prompt')
+    # ‼️ The tab's folder comes from the hook's input, not from wherever the process happened to start.
+    # The tree root in the tab record and the decision about which session runs the claim come from it
+    # too: three answers from one source. The root is asked of git again only if the folders really
+    # differ (usually the hook process runs in the session's folder, and the answer is already there).
+    # If the trees differ, the hook leaves the claim's session alone (see `Update-ClaimSeen`): delivery
+    # still goes by the process folder, and deciding about one worktree's claim by a tab of another
+    # isn't allowed.
+    $tabCwd = if ($call -and $call.cwd -is [string] -and $call.cwd) { [string]$call.cwd } else { $PWD.Path }
+    $tabTree = Get-TreeRoot
+    if ((Get-FolderKey -Path $tabCwd) -ne (Get-FolderKey -Path $PWD.Path)) {
+        try {
+            $top = @(& git -C $tabCwd rev-parse --show-toplevel 2>$null)
+            $tabTree = if ($LASTEXITCODE -eq 0 -and $top.Count -gt 0 -and $top[0]) {
+                ("$($top[0])".Trim() -replace '\\', '/').TrimEnd('/')
+            } else {
+                ($tabCwd -replace '\\', '/').TrimEnd('/')
+            }
+        } catch {
+            $tabTree = ($tabCwd -replace '\\', '/').TrimEnd('/')
+        }
     }
-    if ($Stage -eq 'Start') { Remove-StaleTabRecords -Dir $tabsDir }
-
-    # Adopting a claim filed without a session. ‼️ Only on a HUMAN turn and only in a SEPARATE
-    # worktree (the mark itself checks that — and only for a claim that actually needs a session): the
-    # repo's main folder hosts many tabs at once, and whichever came first would write itself into
-    # someone else's stream — the answer to "who runs it" would become a confident falsehood. A
-    # separate worktree holds one tab, and the person in it is typing right now.
-    $adopt = if ($realSession -and $Stage -eq 'Prompt') { $sessionId } else { '' }
+    $tabSession = if ($realSession) { $sessionId } else { '' }
 
     # The same mark, but in the stream's claim: the beacon speaks about the FOLDER, the claim speaks
     # about the STREAM, and it survives the folder being deleted. No claim (the session never
     # announced) — quietly do nothing.
-    Update-ClaimSeen -Dir $registry -TreePath (Get-TreeRoot) -Claims $claims -AdoptSession $adopt -AdoptTree (Get-TreeRoot)
+    #
+    # Along with it — which session runs the claim: adopting a claim without a session, and handing it
+    # over to the same tab's new id after a context clear. ‼️ The rules are strict (the session's
+    # starting tree, a second tab in the worktree, the same human-given name) and live in
+    # `lib/tab-titles.ps1` at `Update-ClaimSessionFromTab`.
+    Update-ClaimSeen -Dir $registry -TreePath (Get-TreeRoot) -Claims $claims -Session $tabSession -Stage $Stage -TabsDir $tabsDir -Tree $tabTree
 
     # Live-session mark: we bump the log's write time on EVERY turn, not only when there's something
     # to show. Otherwise a long session that went days without a finding would fall under cleanup
@@ -273,7 +287,7 @@ try {
                 # session as alive. No second writer appears here: the record was found by an EXACT
                 # match on the worktree folder, so it belongs to this very session. The ban on
                 # writing into SOMEONE ELSE'S file still stands.
-                Update-ClaimSeen -Path $found.File -Claims $claims -AdoptSession $adopt -AdoptTree (Get-TreeRoot)
+                Update-ClaimSeen -Path $found.File -TreePath (Get-TreeRoot) -Claims $claims -Session $tabSession -Stage $Stage -TabsDir $tabsDir -Tree $tabTree
                 Update-ClaimFiles -Path $found.File -Claims $claims
             }
         } catch {
@@ -442,4 +456,22 @@ try {
     Send-Context -Text $text -HookEvent $hookEvent
 } catch {
     exit 0
+} finally {
+    # ‼️ This session's tab record goes LAST — after the claim mark and the delivery already printed, on
+    # any of the exits above (this block runs on `exit` too). The name is a convenience, delivery is
+    # what the hook is for: a slow transcript read has no right either to hold up the neighbours'
+    # findings or to break their output.
+    #
+    # Every listing names the tab running a stream from it. Only a human turn moves the message time; a
+    # session start doesn't, but it writes the session's starting tree (after a context compaction it
+    # keeps the previous one) and removes the records of tabs silent for a month. Mute on any failure.
+    try {
+        if ($realSession -and $tabsDir) {
+            Update-TabRecord -Dir $tabsDir -SessionId $sessionId -Cwd $tabCwd -Tree $tabTree -Stage $Stage `
+                -KeepStartTree:([string]$call.source -eq 'compact') -Force:$script:WaveBoardClaimSessionChanged
+        }
+        if ($Stage -eq 'Start' -and $tabsDir) { Remove-StaleTabRecords -Dir $tabsDir }
+    } catch {
+        # Silent on purpose: the hook must not get in the way of work.
+    }
 }

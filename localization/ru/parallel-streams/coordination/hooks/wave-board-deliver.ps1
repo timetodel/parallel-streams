@@ -22,6 +22,8 @@
 
 И ведёт запись своей вкладки в реестре вкладок: название, данное человеком, папку и время
 последнего сообщения. По ней доска отвечает, КАКАЯ вкладка ведёт поток (`lib/tab-titles.ps1`).
+‼️ Это делается ПОСЛЕДНИМ, уже после вывода доставки: название — удобство, доставка — назначение
+сторожа, и медленное чтение журнала не вправе задерживать находки соседей.
 
 Хук НИЧЕГО не блокирует и при любой неожиданности молча выходит нулём: сорванный сторож не должен
 мешать работе.
@@ -189,28 +191,39 @@ try {
     # находка не дошла бы до вкладки, которая её ждёт.
     Set-KnownWaves -Keys @($claims | ForEach-Object { $_.WaveKey })
 
-    # Запись своей вкладки в реестре вкладок: название, папка, время последнего сообщения человека.
-    # По ней все показы называют вкладку, ведущую поток. Время сообщения двигает только ход
-    # человека; начало сессии — нет. Немая при любой неудаче, как и всё в стороже.
+    # Кто эта вкладка для реестра вкладок. Заглушка «nosession» сессией не считается: запись вкладки
+    # без номера сессии никому не нужна.
     $tabsDir = Get-TabsDir -RegistryDir $registry
-    # Заглушка «nosession» сессией не считается: запись вкладки без номера сессии никому не нужна.
     $realSession = $call -and $call.session_id -and (Test-SessionId $sessionId)
-    if ($realSession) {
-        $cwd = if ($call -and $call.cwd -is [string] -and $call.cwd) { [string]$call.cwd } else { $PWD.Path }
-        Update-TabRecord -Dir $tabsDir -SessionId $sessionId -Cwd $cwd -Tree (Get-TreeRoot) -Prompt:($Stage -eq 'Prompt')
+    # ‼️ Папка вкладки — из входных данных сторожа, а не из папки, где случилось запуститься процессу.
+    # Из неё же — корень дерева в записи вкладки и решение, какая сессия ведёт заявку: три ответа из
+    # одного источника. Корень спрашиваем у git ещё раз, только если папки и правда разошлись (обычно
+    # процесс сторожа идёт в папке сессии, и ответ уже есть). Разошлись деревья — сторож сессию в заявке
+    # не трогает (см. `Update-ClaimSeen`): доставка по-прежнему судит по папке процесса, и решать про
+    # заявку одного дерева по вкладке другого нельзя.
+    $tabCwd = if ($call -and $call.cwd -is [string] -and $call.cwd) { [string]$call.cwd } else { $PWD.Path }
+    $tabTree = Get-TreeRoot
+    if ((Get-FolderKey -Path $tabCwd) -ne (Get-FolderKey -Path $PWD.Path)) {
+        try {
+            $top = @(& git -C $tabCwd rev-parse --show-toplevel 2>$null)
+            $tabTree = if ($LASTEXITCODE -eq 0 -and $top.Count -gt 0 -and $top[0]) {
+                ("$($top[0])".Trim() -replace '\\', '/').TrimEnd('/')
+            } else {
+                ($tabCwd -replace '\\', '/').TrimEnd('/')
+            }
+        } catch {
+            $tabTree = ($tabCwd -replace '\\', '/').TrimEnd('/')
+        }
     }
-    if ($Stage -eq 'Start') { Remove-StaleTabRecords -Dir $tabsDir }
-
-    # Подхват заявки без сессии. ‼️ Только на ходе ЧЕЛОВЕКА и только в ОТДЕЛЬНОМ рабочем дереве (это
-    # проверяет сама отметка — и только у заявки, которой сессия действительно нужна): в главной
-    # папке репозитория живёт много вкладок сразу, и первая попавшаяся вписала бы себя в чужой поток
-    # — ответ «кто ведёт» стал бы уверенной неправдой. В отдельном дереве вкладка одна, и человек в
-    # ней прямо сейчас пишет.
-    $adopt = if ($realSession -and $Stage -eq 'Prompt') { $sessionId } else { '' }
+    $tabSession = if ($realSession) { $sessionId } else { '' }
 
     # Та же отметка, но в заявке потока: маячок говорит о ПАПКЕ, заявка — о ПОТОКЕ, и переживает
     # удаление папки. Заявки нет (вкладка не объявлялась) — тихо ничего не делаем.
-    Update-ClaimSeen -Dir $registry -TreePath (Get-TreeRoot) -Claims $claims -AdoptSession $adopt -AdoptTree (Get-TreeRoot)
+    #
+    # Заодно — какая сессия ведёт заявку: подхват заявки без сессии и перенос на новый номер той же
+    # вкладки после очистки контекста. ‼️ Правила строгие (стартовое дерево сессии, вторая вкладка в
+    # дереве, одинаковое имя от человека) и лежат в `lib/tab-titles.ps1` у `Update-ClaimSessionFromTab`.
+    Update-ClaimSeen -Dir $registry -TreePath (Get-TreeRoot) -Claims $claims -Session $tabSession -Stage $Stage -TabsDir $tabsDir -Tree $tabTree
 
     # Отметка живой сессии: время правки журнала обновляем на КАЖДОМ ходу, а не только когда есть
     # что показать. Иначе долгая сессия, которой сутками не приходило находок, попадала под чистку
@@ -257,7 +270,7 @@ try {
                 # в сводку застрявшего у владельца, а соседи переставали считать вкладку живой.
                 # Второго писателя тут не появляется: запись найдена по ТОЧНОМУ совпадению рабочей
                 # папки, значит принадлежит этой же вкладке. Запрет писать в ЧУЖОЙ файл остаётся.
-                Update-ClaimSeen -Path $found.File -Claims $claims -AdoptSession $adopt -AdoptTree (Get-TreeRoot)
+                Update-ClaimSeen -Path $found.File -TreePath (Get-TreeRoot) -Claims $claims -Session $tabSession -Stage $Stage -TabsDir $tabsDir -Tree $tabTree
                 Update-ClaimFiles -Path $found.File -Claims $claims
             }
         } catch {
@@ -418,4 +431,21 @@ try {
     Send-Context -Text $text -HookEvent $hookEvent
 } catch {
     exit 0
+} finally {
+    # ‼️ Запись своей вкладки — ПОСЛЕДНЕЙ, после отметки заявки и уже напечатанной доставки, на любом из
+    # выходов выше (блок отрабатывает и на `exit`). Название — удобство, доставка — назначение
+    # сторожа: медленное чтение журнала не вправе ни задержать находки соседей, ни сорвать их вывод.
+    #
+    # По ней все показы называют вкладку, ведущую поток. Время сообщения двигает только ход
+    # человека; начало сессии — нет, зато оно пишет стартовое дерево сессии (после сжатия контекста —
+    # оставляет прежнее) и убирает записи вкладок, молчащих месяц. Немая при любой неудаче.
+    try {
+        if ($realSession -and $tabsDir) {
+            Update-TabRecord -Dir $tabsDir -SessionId $sessionId -Cwd $tabCwd -Tree $tabTree -Stage $Stage `
+                -KeepStartTree:([string]$call.source -eq 'compact') -Force:$script:WaveBoardClaimSessionChanged
+        }
+        if ($Stage -eq 'Start' -and $tabsDir) { Remove-StaleTabRecords -Dir $tabsDir }
+    } catch {
+        # Молчим: сторож не должен мешать работе.
+    }
 }

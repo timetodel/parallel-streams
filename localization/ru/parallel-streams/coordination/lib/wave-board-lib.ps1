@@ -813,10 +813,38 @@ function Set-KnownWavesFromRegistry {
     # Удобная форма для тех, у кого реестр под рукой. Молчит при любой неудаче: не разобранный
     # список волн — это адрес, который не разберётся, а не поломка механизма у всех остальных.
     try {
-        Set-KnownWaves -Keys @((Get-Claims -Dir $Dir) | ForEach-Object { $_.WaveKey })
+        Set-KnownWaves -Keys @((Get-RegistrySnapshot -Dir $Dir) | ForEach-Object { $_.WaveKey })
     } catch {
         Set-KnownWaves -Keys @()
     }
+}
+
+# Терпимый снимок реестра, прочитанный в этом запуске, и каталог, из которого он прочитан.
+$script:WaveBoardRegistrySnapshot = $null
+$script:WaveBoardRegistrySnapshotDir = ''
+
+function Get-RegistrySnapshot {
+    param([string]$Dir)
+    # Реестр заявок, прочитанный ТЕРПИМО и ОДИН раз за запуск — для тех, кому он нужен только для
+    # показа. Показ доски спрашивает его ради названия вкладки у адресата, а разбор адреса того же
+    # запуска уже прочитал его ради имён волн: второе чтение стоило бы тех же долей секунды на
+    # каждом показе.
+    #
+    # ‼️ Не для решающих мест: объявление, сдача и приём находки читают реестр строго и заново — снимок
+    # мог устареть на их собственную запись.
+    if ($null -ne $script:WaveBoardRegistrySnapshot -and $script:WaveBoardRegistrySnapshotDir -eq $Dir) {
+        return @($script:WaveBoardRegistrySnapshot)
+    }
+    $claims = @()
+    try { $claims = @(Get-Claims -Dir $Dir) } catch { $claims = @() }
+    $script:WaveBoardRegistrySnapshot = $claims
+    $script:WaveBoardRegistrySnapshotDir = $Dir
+    # Имена волн из того же снимка, если их ещё не спрашивали: иначе первый разбор адреса прочитал бы
+    # реестр ещё раз.
+    if (-not $script:WaveBoardKnownWavesLoaded) {
+        Set-KnownWaves -Keys @($claims | ForEach-Object { $_.WaveKey })
+    }
+    return @($claims)
 }
 
 function Get-StreamAddress {
@@ -2262,8 +2290,12 @@ function Write-ClaimFile {
     }
 }
 
+# Сменил ли сторож доставки в этом запуске сессию в своей заявке: тогда запись вкладки переписывается
+# в конце хода, даже если в ней самой ничего не изменилось.
+$script:WaveBoardClaimSessionChanged = $false
+
 function Update-ClaimSeen {
-    param([string]$Dir, [string]$TreePath, [string]$Path, $Claims, [string]$AdoptSession, [string]$AdoptTree)
+    param([string]$Dir, [string]$TreePath, [string]$Path, $Claims, [string]$Session, [string]$Stage, [string]$TabsDir, [string]$Tree)
     # Отметка «вкладка на ходу». Зовётся сторожем доставки на каждом ходу и обязана быть немой:
     # сорвавшаяся отметка не повод мешать работе.
     #
@@ -2285,16 +2317,17 @@ function Update-ClaimSeen {
         # Через `Add-Member -Force`, а не присваиванием: у заявки прежней версии поля отметки может
         # не быть вовсе, и присваивание сорвалось бы — то есть такая заявка молчала бы навсегда.
         $claim | Add-Member -NotePropertyName seen_at -NotePropertyValue ((Get-Date).ToString('s')) -Force
-        # Подхват заявки, поданной без сессии (прежней версией или без переменной окружения): её
-        # вписывает сессия, работающая в этом рабочем дереве, — в ту же отметку, чтобы не писать файл
-        # второй раз за ход. Уже записанную сессию не трогаем: сменить её вправе только объявление.
+        # Какая сессия ведёт заявку: подхват заявки без сессии и перенос на новый номер той же вкладки —
+        # в ту же отметку, чтобы не писать файл второй раз за ход. Правила и их причины — у
+        # `Update-ClaimSessionFromTab` (`lib/tab-titles.ps1`). Дорогие проверки там идут только тогда,
+        # когда сессия заявки не совпала с этой, то есть редко.
         #
-        # ‼️ Только в ОТДЕЛЬНОМ рабочем дереве (`-AdoptTree`): в главной папке репозитория живёт много
-        # вкладок сразу, и первая попавшаяся вписала бы себя в чужой поток. Проверку дерева делаем
-        # последней — она обращается к диску, а нужна лишь заявке без сессии, то есть редко.
-        if ($AdoptSession -and -not [string]$claim.session_id -and (Test-SessionId $AdoptSession) -and
-            (Test-LinkedWorktree -TreePath $AdoptTree)) {
-            $claim | Add-Member -NotePropertyName session_id -NotePropertyValue $AdoptSession -Force
+        # ‼️ `-Tree` — дерево из папки, пришедшей сторожу во входных данных, а `-TreePath` — ключ
+        # заявки. Разошлись они (процесс сторожа запущен не в папке сессии) — сессию не трогаем вовсе:
+        # решать про заявку одного дерева по вкладке другого нельзя.
+        if ($Session -and $Tree -and $TreePath -and (Get-FolderKey -Path $Tree) -eq (Get-FolderKey -Path $TreePath) -and
+            (Update-ClaimSessionFromTab -Claim $claim -Session $Session -Stage $Stage -TabsDir $TabsDir -Tree $Tree)) {
+            $script:WaveBoardClaimSessionChanged = $true
         }
         Write-ClaimFile -Path $Path -Claim $claim
     } catch {

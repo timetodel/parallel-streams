@@ -835,10 +835,33 @@ function Set-KnownWavesFromRegistry {
     # an unparsed wave list is an address that won't parse, not a breakdown of the mechanism for
     # everyone else.
     try {
-        Set-KnownWaves -Keys @((Get-Claims -Dir $Dir) | ForEach-Object { $_.WaveKey })
+        Set-KnownWaves -Keys @((Get-RegistrySnapshot -Dir $Dir) | ForEach-Object { $_.WaveKey })
     } catch {
         Set-KnownWaves -Keys @()
     }
+}
+
+# The tolerant registry snapshot read in this run, and the directory it was read from.
+$script:WaveBoardRegistrySnapshot = $null
+$script:WaveBoardRegistrySnapshotDir = ''
+
+function Get-RegistrySnapshot {
+    param([string]$Dir)
+    # The claims registry read TOLERANTLY and ONCE per run — for those who need it only for a listing.
+    # The board listing asks for it to name the addressee's tab, while the start of the same run has
+    # already read it for the wave names: a second read would cost the same fraction of a second on
+    # every listing.
+    #
+    # ‼️ Not for deciding places: announcement, release and taking a finding read the registry strictly
+    # and afresh — a snapshot could be stale by their own write.
+    if ($null -ne $script:WaveBoardRegistrySnapshot -and $script:WaveBoardRegistrySnapshotDir -eq $Dir) {
+        return @($script:WaveBoardRegistrySnapshot)
+    }
+    $claims = @()
+    try { $claims = @(Get-Claims -Dir $Dir) } catch { $claims = @() }
+    $script:WaveBoardRegistrySnapshot = $claims
+    $script:WaveBoardRegistrySnapshotDir = $Dir
+    return @($claims)
 }
 
 function Get-StreamAddress {
@@ -2375,8 +2398,12 @@ function Write-ClaimFile {
     }
 }
 
+# Whether the delivery hook changed the session in its own claim during this run: then the tab record is
+# rewritten at the end of the turn even if nothing in it changed.
+$script:WaveBoardClaimSessionChanged = $false
+
 function Update-ClaimSeen {
-    param([string]$Dir, [string]$TreePath, [string]$Path, $Claims, [string]$AdoptSession, [string]$AdoptTree)
+    param([string]$Dir, [string]$TreePath, [string]$Path, $Claims, [string]$Session, [string]$Stage, [string]$TabsDir, [string]$Tree)
     # The "session is active" mark. Called by the delivery hook on every move and has to stay quiet:
     # a failed mark update is no reason to get in the way of work.
     #
@@ -2399,18 +2426,18 @@ function Update-ClaimSeen {
         # Through `Add-Member -Force`, not assignment: a previous-version claim may have no mark
         # field at all, and assignment would fail — that is, such a claim would stay silent forever.
         $claim | Add-Member -NotePropertyName seen_at -NotePropertyValue ((Get-Date).ToString('s')) -Force
-        # Adopting a claim filed without a session (by a previous version, or without the environment
-        # variable): the session working in this worktree writes itself in — as part of the same
-        # mark, so the file isn't written twice per turn. A session already recorded is left alone:
-        # only an announcement has the right to change it.
+        # Which session runs the claim: adopting a claim without a session and handing it over to the
+        # same tab's new id — as part of the same mark, so the file isn't written twice per turn. The
+        # rules and their reasons are at `Update-ClaimSessionFromTab` (`lib/tab-titles.ps1`). The
+        # expensive checks there run only when the claim's session isn't this one, which is rare.
         #
-        # ‼️ Only in a SEPARATE worktree (`-AdoptTree`): the repo's main folder hosts many tabs at
-        # once, and whichever came first would write itself into someone else's stream. The worktree
-        # check goes last — it touches the disk, and only a claim without a session needs it, which is
-        # rare.
-        if ($AdoptSession -and -not [string]$claim.session_id -and (Test-SessionId $AdoptSession) -and
-            (Test-LinkedWorktree -TreePath $AdoptTree)) {
-            $claim | Add-Member -NotePropertyName session_id -NotePropertyValue $AdoptSession -Force
+        # ‼️ `-Tree` is the worktree of the folder the hook received in its input, and `-TreePath` is the
+        # claim's key. If they differ (the hook process didn't start in the session's folder), the
+        # session is left alone entirely: deciding about one worktree's claim by a tab of another isn't
+        # allowed.
+        if ($Session -and $Tree -and $TreePath -and (Get-FolderKey -Path $Tree) -eq (Get-FolderKey -Path $TreePath) -and
+            (Update-ClaimSessionFromTab -Claim $claim -Session $Session -Stage $Stage -TabsDir $TabsDir -Tree $Tree)) {
+            $script:WaveBoardClaimSessionChanged = $true
         }
         Write-ClaimFile -Path $Path -Claim $claim
     } catch {

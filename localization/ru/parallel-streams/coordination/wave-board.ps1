@@ -25,7 +25,8 @@
             на диске больше нет: папка на месте (пусть даже молчит пятые сутки) — отказ.
   Streams — кто какой поток ведёт: [-Wave …] [-Task <номер задачи>]
   Who     — какая вкладка ведёт поток: -To <волна/поток, ветка или папка>. Строка на ответ: адрес,
-            название вкладки, папка, ветка, когда в той вкладке последний раз писал человек.
+            название вкладки, папка, ветка, когда в той вкладке последний раз писал человек и
+            откуда доска знает сессию.
   Tabs    — вкладки проекта: название, папка, заявленный поток, последнее сообщение человека;
             свежие сверху, молчащие дольше суток — отдельным хвостом.
   Add     — положить находку:  -To <волна/поток, ветка или папка> -Title <одна строка> [-Where …]
@@ -37,7 +38,8 @@
 
 Название вкладки берётся из журнала её сессии: заявка запоминает сессию, запущенную в вкладке
 (переменная окружения среды), а сторож доставки ведёт реестр вкладок. Сессия неизвестна — показ
-просто не называет вкладку.
+просто не называет вкладку. Название — подсказка человеку, куда идти: адресацию и доставку оно не
+меняет.
 
 Устройство доски и реестра заявок — в `lib/wave-board-lib.ps1`, названий вкладок — в
 `lib/tab-titles.ps1`.
@@ -312,14 +314,36 @@ function Get-ShortSession {
 function Get-TabMessageText {
     param($Tab)
     if (-not $Tab) { return 'когда там последний раз писал человек — неизвестно' }
-    if ([string]$Tab.prompt_at) { return "последнее сообщение человека $(Format-Stamp -Raw $Tab.prompt_at)" }
+    # Неразобранное время печатается как есть — поэтому чистится, как и всё из записи вкладки.
+    if ([string]$Tab.prompt_at) { return "последнее сообщение человека $(Get-CleanTitle -Raw (Format-Stamp -Raw $Tab.prompt_at) -Max 0)" }
     return 'сообщений человека в перечне нет'
 }
 
+function Get-TabNameKey {
+    param($Tab)
+    # Название вкладки для сверки двойников: чищеное и без учёта регистра — глазами «о1-3» и «О1-3»
+    # не различить, а невидимый знак не должен делать два одинаковых с виду названия разными.
+    if (-not $Tab) { return '' }
+    return (Get-CleanTitle -Raw ([string]$Tab.title)).ToLowerInvariant()
+}
+
+function Get-DuplicatedTabNames {
+    param($Tabs)
+    # Названия, которые носят две вкладки и больше.
+    $counts = @{}
+    foreach ($tab in @($Tabs)) {
+        $tabName = Get-TabNameKey -Tab $tab
+        if (-not $tabName) { continue }
+        $counts[$tabName] = 1 + [int]$counts[$tabName]
+    }
+    return @($counts.Keys | Where-Object { $counts[$_] -gt 1 })
+}
+
 function Format-WhoLine {
-    param($Claim, [string]$TabsDir)
-    # Одна строка ответа «кто ведёт»: адрес, вкладка, папка, ветка, когда там писал человек. Здесь
-    # название вкладки — сам ответ, поэтому неизвестность называется словами, а не пропускается.
+    param($Claim, [string]$TabsDir, [string[]]$Duplicated)
+    # Одна строка ответа «кто ведёт»: адрес, вкладка, папка, ветка, когда там писал человек и откуда
+    # доска знает сессию. Здесь название вкладки — сам ответ, поэтому неизвестность называется
+    # словами, а не пропускается.
     $record = $Claim.Record
     $name = if ($record.name) { " «$($record.name)»" } else { '' }
     $state = if ($Claim.TakenBy -and $Claim.Superseded) { Get-ClaimTakenAwayText -Claim $Claim } else { $Claim.State }
@@ -334,10 +358,24 @@ function Format-WhoLine {
         } else {
             "название вкладки не найдено (сессия $(Get-ShortSession $sessionId))"
         }
+    } elseif ((Get-TabNameKey -Tab $tab) -in $Duplicated) {
+        # То же название у другой вкладки проекта — начало номера сессии, как и в перечне вкладок:
+        # иначе человек уверенно пошёл бы не в то окно.
+        $tabText = "$tabText (сессия $(Get-ShortSession $sessionId), ‼️ то же название у другой вкладки)"
     }
     $folder = if ($record.worktree) { "папка $($record.worktree)" } else { 'папка в заявке не названа' }
     $branch = if ($record.branch) { "ветка $($record.branch)" } else { 'ветка в заявке не названа' }
-    return "  $($record.wave)/$($record.stream)$name — $state, $tabText, $folder, $branch, $(Get-TabMessageText -Tab $tab)"
+    # Откуда сессия. Название вкладки — подсказка человеку, а не доказательство: номер, вписанный
+    # сторожем доставки (подхват заявки без сессии или перенос на новый номер той же вкладки), — его
+    # догадка, и сказать об этом надо тут же.
+    $source = if (-not (Test-SessionId $sessionId)) {
+        ''
+    } elseif ([bool]$record.session_adopted) {
+        ', сессию вписал сторож доставки (догадка, объявление её не подтверждало)'
+    } else {
+        ', сессию назвало объявление'
+    }
+    return "  $($record.wave)/$($record.stream)$name — $state, $tabText, $folder, $branch, $(Get-TabMessageText -Tab $tab)$source"
 }
 
 function Get-TabMoment {
@@ -358,9 +396,11 @@ function Format-TabListLine {
     $led = @($Claims | Where-Object { -not $_.Closed -and [string]$_.Record.session_id -eq $sessionId } |
             ForEach-Object { "$($_.Record.wave)/$($_.Record.stream)$(if ($_.Record.name) { " «$($_.Record.name)»" })" })
     $streams = if ($led.Count -gt 0) { "поток $($led -join ', ')" } else { 'потока не заявлено' }
-    $folder = if ([string]$Tab.tree) { [string]$Tab.tree } else { [string]$Tab.cwd }
+    # Папка из записи вкладки чистится при печати, как и название: запись лежит в общем каталоге.
+    $folder = Get-CleanTitle -Raw $(if ([string]$Tab.tree) { [string]$Tab.tree } else { [string]$Tab.cwd }) -Max 0
     $twin = ''
-    if ([string]$Tab.title -and ([string]$Tab.title).ToLowerInvariant() -in $Duplicated) {
+    $tabName = Get-TabNameKey -Tab $Tab
+    if ($tabName -and $tabName -in $Duplicated) {
         $twin = " — ‼️ то же название у другой вкладки, эта — сессия $(Get-ShortSession $sessionId)"
     }
     return "  $title — $streams, папка $folder, $(Get-TabMessageText -Tab $Tab)$twin"
@@ -408,6 +448,9 @@ switch ($Mode) {
         # запуск из терминала) — заявка идёт как прежде, без сессии, и ничего не ломается.
         $envSession = if (Test-SessionId $env:CLAUDE_CODE_SESSION_ID) { [string]$env:CLAUDE_CODE_SESSION_ID } else { '' }
         $claimSession = $envSession
+        # Вписал ли сессию сторож доставки (подхват или перенос), а не объявление. Объявление с
+        # переменной окружения пометку снимает: номер назвала сама вкладка.
+        $claimSessionAdopted = $false
         # ‼️ Отсюда и до конца разрешения спора — под замком реестра заявок. Выбор номера идёт по
         # снимку реестра, и без замка вкладки, открытые разом, читают ОДИН И ТОТ ЖЕ снимок: номер у
         # всех выходит одинаковый, а круг разрешения спора ниже добивает не всё — из него выходят по
@@ -619,6 +662,9 @@ switch ($Mode) {
                 # переменной сессия приходит всегда свежей: вкладку переоткрыли — заявка это знает.
                 if (-not $claimSession -and (Test-SessionId ([string]$previousSelf.Record.session_id))) {
                     $claimSession = [string]$previousSelf.Record.session_id
+                    # Унаследованная сессия остаётся тем, чем была: догадку сторожа объявление без
+                    # переменной не подтверждает — номера оно не знает.
+                    $claimSessionAdopted = [bool]$previousSelf.Record.session_adopted
                 }
                 if ($waveSource -eq 'own') {
                     # ‼️ Признак «волна подставлена сама» берётся КАК ЛЕЖАЛ — вместе с его
@@ -881,6 +927,7 @@ $another
                 # кладём только когда сессия известна — отсутствие поля все копии комплекта читают
                 # одинаково: «вкладка неизвестна».
                 $claim.session_id = $claimSession
+                if ($claimSessionAdopted) { $claim.session_adopted = $true }
             }
             if ($takenFrom) {
                 # ‼️ Поле кладём ТОЛЬКО когда перенос был. Пустое поле у каждой заявки — это шум,
@@ -1024,7 +1071,7 @@ $another
         $myTab = ''
         if ($envSession) {
             $tabsDir = Get-TabsDir -RegistryDir $registry
-            Update-TabRecord -Dir $tabsDir -SessionId $envSession -Cwd $PWD.Path -Tree $tree
+            Update-TabRecord -Dir $tabsDir -SessionId $envSession -Cwd $PWD.Path -Tree $tree -Stage Claim
             $myTab = Format-TabTitle -Tab (Get-TabRecord -Dir $tabsDir -SessionId $envSession)
         }
         $rivals = @(Get-NumberRivals -Claims $claims -WaveKey $waveKey -StreamKey $streamKey -TreePath $tree)
@@ -1570,7 +1617,8 @@ $notMine
             # записи того же адреса — это история, её показываем следом.
             $ordered = @(@($found | Where-Object { -not $_.Closed }) + @($found | Where-Object { $_.Closed }))
             "Кто ведёт «$To»:"
-            foreach ($entry in $ordered) { Format-WhoLine -Claim $entry -TabsDir $tabsDir }
+            $duplicated = @(Get-DuplicatedTabNames -Tabs (Get-TabRecords -Dir $tabsDir))
+            foreach ($entry in $ordered) { Format-WhoLine -Claim $entry -TabsDir $tabsDir -Duplicated $duplicated }
             return
         }
         # Заявки нет — может, в этой папке всё же работают вкладки, просто поток не объявлялся
@@ -1603,14 +1651,7 @@ $notMine
         $sorted = @($tabs | Sort-Object -Property @{ Expression = { Get-TabMoment -Tab $_ } } -Descending)
         # Совпавшие названия метим: две вкладки «О1-3» — ровно тот случай, когда по названию легко
         # уйти не в то окно. Сверяем без учёта регистра — глазами «о1-3» и «О1-3» не различить.
-        $counts = @{}
-        foreach ($tab in $tabs) {
-            # Не `$title`: имя совпало бы с параметром заголовка находки — оболочка регистра не различает.
-            $tabName = ([string]$tab.title).ToLowerInvariant()
-            if (-not $tabName) { continue }
-            $counts[$tabName] = 1 + [int]$counts[$tabName]
-        }
-        $duplicated = @($counts.Keys | Where-Object { $counts[$_] -gt 1 })
+        $duplicated = @(Get-DuplicatedTabNames -Tabs $tabs)
         # ‼️ Молчащие дольше суток уходят в отдельный хвост, а не пропадают. Скрыть их нельзя: вопрос
         # «где та вкладка» задают и про поток, сданный вчера, и про окно, оставленное на выходные, —
         # без хвоста ответ выглядел бы «такой вкладки нет». Но и смешивать нельзя: живые утонули бы в
@@ -1949,7 +1990,8 @@ $notMine
         $anyBroadcast = $false
         # Реестр — только ради названия вкладки у адресата, и потому терпимо и не раньше, чем
         # понадобится: показ доски без него работает как прежде, а занятая заявка стоит одного
-        # неназванного адресата, а не отказа показать доску.
+        # неназванного адресата, а не отказа показать доску. Читается ОДИН раз за запуск: разбор адреса
+        # мог уже прочитать его ради имён волн, и тогда берётся тот же снимок.
         $showClaims = $null
         foreach ($record in $open) {
             $tail = if ($record.where) { " — $($record.where)" } else { '' }
@@ -1964,10 +2006,7 @@ $notMine
             # Только ВЕДУЩАЯ запись: у сданного адреса вкладки, которая находку получит, нет.
             $toTab = ''
             if ($toKey -and $toKey -notin @('*', '**')) {
-                if ($null -eq $showClaims) {
-                    $showClaims = @()
-                    try { $showClaims = @(Get-Claims -Dir $registry) } catch { $showClaims = @() }
-                }
+                if ($null -eq $showClaims) { $showClaims = @(Get-RegistrySnapshot -Dir $registry) }
                 $leadTabs = @(Find-Claims -Claims $showClaims -Raw ([string]$record.to) |
                         Where-Object { -not $_.Closed } | ForEach-Object { Get-ClaimTabText -Claim $_ } |
                         Where-Object { $_ })

@@ -31,7 +31,8 @@ Modes:
             been silent for five days) — refused.
   Streams — who is running which stream: [-Wave …] [-Task <task number>]
   Who     — which tab runs a stream: -To <wave/stream, branch, or folder>. One line per answer:
-            address, tab name, folder, branch, when a person last wrote in that tab.
+            address, tab name, folder, branch, when a person last wrote in that tab, and where the
+            board got the session from.
   Tabs    — the project's tabs: name, folder, claimed stream, last human message; freshest first,
             ones silent for over a day in a separate tail.
   Add     — place a finding:  -To <wave/stream, branch, or folder> -Title <one line> [-Where …]
@@ -43,7 +44,8 @@ Modes:
 
 A tab's name comes from its session transcript: a claim remembers the session it was made from (the
 environment variable the host sets for every command of a tab), and the delivery hook keeps the tab
-registry. Session unknown — the listing simply doesn't name the tab.
+registry. Session unknown — the listing simply doesn't name the tab. The name is a hint telling a
+person where to go: addressing and delivery don't use it.
 
 How the board and the claim registry work — in `lib/wave-board-lib.ps1`; tab names — in
 `lib/tab-titles.ps1`.
@@ -336,14 +338,36 @@ function Get-ShortSession {
 function Get-TabMessageText {
     param($Tab)
     if (-not $Tab) { return 'when a person last wrote there — unknown' }
-    if ([string]$Tab.prompt_at) { return "last human message $(Format-Stamp -Raw $Tab.prompt_at)" }
+    # An unparsed time is printed as is — so it's cleaned, like everything from a tab record.
+    if ([string]$Tab.prompt_at) { return "last human message $(Get-CleanTitle -Raw (Format-Stamp -Raw $Tab.prompt_at) -Max 0)" }
     return 'no human messages on record'
 }
 
+function Get-TabNameKey {
+    param($Tab)
+    # A tab's name for spotting twins: cleaned and case-insensitive — "o1-3" and "O1-3" look the same to
+    # the eye, and an invisible character must not make two identical-looking names different.
+    if (-not $Tab) { return '' }
+    return (Get-CleanTitle -Raw ([string]$Tab.title)).ToLowerInvariant()
+}
+
+function Get-DuplicatedTabNames {
+    param($Tabs)
+    # Names carried by two tabs or more.
+    $counts = @{}
+    foreach ($tab in @($Tabs)) {
+        $tabName = Get-TabNameKey -Tab $tab
+        if (-not $tabName) { continue }
+        $counts[$tabName] = 1 + [int]$counts[$tabName]
+    }
+    return @($counts.Keys | Where-Object { $counts[$_] -gt 1 })
+}
+
 function Format-WhoLine {
-    param($Claim, [string]$TabsDir)
-    # One line of the "who runs it" answer: address, tab, folder, branch, when a person wrote there.
-    # Here the tab name IS the answer, so not knowing it is said in words rather than left out.
+    param($Claim, [string]$TabsDir, [string[]]$Duplicated)
+    # One line of the "who runs it" answer: address, tab, folder, branch, when a person wrote there,
+    # and where the board got the session from. Here the tab name IS the answer, so not knowing it is
+    # said in words rather than left out.
     $record = $Claim.Record
     $name = if ($record.name) { " `"$($record.name)`"" } else { '' }
     $state = if ($Claim.TakenBy -and $Claim.Superseded) { Get-ClaimTakenAwayText -Claim $Claim } else { $Claim.State }
@@ -358,10 +382,24 @@ function Format-WhoLine {
         } else {
             "tab name not found (session $(Get-ShortSession $sessionId))"
         }
+    } elseif ((Get-TabNameKey -Tab $tab) -in $Duplicated) {
+        # Another tab of the project carries the same name — the start of the session id, as in the tab
+        # listing: otherwise a person would confidently go to the wrong window.
+        $tabText = "$tabText (session $(Get-ShortSession $sessionId), ‼️ another tab has the same name)"
     }
     $folder = if ($record.worktree) { "folder $($record.worktree)" } else { 'folder not named in the claim' }
     $branch = if ($record.branch) { "branch $($record.branch)" } else { 'branch not named in the claim' }
-    return "  $($record.wave)/$($record.stream)$name — $state, $tabText, $folder, $branch, $(Get-TabMessageText -Tab $tab)"
+    # Where the session came from. The tab name is a hint for a person, not proof: an id written in by
+    # the delivery hook (adopting a claim without a session, or handing it over to the same tab's new
+    # id) is its guess, and that has to be said right here.
+    $source = if (-not (Test-SessionId $sessionId)) {
+        ''
+    } elseif ([bool]$record.session_adopted) {
+        ', session written in by the delivery hook (a guess no announcement confirmed)'
+    } else {
+        ', session named by the announcement'
+    }
+    return "  $($record.wave)/$($record.stream)$name — $state, $tabText, $folder, $branch, $(Get-TabMessageText -Tab $tab)$source"
 }
 
 function Get-TabMoment {
@@ -385,9 +423,11 @@ function Format-TabListLine {
                 "$($_.Record.wave)/$($_.Record.stream)$streamName"
             })
     $streams = if ($led.Count -gt 0) { "stream $($led -join ', ')" } else { 'no stream claimed' }
-    $folder = if ([string]$Tab.tree) { [string]$Tab.tree } else { [string]$Tab.cwd }
+    # The folder from a tab record is cleaned at print time, like the name: the record lives in a shared directory.
+    $folder = Get-CleanTitle -Raw $(if ([string]$Tab.tree) { [string]$Tab.tree } else { [string]$Tab.cwd }) -Max 0
     $twin = ''
-    if ([string]$Tab.title -and ([string]$Tab.title).ToLowerInvariant() -in $Duplicated) {
+    $tabName = Get-TabNameKey -Tab $Tab
+    if ($tabName -and $tabName -in $Duplicated) {
         $twin = " — ‼️ another tab has the same name; this one is session $(Get-ShortSession $sessionId)"
     }
     return "  $name — $streams, folder $folder, $(Get-TabMessageText -Tab $Tab)$twin"
@@ -432,6 +472,10 @@ switch ($Mode) {
         # and nothing breaks.
         $envSession = if (Test-SessionId $env:CLAUDE_CODE_SESSION_ID) { [string]$env:CLAUDE_CODE_SESSION_ID } else { '' }
         $claimSession = $envSession
+        # Whether the session was written in by the delivery hook (adoption or hand-over) rather than by
+        # an announcement. An announcement with the environment variable clears the mark: the tab named
+        # its id itself.
+        $claimSessionAdopted = $false
         # ‼️ From here to the end of dispute resolution — under the claim registry's lock. Number
         # selection works off a snapshot of the registry, and without the lock, sessions opened at
         # the same moment read the SAME snapshot: everyone picks the same number, and the dispute
@@ -661,6 +705,9 @@ switch ($Mode) {
                 # knows it.
                 if (-not $claimSession -and (Test-SessionId ([string]$previousSelf.Record.session_id))) {
                     $claimSession = [string]$previousSelf.Record.session_id
+                    # An inherited session stays what it was: an announcement without the variable
+                    # doesn't confirm the hook's guess — it doesn't know the id.
+                    $claimSessionAdopted = [bool]$previousSelf.Record.session_adopted
                 }
                 if ($waveSource -eq 'own') {
                     # ‼️ The "wave was self-supplied" flag is taken AS IT LAY — together with its
@@ -946,6 +993,7 @@ This is your stream and you moved here (or are picking up an abandoned session) 
                 # in only when the session is known — every copy of the kit reads its absence the same
                 # way: "tab unknown".
                 $claim.session_id = $claimSession
+                if ($claimSessionAdopted) { $claim.session_adopted = $true }
             }
             if ($takenFrom) {
                 # ‼️ We put the field in ONLY when a takeover actually happened. An empty field on every
@@ -1098,7 +1146,7 @@ This is your stream and you moved here (or are picking up an abandoned session) 
         $myTab = ''
         if ($envSession) {
             $tabsDir = Get-TabsDir -RegistryDir $registry
-            Update-TabRecord -Dir $tabsDir -SessionId $envSession -Cwd $PWD.Path -Tree $tree
+            Update-TabRecord -Dir $tabsDir -SessionId $envSession -Cwd $PWD.Path -Tree $tree -Stage Claim
             $myTab = Format-TabTitle -Tab (Get-TabRecord -Dir $tabsDir -SessionId $envSession)
         }
         $rivals = @(Get-NumberRivals -Claims $claims -WaveKey $waveKey -StreamKey $streamKey -TreePath $tree)
@@ -1675,7 +1723,8 @@ $notMine
             # of the same address are history, shown after.
             $ordered = @(@($found | Where-Object { -not $_.Closed }) + @($found | Where-Object { $_.Closed }))
             "Who runs `"$To`":"
-            foreach ($entry in $ordered) { Format-WhoLine -Claim $entry -TabsDir $tabsDir }
+            $duplicated = @(Get-DuplicatedTabNames -Tabs (Get-TabRecords -Dir $tabsDir))
+            foreach ($entry in $ordered) { Format-WhoLine -Claim $entry -TabsDir $tabsDir -Duplicated $duplicated }
             return
         }
         # No claim — tabs may still be working in that folder, the stream just never announced (the
@@ -1708,14 +1757,7 @@ $notMine
         $sorted = @($tabs | Sort-Object -Property @{ Expression = { Get-TabMoment -Tab $_ } } -Descending)
         # Matching names get marked: two "O1-3" tabs are exactly the case where the name sends a person
         # to the wrong window. Compared case-insensitively — "o1-3" and "O1-3" look the same to the eye.
-        $counts = @{}
-        foreach ($tab in $tabs) {
-            # Not `$title`: it would collide with the finding-title parameter — the shell ignores case.
-            $tabName = ([string]$tab.title).ToLowerInvariant()
-            if (-not $tabName) { continue }
-            $counts[$tabName] = 1 + [int]$counts[$tabName]
-        }
-        $duplicated = @($counts.Keys | Where-Object { $counts[$_] -gt 1 })
+        $duplicated = @(Get-DuplicatedTabNames -Tabs $tabs)
         # ‼️ Tabs silent for over a day go into a separate tail rather than disappearing. They can't be
         # hidden: "where's that tab" is asked about a stream released yesterday and about a window left
         # open over the weekend — without the tail the answer would read "no such tab". But they can't be
@@ -2070,7 +2112,8 @@ Topic's closed and the addressee doesn't need it — clear it for everyone delib
         $anyBroadcast = $false
         # The registry — only for the name of the addressee's tab, so read forgivingly and not before
         # it's needed: the board listing works as before without it, and a busy claim costs one unnamed
-        # addressee, not a refusal to show the board.
+        # addressee, not a refusal to show the board. Read ONCE per run: the start of the run has
+        # already read it for the wave names, and then the same snapshot is taken.
         $showClaims = $null
         foreach ($record in $open) {
             $tail = if ($record.where) { " — $($record.where)" } else { '' }
@@ -2085,10 +2128,7 @@ Topic's closed and the addressee doesn't need it — clear it for everyone delib
             # finding. Only a LEADING entry: a released address has no tab that will receive it.
             $toTab = ''
             if ($toKey -and $toKey -notin @('*', '**')) {
-                if ($null -eq $showClaims) {
-                    $showClaims = @()
-                    try { $showClaims = @(Get-Claims -Dir $registry) } catch { $showClaims = @() }
-                }
+                if ($null -eq $showClaims) { $showClaims = @(Get-RegistrySnapshot -Dir $registry) }
                 $leadTabs = @(Find-Claims -Claims $showClaims -Raw ([string]$record.to) |
                         Where-Object { -not $_.Closed } | ForEach-Object { Get-ClaimTabText -Claim $_ } |
                         Where-Object { $_ })

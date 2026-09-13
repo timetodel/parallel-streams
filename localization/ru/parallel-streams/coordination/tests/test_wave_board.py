@@ -8026,7 +8026,7 @@ def test_the_guard_stays_out_of_the_way_when_it_cannot_answer(tmp_path: Path) ->
 TAB_TITLES_LIB = COORDINATION_DIR / "lib" / "tab-titles.ps1"
 
 TITLE_STAND = """#Requires -Version 7
-param([string]$Lib, [string]$Sessions, [string]$CacheDir, [long]$Chunk = 0, [long]$Ceiling = 0)
+param([string]$Lib, [string]$Sessions, [string]$CacheDir, [long]$Chunk = 0, [long]$Ceiling = 0, [switch]$Fresh)
 $ErrorActionPreference = 'Stop'
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 . $Lib
@@ -8036,7 +8036,7 @@ if ($Chunk -gt 0) { $script:TabTitleChunkBytes = $Chunk }
 if ($Ceiling -gt 0) { $script:TabTitleCeilingBytes = $Ceiling }
 $answers = [ordered]@{}
 foreach ($session in ($Sessions -split ';')) {
-    $found = Get-SessionTitle -SessionId $session -CacheDir $CacheDir
+    $found = Get-SessionTitle -SessionId $session -CacheDir $CacheDir -Fresh:$Fresh
     $answers[$session] = [ordered]@{ title = $found.Title; kind = $found.Kind }
 }
 $answers | ConvertTo-Json -Compress -Depth 3
@@ -8050,8 +8050,12 @@ def ask_titles(
     cache: Path | None = None,
     chunk: int = 0,
     ceiling: int = 0,
+    fresh: bool = False,
 ) -> dict[str, dict[str, str]]:
-    """Спрашивает название у механизма напрямую — по вызову на сессию, в одном запуске оболочки."""
+    """Спрашивает название у механизма напрямую — по вызову на сессию, в одном запуске оболочки.
+
+    `fresh` — так спрашивают начало сессии и объявление: журнал ищется заново, а не берётся из кэша.
+    """
     assert pwsh
     stand = tmp_path / "title-stand.ps1"
     if not stand.exists():
@@ -8072,6 +8076,7 @@ def ask_titles(
             str(chunk),
             "-Ceiling",
             str(ceiling),
+            *(["-Fresh"] if fresh else []),
         ],
         capture_output=True,
         text=True,
@@ -8080,6 +8085,68 @@ def ask_titles(
     )
     assert done.returncode == 0, done.stderr
     return json.loads(done.stdout.strip().splitlines()[-1])
+
+
+LIB_STAND_HEAD = """#Requires -Version 7
+param([string]$Lib, [string]$Arg)
+$ErrorActionPreference = 'Stop'
+[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+. $Lib
+"""
+
+
+def ask_lib(tmp_path: Path, name: str, body: str, arg: str = "") -> object:
+    """Спрашивает функцию механизма напрямую: тело на PowerShell печатает ответ одной строкой JSON.
+
+    Нужно там, где вход нельзя передать строкой процесса: одиночную половину суррогатной пары не
+    закодировать в аргументы, поэтому такие строки собираются внутри самого тела.
+    """
+    assert pwsh
+    stand = tmp_path / f"lib-stand-{name}.ps1"
+    stand.write_text(LIB_STAND_HEAD + body, encoding="utf-8")
+    done = subprocess.run(
+        [pwsh, "-NoProfile", "-File", str(stand), "-Lib", str(TAB_TITLES_LIB), "-Arg", arg],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        timeout=120,
+    )
+    assert done.returncode == 0, done.stderr
+    return json.loads(done.stdout.strip().splitlines()[-1])
+
+
+def deliver_payload(board: Path, cwd: Path, stage: str, payload: dict[str, object]) -> str:
+    """Сторож доставки с полным входом среды: номер сессии, папка вкладки, причина начала сессии."""
+    assert pwsh
+    done = subprocess.run(
+        [pwsh, "-NoProfile", "-File", str(DELIVER), "-Stage", stage, "-BoardPath", str(board)],
+        input=json.dumps(payload, ensure_ascii=False),
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        cwd=str(cwd),
+        timeout=60,
+    )
+    assert done.returncode == 0, done.stderr
+    return done.stdout
+
+
+def tabs_dir(board: Path) -> Path:
+    return board.parent / "tabs"
+
+
+def title_cache(board: Path, session: str) -> Path:
+    return tabs_dir(board) / "cache" / f"{session}.txt"
+
+
+def prompt_mark(board: Path, session: str) -> Path:
+    return tabs_dir(board) / f"{session}.prompt"
+
+
+def age(path: Path, seconds: float) -> None:
+    """Отодвигает время правки файла в прошлое — так проверка «проживает» минуты, не ожидая их."""
+    when = time.time() - seconds
+    os.utime(path, (when, when))
 
 
 def journal_path(config: Path, session: str, project: str = "D--проект-проба") -> Path:
@@ -8566,9 +8633,12 @@ def test_the_delivery_guard_keeps_the_tab_record_and_follows_a_rename(
 
     run_deliver(board, mine, "Prompt", "sess-rename")
     assert tab_record(board, "sess-rename")["prompt_at"], "ход человека не отметил время сообщения"
+    assert prompt_mark(board, "sess-rename").exists(), "ход человека не завёл отметку сессии"
 
     with journal.open("ab") as handle:
         handle.write((custom_title("О1-9", "sess-rename") + "\n").encode("utf-8"))
+    # Название на ходе человека перечитывается не чаще раза в две минуты — проживаем их.
+    age(title_cache(board, "sess-rename"), 180)
     run_deliver(board, mine, "Prompt", "sess-rename")
     renamed = tab_record(board, "sess-rename")
     assert (renamed["title"], renamed["title_kind"]) == ("О1-9", "custom"), (
@@ -8584,8 +8654,10 @@ def test_the_start_of_a_session_clears_tab_records_silent_for_a_month(tmp_path: 
     (tabs / "cache").mkdir(parents=True)
     old = tabs / "sess-ancient.json"
     old_cache = tabs / "cache" / "sess-ancient.txt"
+    old.write_text('{"session_id": "sess-ancient"}', encoding="utf-8")
+    # Кэш опознаётся по своей метке в первой строке — чужой файл с тем же именем чистка не тронет.
+    old_cache.write_text("parallel-streams tab title cache 1\n\n0\n\n\n", encoding="utf-8")
     for path in (old, old_cache):
-        path.write_text('{"session_id": "sess-ancient"}', encoding="utf-8")
         when = time.time() - 40 * 24 * 3600
         os.utime(path, (when, when))
     recent = tabs / "sess-recent.json"
@@ -8793,3 +8865,661 @@ def test_tabs_lists_fresh_tabs_first_moves_silent_ones_to_a_tail_and_marks_twins
     for folder in ("первое", "третье"):
         assert "‼️ то же название у другой вкладки" in lines[where(f"папка d:/деревья/{folder}")], lines
     assert "‼️" not in lines[where("папка d:/деревья/второе")], lines
+
+
+# ─── Название вкладки: исправления по ревью (безопасность, какая сессия ведёт, цена хода) ─────────
+#
+# Реестр вкладок, кэш и заявки лежат в общем служебном каталоге, куда пишет любой процесс того же
+# человека, а сторож доставки идёт на каждом его сообщении. Отсюда три рода проверок: удаляется и
+# печатается только опознанное и чищенное; сессию в заявку вписывает только та вкладка, которая
+# вправе; ход человека стоит одного касания маленького файла, а не разбора журнала.
+
+
+def put_tab_record(board: Path, session: str, **fields: object) -> Path:
+    """Запись вкладки, собранная руками, — так задаются сцены, которых сторож сам не создаст."""
+    folder = tabs_dir(board)
+    folder.mkdir(parents=True, exist_ok=True)
+    path = folder / f"{session}.json"
+    path.write_text(json.dumps({"session_id": session, **fields}, ensure_ascii=False), encoding="utf-8")
+    return path
+
+
+def put_prompt_mark(board: Path, session: str, seconds_ago: float = 0) -> Path:
+    """Отметка сессии: время её правки — последнее сообщение человека в той вкладке."""
+    path = prompt_mark(board, session)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("parallel-streams tab state 1\n\n\n\n\n", encoding="utf-8")
+    age(path, seconds_ago)
+    return path
+
+
+@needs_pwsh
+def test_the_cleanup_removes_only_its_own_files_and_the_leftovers_of_killed_writes(
+    tmp_path: Path,
+) -> None:
+    """Чистка удаляет только опознанное своё: чужой старый файл с простым именем переживает её.
+
+    Удаление необратимо. Прежняя страховка смотрела только на вид имени, а под него попадает почти
+    любое простое имя — `package.json`, `notes.txt`. Остатки временных файлов процесса, убитого между
+    записью и переносом, наоборот, копились навсегда. И живая вкладка, чья запись давно не
+    переписывалась (ход человека касается только отметки), чистке не достаётся.
+    """
+    board = tmp_path / "board.jsonl"
+    tabs = tabs_dir(board)
+    cache = tabs / "cache"
+    cache.mkdir(parents=True)
+    month = 40 * 24 * 3600
+
+    def old(path: Path, text: str, seconds: float = month) -> Path:
+        path.write_text(text, encoding="utf-8")
+        age(path, seconds)
+        return path
+
+    strangers = [
+        old(tabs / "package.json", '{"name": "чужой проект"}'),
+        old(tabs / "sess-forged.json", '{"session_id": "кто-то-другой"}'),
+        old(tabs / "sess-broken.json", "не JSON вовсе"),
+        old(cache / "notes.txt", "заметки"),
+        old(cache / "sess-plain.txt", "просто текст без метки"),
+        old(tabs / "sess-plain.prompt", "без метки"),
+        old(tabs / "foo.tmp-bar", "чужой временный"),
+    ]
+    ours = [
+        old(tabs / "sess-gone.json", '{"session_id": "sess-gone"}'),
+        old(tabs / "sess-gone.prompt", "parallel-streams tab state 1\n\n\n\n\n"),
+        old(cache / "sess-gone.txt", "parallel-streams tab title cache 1\n\n0\n\n\n"),
+        old(tabs / "sess-gone.json.tmp-1234", "{", seconds=2 * 24 * 3600),
+        old(cache / "sess-gone.txt.tmp-77", "обрывок", seconds=2 * 24 * 3600),
+    ]
+    fresh_leftover = old(tabs / "sess-busy.json.tmp-99", "{", seconds=60)
+    # Живая вкладка: запись не переписывалась месяц, но человек писал в ней только что.
+    alive = old(tabs / "sess-alive.json", '{"session_id": "sess-alive"}')
+    put_prompt_mark(board, "sess-alive")
+    mine = tmp_path / "wave9-clean-own"
+    mine.mkdir()
+
+    run_deliver(board, mine, "Start", "sess-cleaner-2")
+
+    for path in strangers:
+        assert path.exists(), f"чистка удалила чужой файл {path.name} — удаление необратимо"
+    for path in ours:
+        assert not path.exists(), f"свой старый файл {path.name} остался после чистки"
+    assert fresh_leftover.exists(), "чистка убрала временный файл, который, возможно, пишут прямо сейчас"
+    assert alive.exists(), "чистка убрала запись вкладки, где человек писал только что"
+
+
+@needs_pwsh
+def test_the_cleanup_never_enters_a_tabs_folder_that_is_a_link(tmp_path: Path) -> None:
+    """Каталог вкладок оказался ссылкой или соединением папок — чистки нет вовсе.
+
+    За ссылкой может лежать что угодно чужое: «перенёс служебные данные на другой диск» — и чистка на
+    ближайшем старте сессии удалила бы там всё, что опознала бы своим. Тишина двусмысленна, поэтому тот
+    же файл в обычном каталоге обязан удалиться.
+    """
+    far = tmp_path / "где-то-далеко"
+    far.mkdir()
+    board = tmp_path / "по-ссылке" / "board.jsonl"
+    board.parent.mkdir()
+    try:
+        if os.name == "nt":
+            import _winapi
+
+            _winapi.CreateJunction(str(far), str(tabs_dir(board)))
+        else:
+            os.symlink(far, tabs_dir(board), target_is_directory=True)
+    except OSError as error:
+        pytest.skip(f"ссылку на каталог здесь не завести: {error}")
+    behind = far / "sess-far.json"
+    behind.write_text('{"session_id": "sess-far"}', encoding="utf-8")
+    age(behind, 40 * 24 * 3600)
+
+    plain_board = tmp_path / "обычный" / "board.jsonl"
+    tabs_dir(plain_board).mkdir(parents=True)
+    plain = tabs_dir(plain_board) / "sess-far.json"
+    plain.write_text('{"session_id": "sess-far"}', encoding="utf-8")
+    age(plain, 40 * 24 * 3600)
+
+    mine = tmp_path / "wave9-link"
+    mine.mkdir()
+    run_deliver(board, mine, "Start", "sess-linked")
+    run_deliver(plain_board, mine, "Start", "sess-linked")
+
+    assert behind.exists(), "чистка зашла за ссылку и удалила файл в чужом каталоге"
+    assert not plain.exists(), "в обычном каталоге чистка не сработала — тишина за ссылкой ничего не доказывает"
+
+
+@needs_pwsh
+def test_a_title_cut_on_an_emoji_still_reaches_the_cache_and_the_tab_record(
+    tmp_path: Path, claude_config: Path
+) -> None:
+    """Обрезка длинного названия не оставляет половину суррогатной пары.
+
+    Одиночная половина срывала запись файла: кэш не писался никогда (журнал перечитывался на каждом
+    сообщении), а запись вкладки не заводилась вовсе — вкладку не называл ни один показ.
+    """
+    board = tmp_path / "board.jsonl"
+    split = "Я" * 78 + "😀" + "ab"
+    whole = "Я" * 77 + "😀" + "abc"
+    write_journal(journal_path(claude_config, "sess-emoji"), [custom_title(split, "sess-emoji")])
+    write_journal(journal_path(claude_config, "sess-whole"), [custom_title(whole, "sess-whole")])
+    mine = tmp_path / "wave9-emoji"
+    mine.mkdir()
+
+    run_deliver(board, mine, "Start", "sess-emoji")
+
+    cut = "Я" * 78 + "…"
+    assert tab_record(board, "sess-emoji")["title"] == cut, "запись вкладки не завелась или название обрезано не так"
+    cached = title_cache(board, "sess-emoji").read_text(encoding="utf-8").split("\n")
+    assert cached[3] == cut, f"кэш названия не записался: {cached}"
+    assert ask_titles(tmp_path, ["sess-whole"])["sess-whole"]["title"] == "Я" * 77 + "😀" + "…", (
+        "эмодзи, целиком помещающийся до среза, потерялся"
+    )
+
+
+@needs_pwsh
+def test_a_forged_cache_path_is_not_trusted_and_the_start_looks_for_the_journal_again(
+    tmp_path: Path, claude_config: Path
+) -> None:
+    """Путь журнала из кэша принимается, только если это журнал ЭТОЙ сессии в каталоге журналов.
+
+    Кто может записать в служебный каталог, тот подставил бы журнал другой сессии (вкладка звалась бы
+    чужим именем) или сетевой путь (сторож на каждом сообщении ждал бы чужой узел). А начало сессии
+    ищет журнал заново: сессию могли возобновить из другой папки, и журнал того же номера вырос там.
+    """
+    write_journal(journal_path(claude_config, "sess-c"), [custom_title("Своя", "sess-c")])
+    other = journal_path(claude_config, "sess-d")
+    write_journal(other, [custom_title("Чужая", "sess-d")])
+    planted = tmp_path / "подброшено" / "sess-c.jsonl"
+    planted.parent.mkdir()
+    write_journal(planted, [custom_title("Подброшенная", "sess-c")])
+    mark = "parallel-streams tab title cache 1"
+
+    for number, fake in enumerate((other, planted)):
+        cache = tmp_path / f"cache-forged-{number}"
+        cache.mkdir()
+        size = fake.stat().st_size
+        (cache / "sess-c.txt").write_text(f"{mark}\n{fake}\n{size}\nЧужая\n\n", encoding="utf-8")
+        assert ask_titles(tmp_path, ["sess-c"], cache=cache)["sess-c"] == {"title": "Своя", "kind": "custom"}, (
+            f"кэш с подменённым путём ({fake}) назвал вкладку чужим именем"
+        )
+
+    cache = tmp_path / "cache-moved"
+    write_journal(journal_path(claude_config, "sess-e", "D--папка-А"), [custom_title("Из-А", "sess-e")])
+    assert ask_titles(tmp_path, ["sess-e"], cache=cache)["sess-e"]["title"] == "Из-А"
+    write_journal(
+        journal_path(claude_config, "sess-e", "D--папка-Б"), [talk(2_000), custom_title("Из-Б", "sess-e")]
+    )
+    assert ask_titles(tmp_path, ["sess-e"], cache=cache)["sess-e"]["title"] == "Из-А", (
+        "обычный ход искал журнал заново — на каждом сообщении это перебор всех папок проектов"
+    )
+    assert ask_titles(tmp_path, ["sess-e"], cache=cache, fresh=True)["sess-e"]["title"] == "Из-Б", (
+        "начало сессии поверило пути из кэша и не нашло журнал, куда сессия пишет теперь"
+    )
+
+
+@needs_pwsh
+def test_a_dense_run_of_lookalike_lines_stops_at_the_budget_and_a_long_line_is_not_parsed(
+    tmp_path: Path, claude_config: Path
+) -> None:
+    """Чтение названия ограничено бюджетом разбора, а строка длиннее 8 КБ не разбирается вовсе.
+
+    Слово вида записи бывает строковым значением внутри вложенного объекта, и каждая такая строка
+    разбиралась целиком: мегабайт их стоил секунд на сообщении человека. Бюджет кончился — чтение
+    останавливается и запоминает смещение: имя, лежащее глубже, не находится, зато ближайшее
+    переименование в новом хвосте находится сразу.
+    """
+    session = "sess-dense"
+    journal = journal_path(claude_config, session)
+    lookalike = json.dumps({"type": "user", "note": "custom-title"})
+    write_journal(journal, [custom_title("Глубоко", session), *[lookalike] * 1000])
+    cache = tmp_path / "cache-dense"
+    assert ask_titles(tmp_path, [session], cache=cache)[session] == {"title": "", "kind": ""}, (
+        "бюджет разбора не остановил чтение — тысяча похожих строк разобрана целиком"
+    )
+    with journal.open("ab") as handle:
+        handle.write((custom_title("Свежее", session) + "\n").encode("utf-8"))
+    assert ask_titles(tmp_path, [session], cache=cache)[session] == {"title": "Свежее", "kind": "custom"}, (
+        "после остановки по бюджету новое переименование не нашлось"
+    )
+
+    padded = json.dumps(
+        {"type": "custom-title", "customTitle": "Длинная-запись", "pad": "x" * 9_000, "sessionId": "sess-long"},
+        ensure_ascii=False,
+    )
+    write_journal(journal_path(claude_config, "sess-long"), [custom_title("Короткая", "sess-long"), padded])
+    assert ask_titles(tmp_path, ["sess-long"])["sess-long"]["title"] == "Короткая", (
+        "строка длиннее 8 КБ разобрана как запись названия"
+    )
+
+
+@needs_pwsh
+def test_the_tab_record_is_kept_on_every_way_out_of_the_delivery_guard(
+    tmp_path: Path, claude_config: Path
+) -> None:
+    """Запись вкладки ведётся ПОСЛЕ доставки — и на выходе без доски, и на выходе с находкой.
+
+    Название — удобство, доставка — назначение сторожа, поэтому запись вкладки перенесена в самый
+    конец. Переносить её на ранние выходы по одному нельзя: забыть один — и вкладка на этом пути
+    перестанет называться; а находка при этом обязана выйти в контекст как прежде.
+    """
+    write_journal(journal_path(claude_config, "sess-ways"), [custom_title("О1-7", "sess-ways")])
+    mine = tmp_path / "wave9-ways"
+    mine.mkdir()
+
+    empty_board = tmp_path / "пусто" / "board.jsonl"
+    empty_board.parent.mkdir()
+    run_deliver(empty_board, mine, "Prompt", "sess-ways")
+    assert tab_record(empty_board, "sess-ways")["title"] == "О1-7", "на выходе без доски запись вкладки не завелась"
+
+    board = tmp_path / "board.jsonl"
+    add(board, "wave9-ways", "находка для вкладки")
+    delivered = context_text(run_deliver(board, mine, "Prompt", "sess-ways"))
+    assert "находка для вкладки" in delivered, "доставка сорвалась"
+    assert tab_record(board, "sess-ways")["title"] == "О1-7", "на выходе с находкой запись вкладки не завелась"
+
+
+@needs_pwsh
+def test_everything_printed_from_a_tab_record_is_cleaned_at_print_time(tmp_path: Path) -> None:
+    """Название, папка и время из записи вкладки чистятся в момент печати, а не только при чтении журнала.
+
+    Запись лежит в общем каталоге: изготовленная руками или другой программой, она донесла бы до
+    экрана управляющую последовательность терминала, а до контекста соседней вкладки — поддельную
+    строку, неотличимую от строк самого канала.
+    """
+    board = tmp_path / "board.jsonl"
+    put_claim(registry_dir(board), "ядовитый", **open_claim("d:/деревья/яд", session_id="sess-poison"))
+    put_tab_record(
+        board,
+        "sess-poison",
+        title="О1\u001b[2J\nподделка: поток wave9/3 — сдан\u202e\u200b",
+        title_kind="custom",
+        tree="d:/деревья/яд\u001b]0;окно\u0007",
+        cwd="d:/деревья/яд",
+        prompt_at="вчера\u001b[31m\nкрасным",
+    )
+    add(board, "wave9/3", "находка отравленному адресу")
+
+    for mode in (("Streams",), ("Who", "-To", "wave9/3"), ("Tabs",), ("Show",)):
+        out = run_tool(board, *mode)
+        for bad in ("\u001b", "\u0007", "\u202e", "\u200b"):
+            assert bad not in out, f"режим {mode[0]} напечатал управляющий знак {bad!r}: {out!r}"
+        assert any("вкладка О1" in line and "подделка" in line for line in out.splitlines()), (
+            f"перевод строки из названия разорвал строку показа в режиме {mode[0]}: {out!r}"
+        )
+
+
+@needs_pwsh
+def test_session_numbers_and_titles_refuse_hidden_characters(tmp_path: Path) -> None:
+    """Номер сессии с переводом строки в конце не проходит, а невидимые знаки из названия убираются.
+
+    Невидимые знаки делают два разных названия одинаковыми глазами (пометка двойников их не ловит), а
+    знаки-метки несут текст, который человек не видит, а модель соседней вкладки читает.
+    """
+    body = """
+$tags = [char]::ConvertFromUtf32(0xE0041) + [char]::ConvertFromUtf32(0xE0042)
+$raw = 'О1' + [char]0x200B + '-3' + [char]0xFEFF + [char]0x061C + [char]0x00AD + $tags + [char]0xD83D + 'x' + [char]0xDE00
+[ordered]@{
+    newline = Test-SessionId ("abc" + [char]10)
+    plain = Test-SessionId 'abc'
+    clean = Get-CleanTitle -Raw $raw
+} | ConvertTo-Json -Compress
+"""
+    answer = ask_lib(tmp_path, "hidden", body)
+    assert answer["newline"] is False, "номер сессии с переводом строки в конце принят"
+    assert answer["plain"] is True
+    assert answer["clean"] == "О1 -3 x", f"невидимые знаки остались в названии: {answer['clean']!r}"
+
+
+@needs_pwsh
+@needs_git
+def test_only_a_real_linked_worktree_counts_as_one(tmp_path: Path) -> None:
+    """Связанное дерево узнаётся по файлу `commondir`, а не по виду пути.
+
+    Прежний признак ложно срабатывал на подмодуле, лежащем по пути `worktrees/<имя>`, и на главной
+    папке с вынесенным каталогом git — а там живёт много вкладок, и подхват заявки там недопустим.
+    """
+    real_worktrees(tmp_path, {"linked-tree": "feat/linked"})
+    submodule = tmp_path / "подмодуль"
+    submodule.mkdir()
+    modules = tmp_path / "хранилище" / ".git" / "modules" / "worktrees" / "foo"
+    modules.mkdir(parents=True)
+    (submodule / ".git").write_text(f"gitdir: {modules.as_posix()}\n", encoding="utf-8")
+    separate = tmp_path / "вынесенная"
+    separate.mkdir()
+    store = tmp_path / "склад" / "worktrees" / "main"
+    store.mkdir(parents=True)
+    (separate / ".git").write_text(f"gitdir: {store.as_posix()}\n", encoding="utf-8")
+    relative = tmp_path / "относительное"
+    relative.mkdir()
+    linked_store = tmp_path / "склад-2" / "worktrees" / "x"
+    linked_store.mkdir(parents=True)
+    (linked_store / "commondir").write_text("../..\n", encoding="utf-8")
+    (relative / ".git").write_bytes("gitdir: ../склад-2/worktrees/x\r\n".encode("utf-8"))
+
+    places = {
+        "linked": tmp_path / "linked-tree",
+        "main": tmp_path / "repo",
+        "submodule": submodule,
+        "separate": separate,
+        "relative": relative,
+    }
+    body = """
+$answers = [ordered]@{}
+foreach ($pair in ($Arg -split ';')) {
+    $name, $path = $pair -split '=', 2
+    $answers[$name] = Test-LinkedWorktree -TreePath $path
+}
+$answers | ConvertTo-Json -Compress
+"""
+    answer = ask_lib(tmp_path, "linked", body, ";".join(f"{k}={v}" for k, v in places.items()))
+    assert answer == {
+        "linked": True,
+        "main": False,
+        "submodule": False,
+        "separate": False,
+        "relative": True,
+    }, answer
+
+
+@needs_pwsh
+def test_who_marks_a_twin_title_and_says_where_the_session_came_from(tmp_path: Path) -> None:
+    """«Кто ведёт» помечает двойника началом номера сессии и говорит, откуда доска знает сессию.
+
+    Название — подсказка, а не доказательство. Две вкладки с одним именем — ровно тот случай, когда
+    человек уверенно идёт не в то окно; а номер, вписанный сторожем, — его догадка, и об этом надо
+    сказать в той же строке.
+    """
+    board = tmp_path / "board.jsonl"
+    put_tab_record(board, "sess-one", title="О1-3", title_kind="custom", tree="d:/деревья/один")
+    put_tab_record(board, "sess-two", title="о1-3", title_kind="custom", tree="d:/деревья/два")
+    put_claim(registry_dir(board), "один", **open_claim("d:/деревья/один", stream="3", session_id="sess-one"))
+    put_claim(
+        registry_dir(board),
+        "два",
+        **open_claim("d:/деревья/два", stream="4", session_id="sess-two", session_adopted=True),
+    )
+
+    announced = [line for line in said(run_tool(board, "-Mode", "Who", "-To", "wave9/3")) if line.startswith("wave9/3")]
+    adopted = [line for line in said(run_tool(board, "-Mode", "Who", "-To", "wave9/4")) if line.startswith("wave9/4")]
+
+    assert len(announced) == 1 and "вкладка О1-3 (сессия sess-one" in announced[0], announced
+    assert "то же название у другой вкладки" in announced[0], announced
+    assert announced[0].endswith("сессию назвало объявление"), announced
+    assert len(adopted) == 1 and "сессию вписал сторож доставки" in adopted[0], adopted
+
+
+@needs_pwsh
+@needs_git
+def test_the_tab_folder_and_tree_come_from_the_hook_input_and_disagreeing_trees_adopt_nothing(
+    tmp_path: Path,
+) -> None:
+    """Папка вкладки и её дерево — из входных данных сторожа, а не из папки его процесса.
+
+    Процесс сторожа мог запуститься не в папке сессии: тогда запись вкладки получала папку одного
+    дерева и корень другого, а подхват решался по чужому дереву. Разошлись деревья — сессию в заявку
+    сторож не вписывает; сошлись — вписывает (тишина иначе ничего не доказывала бы).
+    """
+    # Оба дерева — связанные: иначе подхват отсёк бы признак дерева, и разошедшиеся деревья тут ничего
+    # не проверяли бы.
+    real_worktrees(tmp_path, {"tab-input": "feat/tab-input", "tab-elsewhere": "feat/tab-elsewhere"})
+    board = tmp_path / "board.jsonl"
+    tab = tmp_path / "tab-input"
+    elsewhere = tmp_path / "tab-elsewhere"
+    claim(board, tab, "wave9", "11")
+
+    # Процесс сторожа — в дереве с заявкой, а сессия по входным данным — в другом дереве.
+    deliver_payload(board, tab, "Prompt", {"session_id": "sess-input", "cwd": str(elsewhere)})
+    record = tab_record(board, "sess-input")
+    assert folder_key(record["cwd"]) == folder_key(elsewhere) and folder_key(record["tree"]) == folder_key(elsewhere), (
+        f"запись вкладки взяла папку или дерево не из входных данных сторожа: {record}"
+    )
+    assert "session_id" not in claim_of(board, tab, only_open=True).fields, (
+        "сессию другого дерева вписали в заявку дерева, где случилось запуститься процессу сторожа"
+    )
+
+    deliver_payload(board, tab, "Prompt", {"session_id": "sess-input", "cwd": str(tab)})
+    assert claim_of(board, tab, only_open=True).fields.get("session_id") == "sess-input"
+
+
+@needs_pwsh
+@needs_git
+def test_the_start_writes_the_starting_tree_and_a_compaction_keeps_it(tmp_path: Path) -> None:
+    """Начало сессии пишет стартовое дерево; сжатие контекста его не переписывает, возобновление — да.
+
+    Стартовое дерево — главная улика подхвата: вкладка, начатая в главной папке и зашедшая в чужое
+    дерево, чужой поток себе не вписывает. Сжатие контекста тоже приходит началом сессии — и, пиши оно
+    стартовым текущее дерево, улика стиралась бы ровно у той вкладки, что зашла посмотреть.
+    """
+    real_worktrees(tmp_path, {"tab-start": "feat/tab-start"})
+    board = tmp_path / "board.jsonl"
+    main = tmp_path / "repo"
+    tab = tmp_path / "tab-start"
+
+    deliver_payload(board, main, "Start", {"session_id": "sess-start", "cwd": str(main), "source": "startup"})
+    assert folder_key(tab_record(board, "sess-start")["start_tree"]) == folder_key(main)
+    deliver_payload(board, tab, "Start", {"session_id": "sess-start", "cwd": str(tab), "source": "compact"})
+    after = tab_record(board, "sess-start")
+    assert folder_key(after["start_tree"]) == folder_key(main) and folder_key(after["tree"]) == folder_key(tab), after
+    deliver_payload(board, tab, "Start", {"session_id": "sess-start", "cwd": str(tab), "source": "resume"})
+    assert folder_key(tab_record(board, "sess-start")["start_tree"]) == folder_key(tab)
+
+
+@needs_pwsh
+@needs_git
+def test_a_claim_without_a_session_is_adopted_only_by_a_tab_that_started_in_its_tree(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Подхват — только вкладкой, начатой в этом дереве; помечается как догадка и снимается объявлением.
+
+    Вкладка главной папки, зашедшая в дерево соседа посмотреть, первым же сообщением человека вписала
+    бы себя в его заявку навсегда, и «кто ведёт» уверенно называл бы не ту вкладку.
+    """
+    # Два дерева, а не одно: зашедшая вкладка, написав в дереве, сама становится второй вкладкой этого
+    # дерева, и подхват там законно отступил бы уже по другой причине.
+    real_worktrees(tmp_path, {"tab-peek": "feat/tab-peek", "tab-own": "feat/tab-own"})
+    board = tmp_path / "board.jsonl"
+    main = tmp_path / "repo"
+    peek = tmp_path / "tab-peek"
+    tab = tmp_path / "tab-own"
+    claim(board, peek, "wave9", "12")
+    claim(board, tab, "wave9", "17")
+
+    deliver_payload(board, main, "Start", {"session_id": "sess-visitor", "cwd": str(main)})
+    deliver_payload(board, peek, "Prompt", {"session_id": "sess-visitor", "cwd": str(peek)})
+    assert "session_id" not in claim_of(board, peek, only_open=True).fields, (
+        "вкладка, начатая в главной папке, вписала себя в заявку чужого дерева"
+    )
+
+    deliver_payload(board, tab, "Start", {"session_id": "sess-owner", "cwd": str(tab)})
+    deliver_payload(board, tab, "Prompt", {"session_id": "sess-owner", "cwd": str(tab)})
+    fields = claim_of(board, tab, only_open=True).fields
+    assert fields.get("session_id") == "sess-owner" and fields.get("session_adopted") is True, fields
+
+    monkeypatch.setenv("CLAUDE_CODE_SESSION_ID", "sess-owner")
+    claim(board, tab, "wave9", "17")
+    monkeypatch.delenv("CLAUDE_CODE_SESSION_ID")
+    fields = claim_of(board, tab, only_open=True).fields
+    assert fields.get("session_id") == "sess-owner" and "session_adopted" not in fields, (
+        f"объявление не сняло пометку догадки сторожа: {fields}"
+    )
+
+
+@needs_pwsh
+@needs_git
+def test_adoption_steps_back_for_another_tab_of_the_tree_and_for_a_closed_claim(tmp_path: Path) -> None:
+    """Подхвата нет, если в дереве сегодня писали из другой вкладки, и у сданной или перенесённой заявки.
+
+    Две вкладки в дереве — неоднозначность: выбирать за человека нельзя. Сданную и перенесённую заявку
+    ведёт уже не эта папка — вписанная в неё сессия называла бы вкладку призрака.
+    """
+    real_worktrees(
+        tmp_path,
+        {"tab-rival": "feat/tab-rival", "tab-done": "feat/tab-done", "tab-left": "feat/tab-left", "tab-new": "feat/tab-new"},
+    )
+    board = tmp_path / "board.jsonl"
+    rival = tmp_path / "tab-rival"
+    claim(board, rival, "wave9", "13")
+    put_tab_record(board, "sess-other", title="Другая", title_kind="custom", tree=str(rival).replace("\\", "/"))
+    mark = put_prompt_mark(board, "sess-other", seconds_ago=3600)
+
+    run_deliver(board, rival, "Prompt", "sess-late")
+    assert "session_id" not in claim_of(board, rival, only_open=True).fields, (
+        "сессию вписали, хотя в том же дереве час назад писали из другой вкладки"
+    )
+    age(mark, 2 * 24 * 3600)
+    run_deliver(board, rival, "Prompt", "sess-late")
+    assert claim_of(board, rival, only_open=True).fields.get("session_id") == "sess-late", (
+        "другая вкладка молчит двое суток, а подхват всё равно не случился"
+    )
+
+    done = tmp_path / "tab-done"
+    claim(board, done, "wave9", "14")
+    assert release(board, done).returncode == 0
+    run_deliver(board, done, "Prompt", "sess-done")
+    assert "session_id" not in claim_of(board, done, only_open=False).fields, "сданная заявка получила сессию"
+
+    left = tmp_path / "tab-left"
+    claim(board, left, "wave9", "15")
+    claim(board, tmp_path / "tab-new", "wave9", "15", "-TakeOver")
+    run_deliver(board, left, "Prompt", "sess-left")
+    assert "session_id" not in claim_of(board, left, only_open=False).fields, "перенесённая заявка получила сессию"
+
+
+@needs_pwsh
+@needs_git
+def test_a_cleared_context_moves_the_claim_to_the_new_number_of_the_same_tab(
+    tmp_path: Path, claude_config: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Очистка контекста даёт вкладке новый номер сессии — заявка переходит к нему, если имя то же.
+
+    Имя, данное человеком, переносится очисткой, а номер нет: без переноса «кто ведёт» печатал бы
+    застывшее время прежнего номера, а перечень вкладок звал бы живую вкладку «потока не заявлено».
+    Вкладки с другим именем и безымянные заявку не перебивают — иначе две вкладки в одном дереве
+    перетягивали бы её на каждом сообщении.
+    """
+    real_worktrees(tmp_path, {"tab-clear": "feat/tab-clear"})
+    board = tmp_path / "board.jsonl"
+    tab = tmp_path / "tab-clear"
+    write_journal(journal_path(claude_config, "sess-before"), [custom_title("О1-3", "sess-before")])
+    write_journal(journal_path(claude_config, "sess-after"), [custom_title("о1-3", "sess-after")])
+    write_journal(journal_path(claude_config, "sess-stranger"), [custom_title("Другая", "sess-stranger")])
+    write_journal(journal_path(claude_config, "sess-auto"), [ai_title("О1-3", "sess-auto")])
+    monkeypatch.setenv("CLAUDE_CODE_SESSION_ID", "sess-before")
+    claim(board, tab, "wave9", "16")
+    monkeypatch.delenv("CLAUDE_CODE_SESSION_ID")
+
+    deliver_payload(board, tab, "Start", {"session_id": "sess-after", "cwd": str(tab), "source": "clear"})
+    assert claim_of(board, tab, only_open=True).fields.get("session_id") == "sess-after", (
+        "после очистки контекста заявка осталась на прежнем номере той же вкладки"
+    )
+
+    for other in ("sess-stranger", "sess-auto", "sess-nameless"):
+        deliver_payload(board, tab, "Prompt", {"session_id": other, "cwd": str(tab)})
+        assert claim_of(board, tab, only_open=True).fields.get("session_id") == "sess-after", (
+            f"вкладка {other} с другим именем или без имени перебила заявку"
+        )
+    rows = [line for line in said(run_tool(board, "-Mode", "Who", "-To", "wave9/16")) if line.startswith("wave9/16")]
+    assert len(rows) == 1 and "сессию вписал сторож доставки" in rows[0], rows
+
+
+@needs_pwsh
+def test_the_title_is_reread_at_most_every_two_minutes_and_the_record_is_not_rewritten_for_nothing(
+    tmp_path: Path, claude_config: Path
+) -> None:
+    """Ход человека стоит одного касания отметки: журнал — не чаще раза в две минуты, запись — по делу.
+
+    Сторож доставки идёт на каждом сообщении человека. Время сообщения — время правки маленькой
+    отметки; запись вкладки переписывается, только когда изменились папка, дерево или название; а
+    переименование доходит до показа с задержкой до двух минут. Показы берут время из отметки.
+    """
+    board = tmp_path / "board.jsonl"
+    mine = tmp_path / "wave9-cheap"
+    mine.mkdir()
+    session = "sess-cheap"
+    journal = journal_path(claude_config, session)
+    write_journal(journal, [custom_title("Первое", session)])
+
+    run_deliver(board, mine, "Prompt", session)
+    record_file = tabs_dir(board) / f"{session}.json"
+    before = record_file.read_text(encoding="utf-8")
+    age(record_file, 3600)
+    aged = record_file.stat().st_mtime
+    age(prompt_mark(board, session), 3600)
+
+    run_deliver(board, mine, "Prompt", session)
+    assert record_file.stat().st_mtime == aged and record_file.read_text(encoding="utf-8") == before, (
+        "запись вкладки переписана, хотя ничего в ней не изменилось"
+    )
+    assert time.time() - prompt_mark(board, session).stat().st_mtime < 600, "ход человека не коснулся отметки"
+
+    with journal.open("ab") as handle:
+        handle.write((custom_title("Второе", session) + "\n").encode("utf-8"))
+    run_deliver(board, mine, "Prompt", session)
+    assert tab_record(board, session)["title"] == "Первое", "журнал перечитан раньше двух минут"
+    age(title_cache(board, session), 180)
+    run_deliver(board, mine, "Prompt", session)
+    assert tab_record(board, session)["title"] == "Второе", "переименование не дошло и через две минуты"
+
+    stamp = datetime(2026, 1, 2, 3, 4).timestamp()
+    os.utime(prompt_mark(board, session), (stamp, stamp))
+    assert "последнее сообщение человека 2026-01-02 03:04" in run_tool(board, "-Mode", "Tabs"), (
+        "перечень вкладок взял время не из отметки сессии"
+    )
+
+
+@needs_pwsh
+def test_a_missing_journal_is_looked_for_again_only_after_a_pause(
+    tmp_path: Path, claude_config: Path
+) -> None:
+    """Журнала нет — кэш помнит промах, и поиск по папкам проектов повторяется не на каждом ходу.
+
+    Среди папок проектов бывают соединения на сетевые ресурсы: без памяти о промахе недоступный узел
+    стоил бы тайм-аута на каждом сообщении. Начало сессии ищет всегда.
+    """
+    write_journal(journal_path(claude_config, "sess-exists"), [talk(100)])
+    cache = tmp_path / "cache-missing"
+    assert ask_titles(tmp_path, ["sess-late-journal"], cache=cache)["sess-late-journal"]["title"] == ""
+    remembered = (cache / "sess-late-journal.txt").read_text(encoding="utf-8").split("\n")
+    assert remembered[1] == "" and remembered[0].startswith("parallel-streams tab title cache"), remembered
+
+    write_journal(journal_path(claude_config, "sess-late-journal"), [custom_title("Нашлась", "sess-late-journal")])
+    assert ask_titles(tmp_path, ["sess-late-journal"], cache=cache)["sess-late-journal"]["title"] == "", (
+        "промах не запомнился — папки проектов перебираются на каждом ходу"
+    )
+    assert ask_titles(tmp_path, ["sess-late-journal"], cache=cache, fresh=True)["sess-late-journal"]["title"] == "Нашлась"
+
+    second = tmp_path / "cache-missing-2"
+    assert ask_titles(tmp_path, ["sess-later"], cache=second)["sess-later"]["title"] == ""
+    write_journal(journal_path(claude_config, "sess-later"), [custom_title("Позже", "sess-later")])
+    age(second / "sess-later.txt", 180)
+    assert ask_titles(tmp_path, ["sess-later"], cache=second)["sess-later"]["title"] == "Позже", (
+        "журнал, появившийся после промаха, не нашёлся и после паузы"
+    )
+
+
+@needs_pwsh
+def test_the_short_path_never_passes_a_last_line_that_is_still_being_written(
+    tmp_path: Path, claude_config: Path
+) -> None:
+    """Оборванная последняя строка не сдвигает смещение: дочитает её следующий вызов.
+
+    Короткий путь частого случая принимает хвост, только если он кончается переводом строки. Иначе
+    смещение встало бы посреди строки, и переименование, дописанное в той же строке, не нашлось бы
+    никогда.
+    """
+    session = "sess-torn"
+    journal = journal_path(claude_config, session)
+    write_journal(journal, [custom_title("Раз", session), talk(300)])
+    cache = tmp_path / "cache-torn"
+    assert ask_titles(tmp_path, [session], cache=cache)[session]["title"] == "Раз"
+    whole = journal.stat().st_size
+
+    with journal.open("ab") as handle:
+        handle.write(b'{"type":"user","message":{"content":"')
+    assert ask_titles(tmp_path, [session], cache=cache)[session]["title"] == "Раз"
+    offset = int((cache / f"{session}.txt").read_text(encoding="utf-8").split("\n")[2])
+    assert offset == whole, f"смещение ушло за оборванную строку: {offset} против {whole}"
+
+    with journal.open("ab") as handle:
+        handle.write(('ещё"}}\n' + custom_title("Два", session) + "\n").encode("utf-8"))
+    assert ask_titles(tmp_path, [session], cache=cache)[session] == {"title": "Два", "kind": "custom"}

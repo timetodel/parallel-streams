@@ -8249,7 +8249,7 @@ def test_the_guard_stays_out_of_the_way_when_it_cannot_answer(tmp_path: Path) ->
 TAB_TITLES_LIB = COORDINATION_DIR / "lib" / "tab-titles.ps1"
 
 TITLE_STAND = """#Requires -Version 7
-param([string]$Lib, [string]$Sessions, [string]$CacheDir, [long]$Chunk = 0, [long]$Ceiling = 0)
+param([string]$Lib, [string]$Sessions, [string]$CacheDir, [long]$Chunk = 0, [long]$Ceiling = 0, [switch]$Fresh)
 $ErrorActionPreference = 'Stop'
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 . $Lib
@@ -8259,7 +8259,7 @@ if ($Chunk -gt 0) { $script:TabTitleChunkBytes = $Chunk }
 if ($Ceiling -gt 0) { $script:TabTitleCeilingBytes = $Ceiling }
 $answers = [ordered]@{}
 foreach ($session in ($Sessions -split ';')) {
-    $found = Get-SessionTitle -SessionId $session -CacheDir $CacheDir
+    $found = Get-SessionTitle -SessionId $session -CacheDir $CacheDir -Fresh:$Fresh
     $answers[$session] = [ordered]@{ title = $found.Title; kind = $found.Kind }
 }
 $answers | ConvertTo-Json -Compress -Depth 3
@@ -8273,8 +8273,13 @@ def ask_titles(
     cache: Path | None = None,
     chunk: int = 0,
     ceiling: int = 0,
+    fresh: bool = False,
 ) -> dict[str, dict[str, str]]:
-    """Asks the mechanism for names directly — one call per session, in one shell run."""
+    """Asks the mechanism for names directly — one call per session, in one shell run.
+
+    `fresh` — the way a session start and an announcement ask: the transcript is looked for again
+    rather than taken from the cache.
+    """
     assert pwsh
     stand = tmp_path / "title-stand.ps1"
     if not stand.exists():
@@ -8295,6 +8300,7 @@ def ask_titles(
             str(chunk),
             "-Ceiling",
             str(ceiling),
+            *(["-Fresh"] if fresh else []),
         ],
         capture_output=True,
         text=True,
@@ -8303,6 +8309,68 @@ def ask_titles(
     )
     assert done.returncode == 0, done.stderr
     return json.loads(done.stdout.strip().splitlines()[-1])
+
+
+LIB_STAND_HEAD = """#Requires -Version 7
+param([string]$Lib, [string]$Arg)
+$ErrorActionPreference = 'Stop'
+[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+. $Lib
+"""
+
+
+def ask_lib(tmp_path: Path, name: str, body: str, arg: str = "") -> object:
+    """Asks a mechanism function directly: a PowerShell body prints the answer as one line of JSON.
+
+    Needed where the input can't be passed as a process argument: a lone half of a surrogate pair can't
+    be encoded into arguments, so such strings are built inside the body itself.
+    """
+    assert pwsh
+    stand = tmp_path / f"lib-stand-{name}.ps1"
+    stand.write_text(LIB_STAND_HEAD + body, encoding="utf-8")
+    done = subprocess.run(
+        [pwsh, "-NoProfile", "-File", str(stand), "-Lib", str(TAB_TITLES_LIB), "-Arg", arg],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        timeout=120,
+    )
+    assert done.returncode == 0, done.stderr
+    return json.loads(done.stdout.strip().splitlines()[-1])
+
+
+def deliver_payload(board: Path, cwd: Path, stage: str, payload: dict[str, object]) -> str:
+    """The delivery hook with the host's full input: session id, the tab's folder, why the session started."""
+    assert pwsh
+    done = subprocess.run(
+        [pwsh, "-NoProfile", "-File", str(DELIVER), "-Stage", stage, "-BoardPath", str(board)],
+        input=json.dumps(payload, ensure_ascii=False),
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        cwd=str(cwd),
+        timeout=60,
+    )
+    assert done.returncode == 0, done.stderr
+    return done.stdout
+
+
+def tabs_dir(board: Path) -> Path:
+    return board.parent / "tabs"
+
+
+def title_cache(board: Path, session: str) -> Path:
+    return tabs_dir(board) / "cache" / f"{session}.txt"
+
+
+def prompt_mark(board: Path, session: str) -> Path:
+    return tabs_dir(board) / f"{session}.prompt"
+
+
+def age(path: Path, seconds: float) -> None:
+    """Moves a file's modification time into the past — so a check "lives through" minutes without waiting."""
+    when = time.time() - seconds
+    os.utime(path, (when, when))
 
 
 def journal_path(config: Path, session: str, project: str = "D--probe-project") -> Path:
@@ -8789,9 +8857,12 @@ def test_the_delivery_guard_keeps_the_tab_record_and_follows_a_rename(
 
     run_deliver(board, mine, "Prompt", "sess-rename")
     assert tab_record(board, "sess-rename")["prompt_at"], "a human turn didn't record the message time"
+    assert prompt_mark(board, "sess-rename").exists(), "a human turn didn't create the session marker"
 
     with journal.open("ab") as handle:
         handle.write((custom_title("О1-9", "sess-rename") + "\n").encode("utf-8"))
+    # On a human turn the name is re-read at most every two minutes — live through them.
+    age(title_cache(board, "sess-rename"), 180)
     run_deliver(board, mine, "Prompt", "sess-rename")
     renamed = tab_record(board, "sess-rename")
     assert (renamed["title"], renamed["title_kind"]) == ("О1-9", "custom"), (
@@ -8807,8 +8878,10 @@ def test_the_start_of_a_session_clears_tab_records_silent_for_a_month(tmp_path: 
     (tabs / "cache").mkdir(parents=True)
     old = tabs / "sess-ancient.json"
     old_cache = tabs / "cache" / "sess-ancient.txt"
+    old.write_text('{"session_id": "sess-ancient"}', encoding="utf-8")
+    # A cache is recognized by its mark on the first line — cleanup won't touch a stranger's file of the same name.
+    old_cache.write_text("parallel-streams tab title cache 1\n\n0\n\n\n", encoding="utf-8")
     for path in (old, old_cache):
-        path.write_text('{"session_id": "sess-ancient"}', encoding="utf-8")
         when = time.time() - 40 * 24 * 3600
         os.utime(path, (when, when))
     recent = tabs / "sess-recent.json"
@@ -9017,3 +9090,664 @@ def test_tabs_lists_fresh_tabs_first_moves_silent_ones_to_a_tail_and_marks_twins
     for folder in ("first", "third"):
         assert "‼️ another tab has the same name" in lines[where(f"folder d:/trees/{folder}")], lines
     assert "‼️" not in lines[where("folder d:/trees/second")], lines
+
+
+# ─── Tab name: fixes after review (safety, which session runs a claim, the cost of a turn) ───────
+#
+# The tab registry, the cache and the claims live in a shared internal directory that any process of
+# the same person can write to, and the delivery hook runs on every one of their messages. Hence three
+# kinds of checks: only what's recognized and cleaned gets deleted and printed; only a tab entitled to
+# it writes a session into a claim; a human turn costs one touch of a small file, not a transcript read.
+
+
+def put_tab_record(board: Path, session: str, **fields: object) -> Path:
+    """A tab record built by hand — so scenes the hook wouldn't create on its own can be set up."""
+    folder = tabs_dir(board)
+    folder.mkdir(parents=True, exist_ok=True)
+    path = folder / f"{session}.json"
+    path.write_text(json.dumps({"session_id": session, **fields}, ensure_ascii=False), encoding="utf-8")
+    return path
+
+
+def put_prompt_mark(board: Path, session: str, seconds_ago: float = 0) -> Path:
+    """A session marker: its modification time is the last human message in that tab."""
+    path = prompt_mark(board, session)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("parallel-streams tab state 1\n\n\n\n\n", encoding="utf-8")
+    age(path, seconds_ago)
+    return path
+
+
+@needs_pwsh
+def test_the_cleanup_removes_only_its_own_files_and_the_leftovers_of_killed_writes(
+    tmp_path: Path,
+) -> None:
+    """Cleanup deletes only what it recognizes as its own: a stranger's old file with a plain name survives.
+
+    Deletion is irreversible. The previous safeguard looked only at the shape of the name, and almost
+    any plain name fits it — `package.json`, `notes.txt`. Leftover temporary files of a process killed
+    between the write and the move, on the other hand, piled up forever. And a live tab whose record
+    hasn't been rewritten in a long time (a human turn only touches the marker) isn't cleaned up.
+    """
+    board = tmp_path / "board.jsonl"
+    tabs = tabs_dir(board)
+    cache = tabs / "cache"
+    cache.mkdir(parents=True)
+    month = 40 * 24 * 3600
+
+    def old(path: Path, text: str, seconds: float = month) -> Path:
+        path.write_text(text, encoding="utf-8")
+        age(path, seconds)
+        return path
+
+    strangers = [
+        old(tabs / "package.json", '{"name": "someone else\'s project"}'),
+        old(tabs / "sess-forged.json", '{"session_id": "someone-else"}'),
+        old(tabs / "sess-broken.json", "not JSON at all"),
+        old(cache / "notes.txt", "notes"),
+        old(cache / "sess-plain.txt", "plain text with no mark"),
+        old(tabs / "sess-plain.prompt", "no mark"),
+        old(tabs / "foo.tmp-bar", "someone else's temporary file"),
+    ]
+    ours = [
+        old(tabs / "sess-gone.json", '{"session_id": "sess-gone"}'),
+        old(tabs / "sess-gone.prompt", "parallel-streams tab state 1\n\n\n\n\n"),
+        old(cache / "sess-gone.txt", "parallel-streams tab title cache 1\n\n0\n\n\n"),
+        old(tabs / "sess-gone.json.tmp-1234", "{", seconds=2 * 24 * 3600),
+        old(cache / "sess-gone.txt.tmp-77", "a scrap", seconds=2 * 24 * 3600),
+    ]
+    fresh_leftover = old(tabs / "sess-busy.json.tmp-99", "{", seconds=60)
+    # A live tab: its record hasn't been rewritten for a month, but a person just wrote in it.
+    alive = old(tabs / "sess-alive.json", '{"session_id": "sess-alive"}')
+    put_prompt_mark(board, "sess-alive")
+    mine = tmp_path / "wave9-clean-own"
+    mine.mkdir()
+
+    run_deliver(board, mine, "Start", "sess-cleaner-2")
+
+    for path in strangers:
+        assert path.exists(), f"cleanup deleted a stranger's file {path.name} — deletion is irreversible"
+    for path in ours:
+        assert not path.exists(), f"our own old file {path.name} survived cleanup"
+    assert fresh_leftover.exists(), "cleanup removed a temporary file that may be being written right now"
+    assert alive.exists(), "cleanup removed the record of a tab where a person just wrote"
+
+
+@needs_pwsh
+def test_the_cleanup_never_enters_a_tabs_folder_that_is_a_link(tmp_path: Path) -> None:
+    """The tabs folder turned out to be a link or a junction — no cleanup at all.
+
+    Anything of someone else's may lie behind a link: "moved the service data to another disk" — and
+    cleanup at the next session start would delete everything there it recognized as its own. Silence
+    is ambiguous, so the same file in a plain folder must be deleted.
+    """
+    far = tmp_path / "far-away"
+    far.mkdir()
+    board = tmp_path / "via-link" / "board.jsonl"
+    board.parent.mkdir()
+    try:
+        if os.name == "nt":
+            import _winapi
+
+            _winapi.CreateJunction(str(far), str(tabs_dir(board)))
+        else:
+            os.symlink(far, tabs_dir(board), target_is_directory=True)
+    except OSError as error:
+        pytest.skip(f"can't create a folder link here: {error}")
+    behind = far / "sess-far.json"
+    behind.write_text('{"session_id": "sess-far"}', encoding="utf-8")
+    age(behind, 40 * 24 * 3600)
+
+    plain_board = tmp_path / "plain" / "board.jsonl"
+    tabs_dir(plain_board).mkdir(parents=True)
+    plain = tabs_dir(plain_board) / "sess-far.json"
+    plain.write_text('{"session_id": "sess-far"}', encoding="utf-8")
+    age(plain, 40 * 24 * 3600)
+
+    mine = tmp_path / "wave9-link"
+    mine.mkdir()
+    run_deliver(board, mine, "Start", "sess-linked")
+    run_deliver(plain_board, mine, "Start", "sess-linked")
+
+    assert behind.exists(), "cleanup went through the link and deleted a file in someone else's folder"
+    assert not plain.exists(), "cleanup didn't work in a plain folder — silence behind the link proves nothing"
+
+
+@needs_pwsh
+def test_a_title_cut_on_an_emoji_still_reaches_the_cache_and_the_tab_record(
+    tmp_path: Path, claude_config: Path
+) -> None:
+    """Cutting a long name never leaves half of a surrogate pair.
+
+    A lone half broke the file write: the cache was never written (the transcript was re-read on every
+    message), and the tab record never appeared at all — no listing named the tab.
+    """
+    board = tmp_path / "board.jsonl"
+    split = "Я" * 78 + "😀" + "ab"
+    whole = "Я" * 77 + "😀" + "abc"
+    write_journal(journal_path(claude_config, "sess-emoji"), [custom_title(split, "sess-emoji")])
+    write_journal(journal_path(claude_config, "sess-whole"), [custom_title(whole, "sess-whole")])
+    mine = tmp_path / "wave9-emoji"
+    mine.mkdir()
+
+    run_deliver(board, mine, "Start", "sess-emoji")
+
+    cut = "Я" * 78 + "…"
+    assert tab_record(board, "sess-emoji")["title"] == cut, "the tab record wasn't created, or the name was cut wrong"
+    cached = title_cache(board, "sess-emoji").read_text(encoding="utf-8").split("\n")
+    assert cached[3] == cut, f"the name cache wasn't written: {cached}"
+    assert ask_titles(tmp_path, ["sess-whole"])["sess-whole"]["title"] == "Я" * 77 + "😀" + "…", (
+        "an emoji that fits before the cut whole was lost"
+    )
+
+
+@needs_pwsh
+def test_a_forged_cache_path_is_not_trusted_and_the_start_looks_for_the_journal_again(
+    tmp_path: Path, claude_config: Path
+) -> None:
+    """A transcript path from the cache is accepted only if it's THIS session's transcript in the transcripts directory.
+
+    Whoever can write into the internal directory would plant another session's transcript (the tab
+    would be named after someone else) or a network path (the hook would wait for a foreign host on every
+    message). And a session start looks for the transcript again: the session may have been resumed from
+    another folder, and a transcript of the same id grew there.
+    """
+    write_journal(journal_path(claude_config, "sess-c"), [custom_title("Own", "sess-c")])
+    other = journal_path(claude_config, "sess-d")
+    write_journal(other, [custom_title("Someone else's", "sess-d")])
+    planted = tmp_path / "planted" / "sess-c.jsonl"
+    planted.parent.mkdir()
+    write_journal(planted, [custom_title("Planted", "sess-c")])
+    mark = "parallel-streams tab title cache 1"
+
+    for number, fake in enumerate((other, planted)):
+        cache = tmp_path / f"cache-forged-{number}"
+        cache.mkdir()
+        size = fake.stat().st_size
+        (cache / "sess-c.txt").write_text(f"{mark}\n{fake}\n{size}\nSomeone else's\n\n", encoding="utf-8")
+        assert ask_titles(tmp_path, ["sess-c"], cache=cache)["sess-c"] == {"title": "Own", "kind": "custom"}, (
+            f"a cache with a planted path ({fake}) named the tab after someone else"
+        )
+
+    cache = tmp_path / "cache-moved"
+    write_journal(journal_path(claude_config, "sess-e", "D--folder-A"), [custom_title("From-A", "sess-e")])
+    assert ask_titles(tmp_path, ["sess-e"], cache=cache)["sess-e"]["title"] == "From-A"
+    write_journal(
+        journal_path(claude_config, "sess-e", "D--folder-B"), [talk(2_000), custom_title("From-B", "sess-e")]
+    )
+    assert ask_titles(tmp_path, ["sess-e"], cache=cache)["sess-e"]["title"] == "From-A", (
+        "an ordinary turn looked for the transcript again — on every message that's a walk over all project folders"
+    )
+    assert ask_titles(tmp_path, ["sess-e"], cache=cache, fresh=True)["sess-e"]["title"] == "From-B", (
+        "a session start trusted the cached path and didn't find the transcript the session writes to now"
+    )
+
+
+@needs_pwsh
+def test_a_dense_run_of_lookalike_lines_stops_at_the_budget_and_a_long_line_is_not_parsed(
+    tmp_path: Path, claude_config: Path
+) -> None:
+    """A name read is bounded by a parse budget, and a line longer than 8 KB is never parsed.
+
+    The record-kind word can be a string value inside a nested object, and every such line was parsed
+    whole: a megabyte of them cost seconds on a human message. Once the budget is spent the read stops
+    and remembers the offset: a name lying deeper isn't found, but the next rename in the new tail is
+    found right away.
+    """
+    session = "sess-dense"
+    journal = journal_path(claude_config, session)
+    lookalike = json.dumps({"type": "user", "note": "custom-title"})
+    write_journal(journal, [custom_title("Deep", session), *[lookalike] * 1000])
+    cache = tmp_path / "cache-dense"
+    assert ask_titles(tmp_path, [session], cache=cache)[session] == {"title": "", "kind": ""}, (
+        "the parse budget didn't stop the read — a thousand lookalike lines were parsed whole"
+    )
+    with journal.open("ab") as handle:
+        handle.write((custom_title("Fresh", session) + "\n").encode("utf-8"))
+    assert ask_titles(tmp_path, [session], cache=cache)[session] == {"title": "Fresh", "kind": "custom"}, (
+        "after stopping on the budget a new rename wasn't found"
+    )
+
+    padded = json.dumps(
+        {"type": "custom-title", "customTitle": "Long-record", "pad": "x" * 9_000, "sessionId": "sess-long"},
+        ensure_ascii=False,
+    )
+    write_journal(journal_path(claude_config, "sess-long"), [custom_title("Short", "sess-long"), padded])
+    assert ask_titles(tmp_path, ["sess-long"])["sess-long"]["title"] == "Short", (
+        "a line longer than 8 KB was parsed as a name record"
+    )
+
+
+@needs_pwsh
+def test_the_tab_record_is_kept_on_every_way_out_of_the_delivery_guard(
+    tmp_path: Path, claude_config: Path
+) -> None:
+    """The tab record is kept AFTER delivery — both on the no-board exit and on the exit with a finding.
+
+    The name is a convenience, delivery is what the hook is for, so the tab record moved to the very
+    end. It can't be moved onto the early exits one by one: forget one, and the tab stops being named on
+    that path; and a finding must still come out into the context as before.
+    """
+    write_journal(journal_path(claude_config, "sess-ways"), [custom_title("O1-7", "sess-ways")])
+    mine = tmp_path / "wave9-ways"
+    mine.mkdir()
+
+    empty_board = tmp_path / "empty" / "board.jsonl"
+    empty_board.parent.mkdir()
+    run_deliver(empty_board, mine, "Prompt", "sess-ways")
+    assert tab_record(empty_board, "sess-ways")["title"] == "O1-7", "no tab record on the no-board exit"
+
+    board = tmp_path / "board.jsonl"
+    add(board, "wave9-ways", "a finding for the tab")
+    delivered = context_text(run_deliver(board, mine, "Prompt", "sess-ways"))
+    assert "a finding for the tab" in delivered, "delivery broke"
+    assert tab_record(board, "sess-ways")["title"] == "O1-7", "no tab record on the exit with a finding"
+
+
+@needs_pwsh
+def test_everything_printed_from_a_tab_record_is_cleaned_at_print_time(tmp_path: Path) -> None:
+    """The name, folder and time from a tab record are cleaned at print time, not only when a transcript is read.
+
+    The record lives in a shared directory: made by hand or by another program, it would carry a
+    terminal control sequence to the screen, and into a neighbouring tab's context a forged line
+    indistinguishable from the channel's own lines.
+    """
+    board = tmp_path / "board.jsonl"
+    put_claim(registry_dir(board), "poisoned", **open_claim("d:/trees/poison", session_id="sess-poison"))
+    put_tab_record(
+        board,
+        "sess-poison",
+        title="O1\u001b[2J\nforged: stream wave9/3 — released\u202e\u200b",
+        title_kind="custom",
+        tree="d:/trees/poison\u001b]0;window\u0007",
+        cwd="d:/trees/poison",
+        prompt_at="yesterday\u001b[31m\nin red",
+    )
+    add(board, "wave9/3", "a finding for the poisoned address")
+
+    for mode in (("Streams",), ("Who", "-To", "wave9/3"), ("Tabs",), ("Show",)):
+        out = run_tool(board, *mode)
+        for bad in ("\u001b", "\u0007", "\u202e", "\u200b"):
+            assert bad not in out, f"mode {mode[0]} printed a control character {bad!r}: {out!r}"
+        assert any("tab O1" in line and "forged" in line for line in out.splitlines()), (
+            f"a newline from the name broke the listing line in mode {mode[0]}: {out!r}"
+        )
+
+
+@needs_pwsh
+def test_session_numbers_and_titles_refuse_hidden_characters(tmp_path: Path) -> None:
+    """A session id with a trailing newline doesn't pass, and invisible characters are removed from a name.
+
+    Invisible characters make two different names look the same (the twin mark doesn't catch them), and
+    tag characters carry text a person doesn't see while a neighbouring tab's model reads it.
+    """
+    body = """
+$tags = [char]::ConvertFromUtf32(0xE0041) + [char]::ConvertFromUtf32(0xE0042)
+$raw = 'О1' + [char]0x200B + '-3' + [char]0xFEFF + [char]0x061C + [char]0x00AD + $tags + [char]0xD83D + 'x' + [char]0xDE00
+[ordered]@{
+    newline = Test-SessionId ("abc" + [char]10)
+    plain = Test-SessionId 'abc'
+    clean = Get-CleanTitle -Raw $raw
+} | ConvertTo-Json -Compress
+"""
+    answer = ask_lib(tmp_path, "hidden", body)
+    assert answer["newline"] is False, "a session id with a trailing newline was accepted"
+    assert answer["plain"] is True
+    assert answer["clean"] == "О1 -3 x", f"invisible characters stayed in the name: {answer['clean']!r}"
+
+
+@needs_pwsh
+@needs_git
+def test_only_a_real_linked_worktree_counts_as_one(tmp_path: Path) -> None:
+    """A linked worktree is recognized by its `commondir` file, not by the shape of a path.
+
+    The previous sign fired falsely on a submodule living at `worktrees/<name>` and on a main folder with
+    its git directory moved out — and many tabs live there, so adopting a claim there isn't allowed.
+    """
+    real_worktrees(tmp_path, {"linked-tree": "feat/linked"})
+    submodule = tmp_path / "submodule"
+    submodule.mkdir()
+    modules = tmp_path / "superproject" / ".git" / "modules" / "worktrees" / "foo"
+    modules.mkdir(parents=True)
+    (submodule / ".git").write_text(f"gitdir: {modules.as_posix()}\n", encoding="utf-8")
+    separate = tmp_path / "separate-git-dir"
+    separate.mkdir()
+    store = tmp_path / "store" / "worktrees" / "main"
+    store.mkdir(parents=True)
+    (separate / ".git").write_text(f"gitdir: {store.as_posix()}\n", encoding="utf-8")
+    relative = tmp_path / "relative"
+    relative.mkdir()
+    linked_store = tmp_path / "store-2" / "worktrees" / "x"
+    linked_store.mkdir(parents=True)
+    (linked_store / "commondir").write_text("../..\n", encoding="utf-8")
+    (relative / ".git").write_bytes(b"gitdir: ../store-2/worktrees/x\r\n")
+
+    places = {
+        "linked": tmp_path / "linked-tree",
+        "main": tmp_path / "repo",
+        "submodule": submodule,
+        "separate": separate,
+        "relative": relative,
+    }
+    body = """
+$answers = [ordered]@{}
+foreach ($pair in ($Arg -split ';')) {
+    $name, $path = $pair -split '=', 2
+    $answers[$name] = Test-LinkedWorktree -TreePath $path
+}
+$answers | ConvertTo-Json -Compress
+"""
+    answer = ask_lib(tmp_path, "linked", body, ";".join(f"{k}={v}" for k, v in places.items()))
+    assert answer == {
+        "linked": True,
+        "main": False,
+        "submodule": False,
+        "separate": False,
+        "relative": True,
+    }, answer
+
+
+@needs_pwsh
+def test_who_marks_a_twin_title_and_says_where_the_session_came_from(tmp_path: Path) -> None:
+    """"Who runs it" marks a twin with the start of the session id and says where the board got the session.
+
+    The name is a hint, not proof. Two tabs with one name are exactly the case where a person confidently
+    goes to the wrong window; and an id written in by the hook is its guess, which has to be said in the
+    same line.
+    """
+    board = tmp_path / "board.jsonl"
+    put_tab_record(board, "sess-one", title="O1-3", title_kind="custom", tree="d:/trees/one")
+    put_tab_record(board, "sess-two", title="o1-3", title_kind="custom", tree="d:/trees/two")
+    put_claim(registry_dir(board), "one", **open_claim("d:/trees/one", stream="3", session_id="sess-one"))
+    put_claim(
+        registry_dir(board),
+        "two",
+        **open_claim("d:/trees/two", stream="4", session_id="sess-two", session_adopted=True),
+    )
+
+    announced = [line for line in said(run_tool(board, "-Mode", "Who", "-To", "wave9/3")) if line.startswith("wave9/3")]
+    adopted = [line for line in said(run_tool(board, "-Mode", "Who", "-To", "wave9/4")) if line.startswith("wave9/4")]
+
+    assert len(announced) == 1 and "tab O1-3 (session sess-one" in announced[0], announced
+    assert "another tab has the same name" in announced[0], announced
+    assert announced[0].endswith("session named by the announcement"), announced
+    assert len(adopted) == 1 and "session written in by the delivery hook" in adopted[0], adopted
+
+
+@needs_pwsh
+@needs_git
+def test_the_tab_folder_and_tree_come_from_the_hook_input_and_disagreeing_trees_adopt_nothing(
+    tmp_path: Path,
+) -> None:
+    """The tab's folder and worktree come from the hook's input, not from its process folder.
+
+    The hook process may have started outside the session's folder: then the tab record got one
+    worktree's folder and another's root, and adoption was decided by the wrong worktree. If the
+    worktrees differ, the hook writes no session into the claim; if they agree, it does (otherwise the
+    silence would prove nothing).
+    """
+    # Both worktrees are linked: otherwise the worktree sign would refuse adoption, and differing
+    # worktrees would test nothing here.
+    real_worktrees(tmp_path, {"tab-input": "feat/tab-input", "tab-elsewhere": "feat/tab-elsewhere"})
+    board = tmp_path / "board.jsonl"
+    tab = tmp_path / "tab-input"
+    elsewhere = tmp_path / "tab-elsewhere"
+    claim(board, tab, "wave9", "11")
+
+    # The hook process is in the worktree with the claim, while the session, by the input, is in another worktree.
+    deliver_payload(board, tab, "Prompt", {"session_id": "sess-input", "cwd": str(elsewhere)})
+    record = tab_record(board, "sess-input")
+    assert folder_key(record["cwd"]) == folder_key(elsewhere) and folder_key(record["tree"]) == folder_key(elsewhere), (
+        f"the tab record took its folder or worktree from somewhere other than the hook's input: {record}"
+    )
+    assert "session_id" not in claim_of(board, tab, only_open=True).fields, (
+        "another worktree's session was written into the claim of the worktree the hook process happened to start in"
+    )
+
+    deliver_payload(board, tab, "Prompt", {"session_id": "sess-input", "cwd": str(tab)})
+    assert claim_of(board, tab, only_open=True).fields.get("session_id") == "sess-input"
+
+
+@needs_pwsh
+@needs_git
+def test_the_start_writes_the_starting_tree_and_a_compaction_keeps_it(tmp_path: Path) -> None:
+    """A session start writes the starting worktree; a context compaction doesn't overwrite it, a resume does.
+
+    The starting worktree is the main clue for adoption: a tab started in the main folder that wandered
+    into someone else's worktree doesn't take their stream. A compaction also arrives as a session start
+    — and if it wrote the current worktree as the start, the clue would be wiped exactly for the tab that
+    went to look.
+    """
+    real_worktrees(tmp_path, {"tab-start": "feat/tab-start"})
+    board = tmp_path / "board.jsonl"
+    main = tmp_path / "repo"
+    tab = tmp_path / "tab-start"
+
+    deliver_payload(board, main, "Start", {"session_id": "sess-start", "cwd": str(main), "source": "startup"})
+    assert folder_key(tab_record(board, "sess-start")["start_tree"]) == folder_key(main)
+    deliver_payload(board, tab, "Start", {"session_id": "sess-start", "cwd": str(tab), "source": "compact"})
+    after = tab_record(board, "sess-start")
+    assert folder_key(after["start_tree"]) == folder_key(main) and folder_key(after["tree"]) == folder_key(tab), after
+    deliver_payload(board, tab, "Start", {"session_id": "sess-start", "cwd": str(tab), "source": "resume"})
+    assert folder_key(tab_record(board, "sess-start")["start_tree"]) == folder_key(tab)
+
+
+@needs_pwsh
+@needs_git
+def test_a_claim_without_a_session_is_adopted_only_by_a_tab_that_started_in_its_tree(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Adoption only by a tab started in this worktree; marked as a guess and cleared by an announcement.
+
+    A main-folder tab that wandered into a neighbour's worktree to look would, on the person's very first
+    message, write itself into their claim for good, and "who runs it" would confidently name the wrong
+    tab.
+    """
+    # Two worktrees, not one: the visiting tab, once it writes in a worktree, becomes that worktree's
+    # second tab itself, and adoption there would rightly step back for a different reason.
+    real_worktrees(tmp_path, {"tab-peek": "feat/tab-peek", "tab-own": "feat/tab-own"})
+    board = tmp_path / "board.jsonl"
+    main = tmp_path / "repo"
+    peek = tmp_path / "tab-peek"
+    tab = tmp_path / "tab-own"
+    claim(board, peek, "wave9", "12")
+    claim(board, tab, "wave9", "17")
+
+    deliver_payload(board, main, "Start", {"session_id": "sess-visitor", "cwd": str(main)})
+    deliver_payload(board, peek, "Prompt", {"session_id": "sess-visitor", "cwd": str(peek)})
+    assert "session_id" not in claim_of(board, peek, only_open=True).fields, (
+        "a tab started in the main folder wrote itself into another worktree's claim"
+    )
+
+    deliver_payload(board, tab, "Start", {"session_id": "sess-owner", "cwd": str(tab)})
+    deliver_payload(board, tab, "Prompt", {"session_id": "sess-owner", "cwd": str(tab)})
+    fields = claim_of(board, tab, only_open=True).fields
+    assert fields.get("session_id") == "sess-owner" and fields.get("session_adopted") is True, fields
+
+    monkeypatch.setenv("CLAUDE_CODE_SESSION_ID", "sess-owner")
+    claim(board, tab, "wave9", "17")
+    monkeypatch.delenv("CLAUDE_CODE_SESSION_ID")
+    fields = claim_of(board, tab, only_open=True).fields
+    assert fields.get("session_id") == "sess-owner" and "session_adopted" not in fields, (
+        f"an announcement didn't clear the hook's guess mark: {fields}"
+    )
+
+
+@needs_pwsh
+@needs_git
+def test_adoption_steps_back_for_another_tab_of_the_tree_and_for_a_closed_claim(tmp_path: Path) -> None:
+    """No adoption if another tab wrote in the worktree today, and none for a released or moved claim.
+
+    Two tabs in a worktree are an ambiguity: choosing for the person isn't allowed. A released or moved
+    claim isn't run by this folder any more — a session written into it would name a ghost's tab.
+    """
+    real_worktrees(
+        tmp_path,
+        {"tab-rival": "feat/tab-rival", "tab-done": "feat/tab-done", "tab-left": "feat/tab-left", "tab-new": "feat/tab-new"},
+    )
+    board = tmp_path / "board.jsonl"
+    rival = tmp_path / "tab-rival"
+    claim(board, rival, "wave9", "13")
+    put_tab_record(board, "sess-other", title="Other", title_kind="custom", tree=str(rival).replace("\\", "/"))
+    mark = put_prompt_mark(board, "sess-other", seconds_ago=3600)
+
+    run_deliver(board, rival, "Prompt", "sess-late")
+    assert "session_id" not in claim_of(board, rival, only_open=True).fields, (
+        "a session was written in although another tab wrote in the same worktree an hour ago"
+    )
+    age(mark, 2 * 24 * 3600)
+    run_deliver(board, rival, "Prompt", "sess-late")
+    assert claim_of(board, rival, only_open=True).fields.get("session_id") == "sess-late", (
+        "the other tab has been silent for two days, and adoption still didn't happen"
+    )
+
+    done = tmp_path / "tab-done"
+    claim(board, done, "wave9", "14")
+    assert release(board, done).returncode == 0
+    run_deliver(board, done, "Prompt", "sess-done")
+    assert "session_id" not in claim_of(board, done, only_open=False).fields, "a released claim got a session"
+
+    left = tmp_path / "tab-left"
+    claim(board, left, "wave9", "15")
+    claim(board, tmp_path / "tab-new", "wave9", "15", "-TakeOver")
+    run_deliver(board, left, "Prompt", "sess-left")
+    assert "session_id" not in claim_of(board, left, only_open=False).fields, "a moved claim got a session"
+
+
+@needs_pwsh
+@needs_git
+def test_a_cleared_context_moves_the_claim_to_the_new_number_of_the_same_tab(
+    tmp_path: Path, claude_config: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Clearing the context gives the tab a new session id — the claim moves to it if the name is the same.
+
+    A clear carries over the name a person gave, but not the id: without the hand-over, "who runs it"
+    would print the frozen time of the old id, and the tab listing would call the live tab "no stream
+    claimed". Tabs with another name, or with none, don't take the claim — otherwise two tabs in one
+    worktree would pull it back and forth on every message.
+    """
+    real_worktrees(tmp_path, {"tab-clear": "feat/tab-clear"})
+    board = tmp_path / "board.jsonl"
+    tab = tmp_path / "tab-clear"
+    write_journal(journal_path(claude_config, "sess-before"), [custom_title("O1-3", "sess-before")])
+    write_journal(journal_path(claude_config, "sess-after"), [custom_title("o1-3", "sess-after")])
+    write_journal(journal_path(claude_config, "sess-stranger"), [custom_title("Other", "sess-stranger")])
+    write_journal(journal_path(claude_config, "sess-auto"), [ai_title("O1-3", "sess-auto")])
+    monkeypatch.setenv("CLAUDE_CODE_SESSION_ID", "sess-before")
+    claim(board, tab, "wave9", "16")
+    monkeypatch.delenv("CLAUDE_CODE_SESSION_ID")
+
+    deliver_payload(board, tab, "Start", {"session_id": "sess-after", "cwd": str(tab), "source": "clear"})
+    assert claim_of(board, tab, only_open=True).fields.get("session_id") == "sess-after", (
+        "after a context clear the claim stayed on the same tab's old id"
+    )
+
+    for other in ("sess-stranger", "sess-auto", "sess-nameless"):
+        deliver_payload(board, tab, "Prompt", {"session_id": other, "cwd": str(tab)})
+        assert claim_of(board, tab, only_open=True).fields.get("session_id") == "sess-after", (
+            f"tab {other}, with another name or none, took the claim"
+        )
+    rows = [line for line in said(run_tool(board, "-Mode", "Who", "-To", "wave9/16")) if line.startswith("wave9/16")]
+    assert len(rows) == 1 and "session written in by the delivery hook" in rows[0], rows
+
+
+@needs_pwsh
+def test_the_title_is_reread_at_most_every_two_minutes_and_the_record_is_not_rewritten_for_nothing(
+    tmp_path: Path, claude_config: Path
+) -> None:
+    """A human turn costs one touch of the marker: the transcript at most every two minutes, the record only when needed.
+
+    The delivery hook runs on every human message. The message time is the modification time of a small
+    marker; the tab record is rewritten only when the folder, worktree or name changed; and a rename
+    reaches the listings within two minutes. Listings take the time from the marker.
+    """
+    board = tmp_path / "board.jsonl"
+    mine = tmp_path / "wave9-cheap"
+    mine.mkdir()
+    session = "sess-cheap"
+    journal = journal_path(claude_config, session)
+    write_journal(journal, [custom_title("First", session)])
+
+    run_deliver(board, mine, "Prompt", session)
+    record_file = tabs_dir(board) / f"{session}.json"
+    before = record_file.read_text(encoding="utf-8")
+    age(record_file, 3600)
+    aged = record_file.stat().st_mtime
+    age(prompt_mark(board, session), 3600)
+
+    run_deliver(board, mine, "Prompt", session)
+    assert record_file.stat().st_mtime == aged and record_file.read_text(encoding="utf-8") == before, (
+        "the tab record was rewritten although nothing in it changed"
+    )
+    assert time.time() - prompt_mark(board, session).stat().st_mtime < 600, "a human turn didn't touch the marker"
+
+    with journal.open("ab") as handle:
+        handle.write((custom_title("Second", session) + "\n").encode("utf-8"))
+    run_deliver(board, mine, "Prompt", session)
+    assert tab_record(board, session)["title"] == "First", "the transcript was re-read before two minutes passed"
+    age(title_cache(board, session), 180)
+    run_deliver(board, mine, "Prompt", session)
+    assert tab_record(board, session)["title"] == "Second", "the rename didn't arrive even after two minutes"
+
+    stamp = datetime(2026, 1, 2, 3, 4).timestamp()
+    os.utime(prompt_mark(board, session), (stamp, stamp))
+    assert "last human message 2026-01-02 03:04" in run_tool(board, "-Mode", "Tabs"), (
+        "the tab listing didn't take the time from the session marker"
+    )
+
+
+@needs_pwsh
+def test_a_missing_journal_is_looked_for_again_only_after_a_pause(
+    tmp_path: Path, claude_config: Path
+) -> None:
+    """No transcript — the cache remembers the miss, and the walk over project folders isn't repeated every turn.
+
+    Some project folders are junctions onto network shares: without a memory of the miss an unreachable
+    host would cost a timeout on every message. A session start always looks.
+    """
+    write_journal(journal_path(claude_config, "sess-exists"), [talk(100)])
+    cache = tmp_path / "cache-missing"
+    assert ask_titles(tmp_path, ["sess-late-journal"], cache=cache)["sess-late-journal"]["title"] == ""
+    remembered = (cache / "sess-late-journal.txt").read_text(encoding="utf-8").split("\n")
+    assert remembered[1] == "" and remembered[0].startswith("parallel-streams tab title cache"), remembered
+
+    write_journal(journal_path(claude_config, "sess-late-journal"), [custom_title("Found", "sess-late-journal")])
+    assert ask_titles(tmp_path, ["sess-late-journal"], cache=cache)["sess-late-journal"]["title"] == "", (
+        "the miss wasn't remembered — project folders are walked on every turn"
+    )
+    assert ask_titles(tmp_path, ["sess-late-journal"], cache=cache, fresh=True)["sess-late-journal"]["title"] == "Found"
+
+    second = tmp_path / "cache-missing-2"
+    assert ask_titles(tmp_path, ["sess-later"], cache=second)["sess-later"]["title"] == ""
+    write_journal(journal_path(claude_config, "sess-later"), [custom_title("Later", "sess-later")])
+    age(second / "sess-later.txt", 180)
+    assert ask_titles(tmp_path, ["sess-later"], cache=second)["sess-later"]["title"] == "Later", (
+        "a transcript that appeared after the miss wasn't found even after the pause"
+    )
+
+
+@needs_pwsh
+def test_the_short_path_never_passes_a_last_line_that_is_still_being_written(
+    tmp_path: Path, claude_config: Path
+) -> None:
+    """A cut-off last line doesn't move the offset: the next call finishes it.
+
+    The short path of the common case accepts a tail only if it ends with a newline. Otherwise the offset
+    would land mid-line, and a rename appended in that same line would never be found.
+    """
+    session = "sess-torn"
+    journal = journal_path(claude_config, session)
+    write_journal(journal, [custom_title("One", session), talk(300)])
+    cache = tmp_path / "cache-torn"
+    assert ask_titles(tmp_path, [session], cache=cache)[session]["title"] == "One"
+    whole = journal.stat().st_size
+
+    with journal.open("ab") as handle:
+        handle.write(b'{"type":"user","message":{"content":"')
+    assert ask_titles(tmp_path, [session], cache=cache)[session]["title"] == "One"
+    offset = int((cache / f"{session}.txt").read_text(encoding="utf-8").split("\n")[2])
+    assert offset == whole, f"the offset went past the cut-off line: {offset} vs {whole}"
+
+    with journal.open("ab") as handle:
+        handle.write(('more"}}\n' + custom_title("Two", session) + "\n").encode("utf-8"))
+    assert ask_titles(tmp_path, [session], cache=cache)[session] == {"title": "Two", "kind": "custom"}
