@@ -353,14 +353,45 @@ function Get-TabNameKey {
 
 function Get-DuplicatedTabNames {
     param($Tabs)
-    # Names carried by two tabs or more.
-    $counts = @{}
+    # Names carried by two DIFFERENT tabs or more.
+    #
+    # ‼️ The previous session id of the same tab isn't a twin: after a context clear the tab has two
+    # records with one worktree and one human-given name, and the mark would cry about a second window
+    # that doesn't exist. Which records are one tab is decided by `Get-TabSameKey`, the same sign the hook
+    # hands a claim over by; records without a key (unnamed, named automatically) each stand alone.
+    $owners = @{}
+    $index = 0
     foreach ($tab in @($Tabs)) {
+        $index++
         $tabName = Get-TabNameKey -Tab $tab
         if (-not $tabName) { continue }
-        $counts[$tabName] = 1 + [int]$counts[$tabName]
+        $same = Get-TabSameKey -Tab $tab
+        $owner = if ($same) { $same } else { "record $index" }
+        if (-not $owners.ContainsKey($tabName)) { $owners[$tabName] = @{} }
+        $owners[$tabName][$owner] = $true
     }
-    return @($counts.Keys | Where-Object { $counts[$_] -gt 1 })
+    return @($owners.Keys | Where-Object { $owners[$_].Count -gt 1 })
+}
+
+function Merge-SameTabs {
+    param($Tabs)
+    # One line per tab: records of the same tab's previous session ids (`Get-TabSameKey`) fold into the
+    # freshest one, and streams claimed from any of those ids show in its line. Otherwise after a context
+    # clear a live tab would stand in the listing twice, and its previous id would read "no stream
+    # claimed". Freshest first.
+    $kept = [System.Collections.Generic.List[object]]::new()
+    $byKey = @{}
+    foreach ($tab in @($Tabs | Sort-Object -Property @{ Expression = { Get-TabMoment -Tab $_ } } -Descending)) {
+        $same = Get-TabSameKey -Tab $tab
+        if ($same -and $byKey.ContainsKey($same)) {
+            $byKey[$same].Sessions += [string]$tab.session_id
+            continue
+        }
+        $entry = @{ Tab = $tab; Sessions = @([string]$tab.session_id) }
+        if ($same) { $byKey[$same] = $entry }
+        $kept.Add($entry)
+    }
+    return @($kept)
 }
 
 function Format-WhoLine {
@@ -412,12 +443,14 @@ function Get-TabMoment {
 }
 
 function Format-TabListLine {
-    param($Tab, $Claims, [string[]]$Duplicated)
+    param($Tab, $Claims, [string[]]$Duplicated, [string[]]$Sessions)
+    # `-Sessions` — every session id of this tab, when the previous ones are folded into the freshest record (`Merge-SameTabs`).
     $sessionId = [string]$Tab.session_id
+    if (-not $Sessions) { $Sessions = @($sessionId) }
     $name = Format-TabTitle -Tab $Tab
     if (-not $name) { $name = "tab without a name (session $(Get-ShortSession $sessionId))" }
     # A stream — only an UNCLOSED claim with this session: a released stream isn't run by the tab any more.
-    $led = @($Claims | Where-Object { -not $_.Closed -and [string]$_.Record.session_id -eq $sessionId } |
+    $led = @($Claims | Where-Object { -not $_.Closed -and [string]$_.Record.session_id -in $Sessions } |
             ForEach-Object {
                 $streamName = if ($_.Record.name) { ' "' + $_.Record.name + '"' } else { '' }
                 "$($_.Record.wave)/$($_.Record.stream)$streamName"
@@ -1730,16 +1763,16 @@ $notMine
         # No claim — tabs may still be working in that folder, the stream just never announced (the
         # repo's main folder, one-off work). The tab registry knows them — by folder name.
         $key = Get-StreamKey -Raw $To
-        $here = @(Get-TabRecords -Dir $tabsDir | Where-Object {
-                $key -and ((Get-StreamKey -Raw ([string]$_.tree)) -eq $key -or (Get-StreamKey -Raw ([string]$_.cwd)) -eq $key)
-            } | Sort-Object -Property @{ Expression = { Get-TabMoment -Tab $_ } } -Descending)
+        $here = @(Merge-SameTabs -Tabs @(Get-TabRecords -Dir $tabsDir | Where-Object {
+                    $key -and ((Get-StreamKey -Raw ([string]$_.tree)) -eq $key -or (Get-StreamKey -Raw ([string]$_.cwd)) -eq $key)
+                }))
         if ($here.Count -eq 0) {
             "No claim for `"$To`", and the tab registry knows no tabs in a worktree folder by that name."
             'Who runs which stream: pwsh scripts/wave-board.ps1 -Mode Streams; every tab in the project: -Mode Tabs'
             return
         }
         "No claim for `"$To`". Tabs that worked in a worktree folder by that name:"
-        foreach ($tab in $here) { Format-TabListLine -Tab $tab -Claims $claims -Duplicated @() }
+        foreach ($entry in $here) { Format-TabListLine -Tab $entry.Tab -Sessions $entry.Sessions -Claims $claims -Duplicated @() }
     }
 
     'Tabs' {
@@ -1754,7 +1787,8 @@ $notMine
         }
         $claims = @()
         try { $claims = @(Get-Claims -Dir $registry) } catch { $claims = @() }
-        $sorted = @($tabs | Sort-Object -Property @{ Expression = { Get-TabMoment -Tab $_ } } -Descending)
+        # Previous session ids of the same tab (a context clear) — one line with the freshest, freshest first.
+        $sorted = @(Merge-SameTabs -Tabs $tabs)
         # Matching names get marked: two "O1-3" tabs are exactly the case where the name sends a person
         # to the wrong window. Compared case-insensitively — "o1-3" and "O1-3" look the same to the eye.
         $duplicated = @(Get-DuplicatedTabNames -Tabs $tabs)
@@ -1764,16 +1798,16 @@ $notMine
         # mixed in either: live tabs would drown among a hundred closed ones. The tail is short — for
         # details there's the "who runs it" question.
         $silentSince = (Get-Date).AddHours(-$script:TabSilentHours)
-        $fresh = @($sorted | Where-Object { (Get-TabMoment -Tab $_) -ge $silentSince })
-        $silent = @($sorted | Where-Object { (Get-TabMoment -Tab $_) -lt $silentSince })
-        "Tabs in the registry: $($tabs.Count) — freshest first."
-        foreach ($tab in $fresh) { Format-TabListLine -Tab $tab -Claims $claims -Duplicated $duplicated }
+        $fresh = @($sorted | Where-Object { (Get-TabMoment -Tab $_.Tab) -ge $silentSince })
+        $silent = @($sorted | Where-Object { (Get-TabMoment -Tab $_.Tab) -lt $silentSince })
+        "Tabs in the registry: $($sorted.Count) — freshest first."
+        foreach ($entry in $fresh) { Format-TabListLine -Tab $entry.Tab -Sessions $entry.Sessions -Claims $claims -Duplicated $duplicated }
         if ($fresh.Count -eq 0) { '  nobody has written in any of them in the last day' }
         if ($silent.Count -gt 0) {
             ''
             "Long silent (over a day without a human message): $($silent.Count)"
             $shownSilent = @($silent | Select-Object -First $MaxHints)
-            foreach ($tab in $shownSilent) { Format-TabListLine -Tab $tab -Claims $claims -Duplicated $duplicated }
+            foreach ($entry in $shownSilent) { Format-TabListLine -Tab $entry.Tab -Sessions $entry.Sessions -Claims $claims -Duplicated $duplicated }
             if ($silent.Count -gt $shownSilent.Count) {
                 "  … and $($silent.Count - $shownSilent.Count) more — about a specific stream: pwsh scripts/wave-board.ps1 -Mode Who -To <wave/stream>"
             }

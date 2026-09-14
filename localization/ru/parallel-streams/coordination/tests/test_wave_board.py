@@ -8026,7 +8026,7 @@ def test_the_guard_stays_out_of_the_way_when_it_cannot_answer(tmp_path: Path) ->
 TAB_TITLES_LIB = COORDINATION_DIR / "lib" / "tab-titles.ps1"
 
 TITLE_STAND = """#Requires -Version 7
-param([string]$Lib, [string]$Sessions, [string]$CacheDir, [long]$Chunk = 0, [long]$Ceiling = 0, [switch]$Fresh)
+param([string]$Lib, [string]$Sessions, [string]$CacheDir, [long]$Chunk = 0, [long]$Ceiling = 0, [switch]$Fresh, [switch]$RetryMiss)
 $ErrorActionPreference = 'Stop'
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 . $Lib
@@ -8036,7 +8036,7 @@ if ($Chunk -gt 0) { $script:TabTitleChunkBytes = $Chunk }
 if ($Ceiling -gt 0) { $script:TabTitleCeilingBytes = $Ceiling }
 $answers = [ordered]@{}
 foreach ($session in ($Sessions -split ';')) {
-    $found = Get-SessionTitle -SessionId $session -CacheDir $CacheDir -Fresh:$Fresh
+    $found = Get-SessionTitle -SessionId $session -CacheDir $CacheDir -Fresh:$Fresh -RetryMiss:$RetryMiss
     $answers[$session] = [ordered]@{ title = $found.Title; kind = $found.Kind }
 }
 $answers | ConvertTo-Json -Compress -Depth 3
@@ -8051,10 +8051,12 @@ def ask_titles(
     chunk: int = 0,
     ceiling: int = 0,
     fresh: bool = False,
+    retry_miss: bool = False,
 ) -> dict[str, dict[str, str]]:
     """Спрашивает название у механизма напрямую — по вызову на сессию, в одном запуске оболочки.
 
     `fresh` — так спрашивают начало сессии и объявление: журнал ищется заново, а не берётся из кэша.
+    `retry_miss` — так спрашивают первые ходы сессии: память о промахе поиск не останавливает.
     """
     assert pwsh
     stand = tmp_path / "title-stand.ps1"
@@ -8077,6 +8079,7 @@ def ask_titles(
             "-Ceiling",
             str(ceiling),
             *(["-Fresh"] if fresh else []),
+            *(["-RetryMiss"] if retry_miss else []),
         ],
         capture_output=True,
         text=True,
@@ -9367,6 +9370,8 @@ def test_adoption_steps_back_for_another_tab_of_the_tree_and_for_a_closed_claim(
         "сессию вписали, хотя в том же дереве час назад писали из другой вкладки"
     )
     age(mark, 2 * 24 * 3600)
+    # Отказ помнится две минуты, чтобы не перебирать реестр вкладок на каждом ходу, — проживаем их.
+    age_adoption_refusal(board, "sess-late", 180)
     run_deliver(board, rival, "Prompt", "sess-late")
     assert claim_of(board, rival, only_open=True).fields.get("session_id") == "sess-late", (
         "другая вкладка молчит двое суток, а подхват всё равно не случился"
@@ -9523,3 +9528,288 @@ def test_the_short_path_never_passes_a_last_line_that_is_still_being_written(
     with journal.open("ab") as handle:
         handle.write(('ещё"}}\n' + custom_title("Два", session) + "\n").encode("utf-8"))
     assert ask_titles(tmp_path, [session], cache=cache)[session] == {"title": "Два", "kind": "custom"}
+
+
+# ─── Название вкладки: доводка по повторной проверке ──────────────────────────────────────────────
+#
+# Одна вкладка под двумя номерами сессии (очистка контекста) — одна вкладка и в показах; первые ходы
+# новой сессии находят журнал, появившийся после её начала; стёртое имя даёт автоматическое и с кэшем;
+# дорогие проверки на ходе человека помнят свой ответ; нечитаемая запись вкладки не переписывается.
+
+
+def age_adoption_refusal(board: Path, session: str, seconds: float) -> None:
+    """Отодвигает время отказа подхвата в записи вкладки — так проверка «проживает» память об отказе."""
+    path = tabs_dir(board) / f"{session}.json"
+    record = json.loads(path.read_text(encoding="utf-8"))
+    assert record.get("adopt_refused_at"), f"отказ подхвата не запомнился в записи вкладки: {record}"
+    record["adopt_refused_at"] = (datetime.now() - timedelta(seconds=seconds)).isoformat(timespec="seconds")
+    path.write_text(json.dumps(record, ensure_ascii=False), encoding="utf-8")
+
+
+@needs_pwsh
+@needs_git
+def test_the_previous_number_of_the_same_tab_is_neither_a_twin_nor_a_second_line(
+    tmp_path: Path, claude_config: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """После очистки контекста у вкладки два номера сессии — показы видят одну вкладку, а тёзку в другом дереве метят.
+
+    То же дерево и то же имя от человека — одна вкладка: тем же признаком сторож переносит заявку.
+    Считай показ такие записи двумя, «кто ведёт» кричал бы о втором окне с тем же именем, которого нет,
+    а перечень вкладок ставил бы прежний номер отдельной строкой «потока не заявлено». Тишина тут
+    двусмысленна, поэтому вкладка с тем же именем в ДРУГОМ дереве обязана остаться помеченной.
+    """
+    real_worktrees(tmp_path, {"tab-once": "feat/tab-once"})
+    board = tmp_path / "board.jsonl"
+    tab = tmp_path / "tab-once"
+    write_journal(journal_path(claude_config, "sess-before"), [custom_title("О1-3", "sess-before")])
+    write_journal(journal_path(claude_config, "sess-after"), [custom_title("О1-3", "sess-after")])
+    monkeypatch.setenv("CLAUDE_CODE_SESSION_ID", "sess-before")
+    claim(board, tab, "wave9", "19")
+    monkeypatch.delenv("CLAUDE_CODE_SESSION_ID")
+    deliver_payload(board, tab, "Prompt", {"session_id": "sess-before", "cwd": str(tab)})
+    deliver_payload(board, tab, "Start", {"session_id": "sess-after", "cwd": str(tab), "source": "clear"})
+    deliver_payload(board, tab, "Prompt", {"session_id": "sess-after", "cwd": str(tab)})
+    assert claim_of(board, tab, only_open=True).fields.get("session_id") == "sess-after"
+
+    rows = [line for line in said(run_tool(board, "-Mode", "Who", "-To", "wave9/19")) if line.startswith("wave9/19")]
+    assert len(rows) == 1 and "вкладка О1-3" in rows[0], rows
+    assert "то же название у другой вкладки" not in rows[0], (
+        f"прежний номер той же вкладки назван двойником: {rows[0]}"
+    )
+    listed = said(run_tool(board, "-Mode", "Tabs"))
+    named = [line for line in listed if "О1-3" in line]
+    assert len(named) == 1, f"одна вкладка стоит в перечне не одной строкой: {listed}"
+    assert "поток wave9/19" in named[0] and "‼️" not in named[0], named
+    assert not any("потока не заявлено" in line for line in listed), listed
+
+    now = datetime.now().isoformat(timespec="seconds")
+    put_tab_record(
+        board, "sess-namesake", title="о1-3", title_kind="custom", tree="d:/деревья/другое", prompt_at=now, seen_at=now
+    )
+    rows = [line for line in said(run_tool(board, "-Mode", "Who", "-To", "wave9/19")) if line.startswith("wave9/19")]
+    assert len(rows) == 1 and "то же название у другой вкладки" in rows[0], (
+        f"вкладка с тем же именем в другом дереве не помечена: {rows}"
+    )
+    named = [line for line in said(run_tool(board, "-Mode", "Tabs")) if "О1-3" in line or "о1-3" in line]
+    assert len(named) == 2 and all("‼️ то же название у другой вкладки" in line for line in named), named
+
+
+@needs_pwsh
+@needs_git
+def test_a_journal_that_appears_after_the_start_moves_the_claim_on_the_very_next_message(
+    tmp_path: Path, claude_config: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Журнал новой сессии появился после её начала — заявка переезжает на первом же сообщении, а не через две минуты.
+
+    На начале сессии после очистки контекста журнала ещё нет, и промах запоминается. Действуй эта
+    память и на первых ходах, заявка стояла бы на прежнем номере, пока не придёт сообщение позже двух
+    минут, — а человек, давший задание, мог уйти на часы. Журнал, появившийся только после первого
+    сообщения, находится на втором.
+    """
+    real_worktrees(tmp_path, {"tab-late": "feat/tab-late", "tab-later": "feat/tab-later"})
+    board = tmp_path / "board.jsonl"
+
+    late = tmp_path / "tab-late"
+    write_journal(journal_path(claude_config, "sess-old"), [custom_title("О2-1", "sess-old")])
+    monkeypatch.setenv("CLAUDE_CODE_SESSION_ID", "sess-old")
+    claim(board, late, "wave9", "21")
+    monkeypatch.delenv("CLAUDE_CODE_SESSION_ID")
+    deliver_payload(board, late, "Start", {"session_id": "sess-new", "cwd": str(late), "source": "clear"})
+    assert claim_of(board, late, only_open=True).fields.get("session_id") == "sess-old"
+    write_journal(journal_path(claude_config, "sess-new"), [custom_title("О2-1", "sess-new")])
+    deliver_payload(board, late, "Prompt", {"session_id": "sess-new", "cwd": str(late)})
+    assert claim_of(board, late, only_open=True).fields.get("session_id") == "sess-new", (
+        "журнал появился после начала сессии, а заявка не переехала на первом сообщении"
+    )
+
+    later = tmp_path / "tab-later"
+    write_journal(journal_path(claude_config, "sess-first"), [custom_title("О2-2", "sess-first")])
+    monkeypatch.setenv("CLAUDE_CODE_SESSION_ID", "sess-first")
+    claim(board, later, "wave9", "22")
+    monkeypatch.delenv("CLAUDE_CODE_SESSION_ID")
+    deliver_payload(board, later, "Start", {"session_id": "sess-second", "cwd": str(later), "source": "clear"})
+    deliver_payload(board, later, "Prompt", {"session_id": "sess-second", "cwd": str(later)})
+    assert claim_of(board, later, only_open=True).fields.get("session_id") == "sess-first"
+    write_journal(journal_path(claude_config, "sess-second"), [custom_title("О2-2", "sess-second")])
+    deliver_payload(board, later, "Prompt", {"session_id": "sess-second", "cwd": str(later)})
+    assert claim_of(board, later, only_open=True).fields.get("session_id") == "sess-second", (
+        "журнал появился после первого сообщения, а второе сообщение его не нашло"
+    )
+
+
+@needs_pwsh
+def test_the_first_turns_look_past_a_remembered_miss_only_a_few_times(
+    tmp_path: Path, claude_config: Path
+) -> None:
+    """Первые ходы ищут журнал мимо памяти о промахе — но не без конца.
+
+    Журнал, который не найдётся никогда (другой клиент, иной каталог настроек), иначе стоил бы перебора
+    всех папок проектов на каждом сообщении — ровно то, от чего память о промахе и заведена.
+    """
+    session = "sess-never"
+    cache = tmp_path / "cache-never"
+    for _ in range(5):
+        assert ask_titles(tmp_path, [session], cache=cache, retry_miss=True)[session]["title"] == ""
+    write_journal(journal_path(claude_config, session), [custom_title("Поздно", session)])
+    assert ask_titles(tmp_path, [session], cache=cache, retry_miss=True)[session]["title"] == "", (
+        "после пяти промахов подряд первые ходы всё ещё перебирают папки проектов на каждом сообщении"
+    )
+    assert ask_titles(tmp_path, [session], cache=cache, fresh=True)[session]["title"] == "Поздно"
+
+    soon = "sess-soon"
+    early = tmp_path / "cache-soon"
+    assert ask_titles(tmp_path, [soon], cache=early)[soon]["title"] == ""
+    write_journal(journal_path(claude_config, soon), [custom_title("Вовремя", soon)])
+    assert ask_titles(tmp_path, [soon], cache=early)[soon]["title"] == "", "промах не запомнился"
+    assert ask_titles(tmp_path, [soon], cache=early, retry_miss=True)[soon]["title"] == "Вовремя", (
+        "первый ход сессии не нашёл журнал, появившийся после промаха"
+    )
+
+
+@needs_pwsh
+def test_an_erased_human_name_gives_the_automatic_one_with_or_without_the_cache(
+    tmp_path: Path, claude_config: Path
+) -> None:
+    """Имя от человека стёрто — действует автоматическое, и с кэшем ответ тот же, что без него.
+
+    Первое чтение останавливается на имени от человека и автоматическое, лежащее раньше, не узнаёт.
+    Кэш с таким пробелом отвечал бы «не найдено», а запись вкладки подставляла бы прежнее, стёртое
+    имя — показ звал бы вкладку тем, от чего человек отказался.
+    """
+    session = "sess-erased"
+    journal = journal_path(claude_config, session)
+    write_journal(journal, [ai_title("Авто-раньше", session), talk(3000), custom_title("Имя", session)])
+    cache = tmp_path / "cache-erased"
+    assert ask_titles(tmp_path, [session], cache=cache, chunk=1024)[session] == {"title": "Имя", "kind": "custom"}
+
+    with journal.open("ab") as handle:
+        handle.write((custom_title("", session) + "\n").encode("utf-8"))
+    warm = ask_titles(tmp_path, [session], cache=cache, chunk=1024)[session]
+    cold = ask_titles(tmp_path, [session], cache=tmp_path / "cache-cold", chunk=1024)[session]
+    assert cold == {"title": "Авто-раньше", "kind": "auto"}, cold
+    assert warm == cold, f"с кэшем стёртое имя дало не то, что без кэша: {warm} против {cold}"
+
+
+@needs_pwsh
+@needs_git
+def test_a_refused_adoption_is_remembered_so_the_next_turns_do_not_scan_the_tabs_again(tmp_path: Path) -> None:
+    """Подхват, отступивший перед другой вкладкой дерева, помнит отказ две минуты — реестр вкладок не перебирается на каждом ходу.
+
+    Проверка перебирает весь реестр вкладок (сотни записей — десятые доли секунды) и идёт до доставки
+    находок. Без памяти об отказе обе вкладки дерева платили бы это на каждом сообщении, пока заявку не
+    объявят заново. Перебор виден по исходу: соседняя вкладка замолкает на двое суток, и новый перебор
+    подхватил бы заявку.
+    """
+    real_worktrees(tmp_path, {"tab-memo": "feat/tab-memo"})
+    board = tmp_path / "board.jsonl"
+    tab = tmp_path / "tab-memo"
+    claim(board, tab, "wave9", "18")
+    put_tab_record(board, "sess-neighbour", title="Соседка", title_kind="custom", tree=str(tab).replace("\\", "/"))
+    mark = put_prompt_mark(board, "sess-neighbour", seconds_ago=600)
+
+    run_deliver(board, tab, "Prompt", "sess-memo")
+    assert "session_id" not in claim_of(board, tab, only_open=True).fields
+    assert tab_record(board, "sess-memo").get("adopt_refused_at"), "отказ подхвата не запомнился"
+
+    age(mark, 2 * 24 * 3600)
+    run_deliver(board, tab, "Prompt", "sess-memo")
+    assert "session_id" not in claim_of(board, tab, only_open=True).fields, (
+        "второй ход подряд снова перебрал реестр вкладок — отказ подхвата не запомнился"
+    )
+
+    age_adoption_refusal(board, "sess-memo", 180)
+    run_deliver(board, tab, "Prompt", "sess-memo")
+    assert claim_of(board, tab, only_open=True).fields.get("session_id") == "sess-memo", (
+        "память об отказе не отпустила и через две минуты"
+    )
+
+
+@needs_pwsh
+@needs_git
+def test_a_nameless_tab_under_a_named_claim_rereads_its_title_at_most_every_two_minutes(
+    tmp_path: Path, claude_config: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Безымянная вкладка в дереве с чужой именованной заявкой не дочитывает журнал на каждом ходу.
+
+    Решение о переносе заявки спрашивает своё название на каждом сообщении такой вкладки. Пустой вид
+    названия — не повод дочитывать журнал каждый раз: как и у записи вкладки, не чаще раза в две минуты.
+    """
+    real_worktrees(tmp_path, {"tab-anon": "feat/tab-anon"})
+    board = tmp_path / "board.jsonl"
+    tab = tmp_path / "tab-anon"
+    write_journal(journal_path(claude_config, "sess-holder"), [custom_title("Держатель", "sess-holder")])
+    monkeypatch.setenv("CLAUDE_CODE_SESSION_ID", "sess-holder")
+    claim(board, tab, "wave9", "23")
+    monkeypatch.delenv("CLAUDE_CODE_SESSION_ID")
+    journal = journal_path(claude_config, "sess-anon")
+    write_journal(journal, [talk(200)])
+
+    run_deliver(board, tab, "Prompt", "sess-anon")
+    assert tab_record(board, "sess-anon")["title_kind"] == "", tab_record(board, "sess-anon")
+    with journal.open("ab") as handle:
+        handle.write((ai_title("Придумано", "sess-anon") + "\n").encode("utf-8"))
+    run_deliver(board, tab, "Prompt", "sess-anon")
+    assert tab_record(board, "sess-anon")["title"] == "", "безымянная вкладка дочитала журнал раньше двух минут"
+
+    age(title_cache(board, "sess-anon"), 180)
+    run_deliver(board, tab, "Prompt", "sess-anon")
+    assert tab_record(board, "sess-anon")["title"] == "Придумано", "название не дошло и через две минуты"
+    assert claim_of(board, tab, only_open=True).fields.get("session_id") == "sess-holder"
+
+
+def deny_reading(path: Path) -> None:
+    """Запрещает чтение файла — так выглядит запись вкладки, которую на миг не удалось прочитать."""
+    if os.name == "nt":
+        subprocess.run(["icacls", str(path), "/deny", "*S-1-1-0:(RD)"], check=True, capture_output=True)
+    else:
+        path.chmod(0)
+
+
+def allow_reading(path: Path) -> None:
+    if not path.exists():
+        return
+    if os.name == "nt":
+        subprocess.run(["icacls", str(path), "/reset"], check=True, capture_output=True)
+    else:
+        path.chmod(0o644)
+
+
+@needs_pwsh
+def test_a_tab_record_that_exists_but_cannot_be_read_is_not_rewritten(tmp_path: Path, claude_config: Path) -> None:
+    """Запись вкладки есть, а прочитать её не удалось — в этот ход она не переписывается.
+
+    Переписанная вслепую запись теряла бы стартовое дерево, а пустое стартовое дерево значит «сессия до
+    обновления»: защита подхвата от зашедшей в чужое дерево вкладки у этой сессии тихо выключалась бы.
+    Нечитаемость здесь — запрет чтения правами доступа: антивирус и занятый файл дают тот же отказ, но
+    надёжно их не воспроизвести.
+    """
+    board = tmp_path / "board.jsonl"
+    mine = tmp_path / "wave9-locked"
+    mine.mkdir()
+    write_journal(journal_path(claude_config, "sess-locked"), [custom_title("Запертая", "sess-locked")])
+    run_deliver(board, mine, "Start", "sess-locked")
+    record_file = tabs_dir(board) / "sess-locked.json"
+    started = tab_record(board, "sess-locked")
+    assert started["start_tree"], started
+
+    deny_reading(record_file)
+    try:
+        try:
+            record_file.read_bytes()
+            readable = True
+        except OSError:
+            readable = False
+        if readable:
+            pytest.skip("файл не удалось сделать нечитаемым — запрет прав здесь не действует")
+        run_deliver(board, mine, "Prompt", "sess-locked")
+    finally:
+        allow_reading(record_file)
+    assert tab_record(board, "sess-locked")["start_tree"] == started["start_tree"], (
+        "нечитаемую запись вкладки переписали вслепую — стартовое дерево потеряно"
+    )
+    assert not prompt_mark(board, "sess-locked").exists(), "ход, не переписавший запись, завёл отметку"
+
+    run_deliver(board, mine, "Prompt", "sess-locked")
+    after = tab_record(board, "sess-locked")
+    assert after["start_tree"] == started["start_tree"] and after["prompt_at"], after
+    assert prompt_mark(board, "sess-locked").exists()

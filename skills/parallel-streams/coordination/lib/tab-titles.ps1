@@ -85,8 +85,9 @@ $script:TabTitleCacheMark = 'parallel-streams tab title cache 1'
 $script:TabStateMark = 'parallel-streams tab state 1'
 
 # On a human message the name is re-read from the transcript at most once in this many seconds (by the
-# cache file's modification time). A rename reaches the listings within two minutes; a session start
-# and a stream announcement always read the transcript.
+# cache file's modification time). A rename reaches the listings on the first human message after two
+# minutes, and without messages it doesn't reach them at all; a session start and a stream announcement
+# always read the transcript.
 $script:TabTitleRereadSeconds = 120
 
 # No transcript found — look for it again at most once in this many seconds. The search walks every
@@ -95,6 +96,13 @@ $script:TabTitleRereadSeconds = 120
 # longer one: a new session's transcript appears after the session starts, and a longer memory of the
 # miss would delay both the name and the claim hand-over after a context clear by as much.
 $script:TabTitleMissRecheckSeconds = 120
+
+# A session's first turns (no name of its own yet) look for the transcript past the memory of a miss: a
+# new session's transcript appears after the session starts, and the claim hand-over after a context
+# clear would otherwise wait two minutes. But no more than this many misses in a row: for a session
+# whose transcript will never be found, every message would otherwise walk the project folders. The
+# count of misses sits in the cache where the offset goes — a miss has no offset to mean.
+$script:TabTitleMissRetries = 5
 
 # An encoding that doesn't throw on an invalid character. The default file encoding throws on a lone
 # half of a surrogate pair — and the cache and the tab record were silently never written.
@@ -324,7 +332,7 @@ function Get-CleanTitle {
 }
 
 function Get-SessionTitle {
-    param([string]$SessionId, [string]$CacheDir, [switch]$Fresh)
+    param([string]$SessionId, [string]$CacheDir, [switch]$Fresh, [switch]$RetryMiss, [switch]$UseRecentCache)
     # A tab's current name by session id: `Title` and its kind `Kind` — `custom` (given by a person),
     # `auto` (made up automatically), or empty (not found).
     #
@@ -341,12 +349,25 @@ function Get-SessionTitle {
     # automatic name (both already cleaned). Not JSON on purpose: parsing JSON in the hook's fresh
     # process costs tens of milliseconds on every turn, while five lines are read in one disk call.
     # Nothing from the transcript goes into the cache except those two names. An empty path means "no
-    # transcript found": it's looked for again at most once in `$script:TabTitleMissRecheckSeconds`.
+    # transcript found": it's looked for again at most once in `$script:TabTitleMissRecheckSeconds`, and
+    # in place of the offset a miss keeps the number of misses in a row.
     #
     # `-Fresh` — a session start and an announcement: the transcript is looked for again rather than
     # taken from the cache (the session may have been resumed from another folder, and a transcript of
     # the same id grew in another project folder), and the memory of a miss doesn't apply. If the
     # transcript found is the one remembered, the cache stays valid.
+    #
+    # `-RetryMiss` — a session's first turns: the memory of a miss doesn't stop the search while there
+    # are fewer than `$script:TabTitleMissRetries` misses in a row. A transcript found in the cache is not
+    # looked for again.
+    #
+    # `-UseRecentCache` — a human message: a cache with a found transcript, written less than two minutes
+    # ago, answers by itself, and the transcript isn't read.
+    #
+    # ‼️ A human-given name erased to an empty string means "no name", and the automatic one applies. The
+    # cache may not know it: the first read stops at the human-given name and goes no further back. So if
+    # the new tail holds an erasure and the automatic name is unknown, the window is read again as if there
+    # were no cache — the answer with the cache and without it is the same.
     #
     # Any failure — "not found", no exception out.
     if (-not $SessionId -or $SessionId -cnotmatch $script:TabSessionIdPattern) { return @{ Title = ''; Kind = '' } }
@@ -360,9 +381,13 @@ function Get-SessionTitle {
         $known = if ($cached -and $cached.Count -eq 5 -and $cached[0] -eq $script:TabTitleCacheMark) { $cached[2] -as [long] } else { $null }
         $usable = $null -ne $known -and $known -ge 0
         $info = $null
+        $misses = [long]0
         if ($usable -and -not $cached[1]) {
             # Memory of a miss: there was no transcript very recently — don't walk the project folders again.
-            if (-not $Fresh -and ([datetime]::Now - [System.IO.File]::GetLastWriteTime($cacheFile)).TotalSeconds -lt $script:TabTitleMissRecheckSeconds) {
+            # A session's first turns look past it, but for no more than `$script:TabTitleMissRetries` misses in a row.
+            $misses = $known
+            if (-not $Fresh -and -not ($RetryMiss -and $misses -lt $script:TabTitleMissRetries) -and
+                ([datetime]::Now - [System.IO.File]::GetLastWriteTime($cacheFile)).TotalSeconds -lt $script:TabTitleMissRecheckSeconds) {
                 return @{ Title = ''; Kind = '' }
             }
             $usable = $false
@@ -379,6 +404,12 @@ function Get-SessionTitle {
             if ($info.Name -cne "$SessionId.jsonl" -or -not [string]::Equals($journalRoot, $projects, [System.StringComparison]::OrdinalIgnoreCase)) {
                 $usable = $false
                 $info = $null
+            } elseif ($UseRecentCache -and -not $Fresh -and
+                ([datetime]::Now - [System.IO.File]::GetLastWriteTime($cacheFile)).TotalSeconds -lt $script:TabTitleRereadSeconds) {
+                # The transcript was read less than two minutes ago — a human message takes the names from the cache.
+                if ($cached[3]) { return @{ Title = $cached[3]; Kind = 'custom' } }
+                if ($cached[4]) { return @{ Title = $cached[4]; Kind = 'auto' } }
+                return @{ Title = ''; Kind = '' }
             } elseif (-not $Fresh -and -not $info.Exists) {
                 $info = $null
             }
@@ -398,7 +429,8 @@ function Get-SessionTitle {
         $custom = if ($usable) { $cached[3] } else { '' }
         $auto = if ($usable) { $cached[4] } else { '' }
         $pathText = ''
-        $offset = [long]0
+        # A miss is remembered with the number of misses in a row in place of the offset.
+        $offset = $misses + 1
         $write = $true
         if ($info) {
             $pathText = $info.FullName
@@ -443,6 +475,17 @@ function Get-SessionTitle {
                     if ($from -lt $known) { $from = $known }
                     $found = @{ Custom = $null; Auto = $null; Offset = $null }
                     if ($size -gt $from) { $found = Read-TitleRecords -Path $info.FullName -From $from -To $size }
+                    if ($usable -and $cached[3] -and -not $cached[4] -and '' -ceq $found.Custom -and $null -eq $found.Auto) {
+                        # The human-given name was just erased, and the cache doesn't know the automatic one lying
+                        # before it: the first read stopped at the human-given name. Read the window again, as without a cache.
+                        $usable = $false
+                        $known = [long]0
+                        $custom = ''
+                        $auto = ''
+                        $from = $size - [long]$script:TabTitleCeilingBytes
+                        if ($from -lt 0) { $from = [long]0 }
+                        $found = Read-TitleRecords -Path $info.FullName -From $from -To $size
+                    }
                     if ($null -ne $found.Custom) { $custom = Get-CleanTitle -Raw $found.Custom }
                     if ($null -ne $found.Auto) { $auto = Get-CleanTitle -Raw $found.Auto }
                     $offset = if ($null -ne $found.Offset) { [long]$found.Offset } elseif ($usable) { $known } else { $from }
@@ -479,8 +522,9 @@ function Get-SessionTitle {
 # like the board: visible to every worktree, and it survives a worktree being deleted.
 #
 # Up to three files per session:
-#   • `<id>.json` — the record itself (id, folder, tree, starting tree, name, kind); rewritten only
-#     when one of those changed;
+#   • `<id>.json` — the record itself (id, folder, tree, starting tree, name, kind, and the time a claim
+#     adoption last stepped back for another tab of the worktree); rewritten only when one of those
+#     changed;
 #   • `<id>.prompt` — the marker: its modification time IS the time of the last human message, and
 #     inside it are the same folder, tree and name, so a human message can compare them without
 #     parsing JSON;
@@ -497,6 +541,14 @@ $script:TabSilentHours = 24
 # A claim without a session isn't adopted if a person wrote in ANOTHER tab of the same worktree within
 # this many hours: two tabs in a worktree are an ambiguity, and choosing for the person isn't allowed.
 $script:TabAdoptRivalHours = 24
+
+# The adoption stepped back for another tab of the worktree — check again at most once in this many
+# seconds. The check walks the whole tab registry (hundreds of records — tenths of a second), and it
+# runs before the findings are delivered, on every message of both tabs, until the claim is announced
+# again. The time of the refusal lives in this tab's record (`adopt_refused_at`), and during this run —
+# here, until the record is rewritten at the end of the turn.
+$script:TabAdoptRecheckSeconds = 120
+$script:TabAdoptRefusedNow = @{}
 
 # How long a tab record lives without a single turn: after that the hook removes it at session start.
 # A month covers a wave with room to spare; nobody looks up a tab by name after a month of silence.
@@ -516,8 +568,12 @@ function Get-TabsDir {
 }
 
 function Read-TabRecordFile {
-    param([string]$Path)
+    param([string]$Path, [switch]$Strict)
     # A tab record is flat JSON made of strings. Unreadable or unparsable — nothing, not a crash.
+    #
+    # `-Strict` — for whoever is about to rewrite the record: the file exists but couldn't be read (busy,
+    # no permission) — an exception, not nothing. Otherwise the rewritten record would silently lose its
+    # starting tree.
     #
     # The time of the last human message comes from the session marker (its modification time) when
     # there is one: the tab record isn't rewritten on every turn. No marker — the record's own field.
@@ -529,6 +585,7 @@ function Read-TabRecordFile {
     try {
         $text = [System.IO.File]::ReadAllText($Path)
     } catch {
+        if ($Strict -and [System.IO.File]::Exists($Path)) { throw }
         return $null
     }
     $doc = $null
@@ -603,7 +660,11 @@ function Update-TabRecord {
     # ‼️ The kit's most frequent call is a human turn. There, within two minutes of the last transcript
     # read, the work is one read of a small marker and one touch of its time: the name comes from the
     # marker itself, and the tab record (JSON) is neither parsed nor rewritten unless the folder, tree or
-    # name changed. Building and writing happen in place, with no helpers (see the file header).
+    # name changed. Building and writing happen in place, with no helpers (see the file header); off the
+    # common path the name comes from `Get-TabPromptTitle` — the same rule the claim hand-over decision uses.
+    #
+    # The record file exists but couldn't be read — the record isn't rewritten on this turn: otherwise it
+    # would lose its starting tree, and this session's adoption guard would silently switch off.
     #
     # Mute on any failure: a missed tab record is no reason to get in the way of work.
     if (-not $Dir -or -not $SessionId -or $SessionId -cnotmatch $script:TabSessionIdPattern) { return }
@@ -619,22 +680,25 @@ function Update-TabRecord {
         $treeText = (([string]$Tree -replace '\\', '/').TrimEnd('/')) -replace '[\x00-\x1f]', ' '
         $title = $script:TabTitleNow[$SessionId]
         if (-not $title) {
-            if ($Stage -eq 'Prompt' -and $stateOk -and
+            if ($Stage -eq 'Prompt' -and $stateOk -and $state[3] -and
                 ([datetime]::Now - [System.IO.File]::GetLastWriteTime([System.IO.Path]::Combine($cacheDir, "$SessionId.txt"))).TotalSeconds -lt $script:TabTitleRereadSeconds) {
                 $title = @{ Title = $state[4]; Kind = $state[3] }
+            } elseif ($Stage -eq 'Prompt') {
+                $title = Get-TabPromptTitle -Dir $Dir -SessionId $SessionId -State $state
             } else {
-                $title = Get-SessionTitle -SessionId $SessionId -CacheDir $cacheDir -Fresh:($Stage -ne 'Prompt')
+                $title = Get-SessionTitle -SessionId $SessionId -CacheDir $cacheDir -Fresh
             }
         }
         # The transcript didn't read for a moment — the previous name is better than nothing.
         if (-not $title.Kind -and $stateOk -and $state[3]) { $title = @{ Title = $state[4]; Kind = $state[3] } }
-        if ($Stage -eq 'Prompt' -and -not $Force -and $stateOk -and $state[1] -ceq $cwdText -and $state[2] -ceq $treeText -and
+        $refusedNow = [string]$script:TabAdoptRefusedNow[$SessionId]
+        if ($Stage -eq 'Prompt' -and -not $Force -and -not $refusedNow -and $stateOk -and $state[1] -ceq $cwdText -and $state[2] -ceq $treeText -and
             $state[3] -ceq [string]$title.Kind -and $state[4] -ceq [string]$title.Title) {
             # Nothing changed: the message time is a touch of the marker.
             [System.IO.File]::SetLastWriteTime($markFile, [datetime]::Now)
             return
         }
-        $old = Read-TabRecordFile -Path $file
+        $old = Read-TabRecordFile -Path $file -Strict
         if (-not $title.Kind -and $old -and $old.title) {
             $title = @{ Title = [string]$old.title; Kind = [string]$old.title_kind }
         }
@@ -658,6 +722,9 @@ function Update-TabRecord {
             prompt_at  = $promptAt
             seen_at    = $now
         }
+        # When the claim adoption last stepped back for another tab of the worktree — kept while there is one.
+        $refusedAt = if ($refusedNow) { $refusedNow } elseif ($old) { [string]$old.adopt_refused_at } else { '' }
+        if ($refusedAt) { $record['adopt_refused_at'] = $refusedAt }
         # A flat record of strings — turned into JSON by hand, not by the shell's general converter: that
         # one costs tens of milliseconds in a fresh process. Backslash and quote are escaped; the fields
         # hold no control characters (the name is cleaned, paths don't contain them), and just in case
@@ -829,25 +896,61 @@ function Get-TabFolderKey {
     return (([string]$Path -replace '\\', '/').TrimEnd('/')).ToLowerInvariant()
 }
 
+function Get-TabPromptTitle {
+    param([string]$Dir, [string]$SessionId, $State)
+    # This tab's own name on a human message. One rule for both — for the tab record and for the claim
+    # hand-over decision; `$State` — the session marker's lines, if they were already read.
+    #
+    #   • The marker holds a name, and the transcript was read less than two minutes ago — the name from
+    #     the marker.
+    #   • No marker, or an empty name kind in it — these are the session's first turns: a new session's
+    #     transcript appears after the session starts, so the memory of a miss doesn't stop the search
+    #     (otherwise the claim hand-over after a context clear would wait two minutes). A transcript that
+    #     was found is re-read, with an empty kind too, at most once in two minutes, like everything else.
+    #   • Otherwise — read the transcript's tail.
+    $stateOk = $State -and $State.Count -eq 5 -and $State[0] -eq $script:TabStateMark
+    $cacheDir = [System.IO.Path]::Combine($Dir, 'cache')
+    if ($stateOk -and $State[3] -and
+        ([datetime]::Now - [System.IO.File]::GetLastWriteTime([System.IO.Path]::Combine($cacheDir, "$SessionId.txt"))).TotalSeconds -lt $script:TabTitleRereadSeconds) {
+        return @{ Title = $State[4]; Kind = $State[3] }
+    }
+    return (Get-SessionTitle -SessionId $SessionId -CacheDir $cacheDir -RetryMiss:(-not $stateOk -or -not $State[3]) -UseRecentCache:$stateOk)
+}
+
 function Get-TabOwnTitle {
     param([string]$Dir, [string]$SessionId, [string]$Stage)
-    # This tab's own name for the claim hand-over decision. On a human message — from the session marker
-    # (at most two minutes stale); at a session start — from the transcript. What's read from the
-    # transcript is remembered: the tab record at the end of the turn doesn't read it again.
+    # This tab's own name for the claim hand-over decision. On a human message — by the rule of
+    # `Get-TabPromptTitle`; at a session start — from the transcript. The answer is remembered: the tab
+    # record at the end of the turn doesn't ask for it a second time.
     if ($script:TabTitleNow.ContainsKey($SessionId)) { return $script:TabTitleNow[$SessionId] }
     if ($Stage -eq 'Prompt') {
-        try {
-            $state = [System.IO.File]::ReadAllLines([System.IO.Path]::Combine($Dir, "$SessionId.prompt"))
-            if ($state.Count -eq 5 -and $state[0] -eq $script:TabStateMark -and $state[3]) {
-                return @{ Title = $state[4]; Kind = $state[3] }
-            }
-        } catch {
-            # No marker yet — the session's first turn: read the transcript.
-        }
+        $state = $null
+        # No marker yet — the session's first turn: the rule reads the transcript itself.
+        try { $state = [System.IO.File]::ReadAllLines([System.IO.Path]::Combine($Dir, "$SessionId.prompt")) } catch { $state = $null }
+        $title = Get-TabPromptTitle -Dir $Dir -SessionId $SessionId -State $state
+    } else {
+        $title = Get-SessionTitle -SessionId $SessionId -CacheDir ([System.IO.Path]::Combine($Dir, 'cache')) -Fresh
     }
-    $title = Get-SessionTitle -SessionId $SessionId -CacheDir ([System.IO.Path]::Combine($Dir, 'cache')) -Fresh:($Stage -ne 'Prompt')
     $script:TabTitleNow[$SessionId] = $title
     return $title
+}
+
+function Get-TabSameKey {
+    param($Tab)
+    # The "same tab" key: two records with the same non-empty key are one tab under different session
+    # ids. Clearing the context and resuming with a fork give the tab a new session id, while the name a
+    # person gave it carries over. One sign for the whole kit: by it the hook hands the claim over to the
+    # new id, and listings neither call the previous id a twin nor show it as a line of its own.
+    #
+    # The key is the worktree and the human-given name, cleaned and ignoring case. ‼️ Unnamed tabs and
+    # tabs with only an automatic name have no key: otherwise two tabs of one worktree would pull the
+    # claim back and forth on every message. Empty — the record is never one tab with any other.
+    if (-not $Tab -or [string]$Tab.title_kind -ne 'custom') { return '' }
+    $name = (Get-CleanTitle -Raw ([string]$Tab.title)).ToLowerInvariant()
+    $tree = Get-TabFolderKey -Path ([string]$Tab.tree)
+    if (-not $name -or -not $tree) { return '' }
+    # A cleaned name never holds a newline, so joining on one is unambiguous.
+    return "$tree`n$name"
 }
 
 function Test-TabMayAdoptClaim {
@@ -859,17 +962,28 @@ function Test-TabMayAdoptClaim {
     #   • There is no OTHER tab of this worktree where a person wrote within the last day: two tabs in
     #     a worktree are an ambiguity, and the first to write would name itself the runner for good.
     # No starting tree (the session began before the update) — only the second condition decides.
+    #
+    # The second condition walks the whole tab registry, so a refusal by it is remembered: the next turns
+    # within `$script:TabAdoptRecheckSeconds` step back at once, without walking the registry.
     $treeKey = Get-TabFolderKey -Path $Tree
     if (-not $treeKey) { return $false }
     $own = Get-TabRecord -Dir $Dir -SessionId $SessionId
     $startTree = if ($own) { [string]$own.start_tree } else { '' }
     if ($startTree -and (Get-TabFolderKey -Path $startTree) -ne $treeKey) { return $false }
-    $since = (Get-Date).AddHours(-$script:TabAdoptRivalHours)
+    $now = Get-Date
+    $refused = [datetime]::MinValue
+    if ($own -and [string]$own.adopt_refused_at -and [datetime]::TryParse([string]$own.adopt_refused_at, [ref]$refused)) {
+        $passed = ($now - $refused).TotalSeconds
+        if ($passed -ge 0 -and $passed -lt $script:TabAdoptRecheckSeconds) { return $false }
+    }
+    $since = $now.AddHours(-$script:TabAdoptRivalHours)
     foreach ($tab in (Get-TabRecords -Dir $Dir)) {
         if ([string]$tab.session_id -ceq $SessionId) { continue }
         if ((Get-TabFolderKey -Path ([string]$tab.tree)) -ne $treeKey) { continue }
         $moment = [datetime]::MinValue
         if ([string]$tab.prompt_at -and [datetime]::TryParse([string]$tab.prompt_at, [ref]$moment) -and $moment -ge $since) {
+            # The tab record adds the time of the refusal at the end of the turn.
+            $script:TabAdoptRefusedNow[$SessionId] = $now.ToString('s')
             return $false
         }
     }
@@ -880,19 +994,18 @@ function Test-TabIsSameNamedTab {
     param([string]$Dir, [string]$SessionId, [string]$HeldSession, [string]$Tree, [string]$Stage)
     # Is this the same tab the claim names, only with a new session id.
     #
-    # Clearing the context and resuming with a fork give the tab a new session id, while the name a
-    # person gave it carries over. There's one sign: the recorded session has the same worktree, and
-    # both carry a human-given name, non-empty and equal ignoring case. ‼️ Unnamed tabs and tabs named
-    # differently NEVER match: otherwise two tabs in one worktree would pull the claim back and forth on
-    # every message.
+    # The sign is `Get-TabSameKey`: the recorded session has the same worktree, and both carry a
+    # human-given name, non-empty and equal ignoring case. ‼️ Unnamed tabs and tabs named differently
+    # NEVER match: otherwise two tabs in one worktree would pull the claim back and forth on every message.
     $held = Get-TabRecord -Dir $Dir -SessionId $HeldSession
-    if (-not $held -or [string]$held.title_kind -ne 'custom') { return $false }
-    if ((Get-TabFolderKey -Path ([string]$held.tree)) -ne (Get-TabFolderKey -Path $Tree)) { return $false }
-    $heldName = (Get-CleanTitle -Raw ([string]$held.title)).ToLowerInvariant()
-    if (-not $heldName) { return $false }
+    $heldKey = Get-TabSameKey -Tab $held
+    # The cheap part first: could the recorded tab match a tab of this worktree at all. This tab's own
+    # name (the transcript) is asked for only then.
+    if (-not $heldKey -or $heldKey -cne (Get-TabSameKey -Tab @{ title_kind = 'custom'; title = [string]$held.title; tree = $Tree })) {
+        return $false
+    }
     $mine = Get-TabOwnTitle -Dir $Dir -SessionId $SessionId -Stage $Stage
-    if ([string]$mine.Kind -ne 'custom') { return $false }
-    return ((Get-CleanTitle -Raw ([string]$mine.Title)).ToLowerInvariant() -ceq $heldName)
+    return ($heldKey -ceq (Get-TabSameKey -Tab @{ title_kind = [string]$mine.Kind; title = [string]$mine.Title; tree = $Tree }))
 }
 
 function Update-ClaimSessionFromTab {

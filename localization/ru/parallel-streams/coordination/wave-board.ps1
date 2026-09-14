@@ -329,14 +329,45 @@ function Get-TabNameKey {
 
 function Get-DuplicatedTabNames {
     param($Tabs)
-    # Названия, которые носят две вкладки и больше.
-    $counts = @{}
+    # Названия, которые носят две РАЗНЫЕ вкладки и больше.
+    #
+    # ‼️ Прежний номер той же вкладки двойником не считается: после очистки контекста у вкладки две записи
+    # с одним деревом и одним именем от человека, и пометка кричала бы о втором окне, которого нет. Какие
+    # записи — одна вкладка, решает `Get-TabSameKey`, тот же признак, по которому сторож переносит заявку;
+    # записи без ключа (безымянные, названные автоматически) — каждая сама по себе.
+    $owners = @{}
+    $index = 0
     foreach ($tab in @($Tabs)) {
+        $index++
         $tabName = Get-TabNameKey -Tab $tab
         if (-not $tabName) { continue }
-        $counts[$tabName] = 1 + [int]$counts[$tabName]
+        $same = Get-TabSameKey -Tab $tab
+        $owner = if ($same) { $same } else { "запись $index" }
+        if (-not $owners.ContainsKey($tabName)) { $owners[$tabName] = @{} }
+        $owners[$tabName][$owner] = $true
     }
-    return @($counts.Keys | Where-Object { $counts[$_] -gt 1 })
+    return @($owners.Keys | Where-Object { $owners[$_].Count -gt 1 })
+}
+
+function Merge-SameTabs {
+    param($Tabs)
+    # Одна строка на вкладку: записи прежних номеров той же вкладки (`Get-TabSameKey`) сворачиваются к
+    # самой свежей, а потоки, заявленные с любого из номеров, показываются в её строке. Иначе после
+    # очистки контекста живая вкладка стояла бы в перечне дважды, и прежний номер звался бы «потока не
+    # заявлено». Свежие — первыми.
+    $kept = [System.Collections.Generic.List[object]]::new()
+    $byKey = @{}
+    foreach ($tab in @($Tabs | Sort-Object -Property @{ Expression = { Get-TabMoment -Tab $_ } } -Descending)) {
+        $same = Get-TabSameKey -Tab $tab
+        if ($same -and $byKey.ContainsKey($same)) {
+            $byKey[$same].Sessions += [string]$tab.session_id
+            continue
+        }
+        $entry = @{ Tab = $tab; Sessions = @([string]$tab.session_id) }
+        if ($same) { $byKey[$same] = $entry }
+        $kept.Add($entry)
+    }
+    return @($kept)
 }
 
 function Format-WhoLine {
@@ -388,12 +419,14 @@ function Get-TabMoment {
 }
 
 function Format-TabListLine {
-    param($Tab, $Claims, [string[]]$Duplicated)
+    param($Tab, $Claims, [string[]]$Duplicated, [string[]]$Sessions)
+    # `-Sessions` — все номера этой вкладки, если прежние свёрнуты к свежей записи (`Merge-SameTabs`).
     $sessionId = [string]$Tab.session_id
+    if (-not $Sessions) { $Sessions = @($sessionId) }
     $title = Format-TabTitle -Tab $Tab
     if (-not $title) { $title = "вкладка без названия (сессия $(Get-ShortSession $sessionId))" }
     # Поток — только НЕЗАКРЫТАЯ заявка с этой сессией: сданный поток вкладка уже не ведёт.
-    $led = @($Claims | Where-Object { -not $_.Closed -and [string]$_.Record.session_id -eq $sessionId } |
+    $led = @($Claims | Where-Object { -not $_.Closed -and [string]$_.Record.session_id -in $Sessions } |
             ForEach-Object { "$($_.Record.wave)/$($_.Record.stream)$(if ($_.Record.name) { " «$($_.Record.name)»" })" })
     $streams = if ($led.Count -gt 0) { "поток $($led -join ', ')" } else { 'потока не заявлено' }
     # Папка из записи вкладки чистится при печати, как и название: запись лежит в общем каталоге.
@@ -1624,16 +1657,16 @@ $notMine
         # Заявки нет — может, в этой папке всё же работают вкладки, просто поток не объявлялся
         # (главная папка репозитория, разовая работа). Их знает реестр вкладок — по имени папки.
         $key = Get-StreamKey -Raw $To
-        $here = @(Get-TabRecords -Dir $tabsDir | Where-Object {
-                $key -and ((Get-StreamKey -Raw ([string]$_.tree)) -eq $key -or (Get-StreamKey -Raw ([string]$_.cwd)) -eq $key)
-            } | Sort-Object -Property @{ Expression = { Get-TabMoment -Tab $_ } } -Descending)
+        $here = @(Merge-SameTabs -Tabs @(Get-TabRecords -Dir $tabsDir | Where-Object {
+                    $key -and ((Get-StreamKey -Raw ([string]$_.tree)) -eq $key -or (Get-StreamKey -Raw ([string]$_.cwd)) -eq $key)
+                }))
         if ($here.Count -eq 0) {
             "Заявки на «$To» нет, и вкладок в рабочей папке с таким именем перечень вкладок не знает."
             'Кто какой поток ведёт: pwsh scripts/wave-board.ps1 -Mode Streams; все вкладки проекта: -Mode Tabs'
             return
         }
         "Заявки на «$To» нет. В рабочей папке с таким именем работали вкладки:"
-        foreach ($tab in $here) { Format-TabListLine -Tab $tab -Claims $claims -Duplicated @() }
+        foreach ($entry in $here) { Format-TabListLine -Tab $entry.Tab -Sessions $entry.Sessions -Claims $claims -Duplicated @() }
     }
 
     'Tabs' {
@@ -1648,7 +1681,8 @@ $notMine
         }
         $claims = @()
         try { $claims = @(Get-Claims -Dir $registry) } catch { $claims = @() }
-        $sorted = @($tabs | Sort-Object -Property @{ Expression = { Get-TabMoment -Tab $_ } } -Descending)
+        # Прежние номера той же вкладки (очистка контекста) — одной строкой с самым свежим, свежие сверху.
+        $sorted = @(Merge-SameTabs -Tabs $tabs)
         # Совпавшие названия метим: две вкладки «О1-3» — ровно тот случай, когда по названию легко
         # уйти не в то окно. Сверяем без учёта регистра — глазами «о1-3» и «О1-3» не различить.
         $duplicated = @(Get-DuplicatedTabNames -Tabs $tabs)
@@ -1657,16 +1691,16 @@ $notMine
         # без хвоста ответ выглядел бы «такой вкладки нет». Но и смешивать нельзя: живые утонули бы в
         # сотне закрытых. Хвост короткий — за подробностями вопрос «кто ведёт».
         $silentSince = (Get-Date).AddHours(-$script:TabSilentHours)
-        $fresh = @($sorted | Where-Object { (Get-TabMoment -Tab $_) -ge $silentSince })
-        $silent = @($sorted | Where-Object { (Get-TabMoment -Tab $_) -lt $silentSince })
-        "Вкладок в перечне: $($tabs.Count) — свежие сверху."
-        foreach ($tab in $fresh) { Format-TabListLine -Tab $tab -Claims $claims -Duplicated $duplicated }
+        $fresh = @($sorted | Where-Object { (Get-TabMoment -Tab $_.Tab) -ge $silentSince })
+        $silent = @($sorted | Where-Object { (Get-TabMoment -Tab $_.Tab) -lt $silentSince })
+        "Вкладок в перечне: $($sorted.Count) — свежие сверху."
+        foreach ($entry in $fresh) { Format-TabListLine -Tab $entry.Tab -Sessions $entry.Sessions -Claims $claims -Duplicated $duplicated }
         if ($fresh.Count -eq 0) { '  за последние сутки не писали ни в одной' }
         if ($silent.Count -gt 0) {
             ''
             "Давно молчат (больше суток без сообщений человека): $($silent.Count)"
             $shownSilent = @($silent | Select-Object -First $MaxHints)
-            foreach ($tab in $shownSilent) { Format-TabListLine -Tab $tab -Claims $claims -Duplicated $duplicated }
+            foreach ($entry in $shownSilent) { Format-TabListLine -Tab $entry.Tab -Sessions $entry.Sessions -Claims $claims -Duplicated $duplicated }
             if ($silent.Count -gt $shownSilent.Count) {
                 "  … и ещё $($silent.Count - $shownSilent.Count) — про конкретный поток: pwsh scripts/wave-board.ps1 -Mode Who -To <волна/поток>"
             }

@@ -82,8 +82,8 @@ $script:TabTitleCacheMark = 'parallel-streams tab title cache 1'
 $script:TabStateMark = 'parallel-streams tab state 1'
 
 # Название на ходе человека перечитывается из журнала не чаще раза в столько секунд (по времени правки
-# файла кэша). Переименование доходит до показа с задержкой до двух минут; начало сессии и объявление
-# потока читают журнал всегда.
+# файла кэша). Переименование доходит до показа на первом сообщении человека после двух минут, а без
+# сообщений не доходит вовсе; начало сессии и объявление потока читают журнал всегда.
 $script:TabTitleRereadSeconds = 120
 
 # Журнала не нашлось — искать его заново не чаще раза в столько секунд. Поиск перебирает все папки
@@ -92,6 +92,13 @@ $script:TabTitleRereadSeconds = 120
 # журнал новой сессии заводится после её начала, и более долгая память о промахе на столько же
 # задерживала бы и название, и перенос заявки после очистки контекста.
 $script:TabTitleMissRecheckSeconds = 120
+
+# Первые ходы сессии (своего названия ещё нет) ищут журнал мимо памяти о промахе: журнал новой сессии
+# появляется после её начала, и перенос заявки после очистки контекста иначе ждал бы двух минут. Но не
+# больше стольких промахов подряд: у сессии, чей журнал не найдётся никогда, иначе каждое сообщение
+# перебирало бы папки проектов. Счёт промахов лежит в кэше на месте смещения — у промаха оно ничего не
+# значит.
+$script:TabTitleMissRetries = 5
 
 # Кодировка записи без исключений на недопустимом знаке. Кодировка файлов по умолчанию на одиночной
 # половине суррогатной пары бросает исключение — и кэш с записью вкладки молча не писались никогда.
@@ -322,7 +329,7 @@ function Get-CleanTitle {
 }
 
 function Get-SessionTitle {
-    param([string]$SessionId, [string]$CacheDir, [switch]$Fresh)
+    param([string]$SessionId, [string]$CacheDir, [switch]$Fresh, [switch]$RetryMiss, [switch]$UseRecentCache)
     # Действующее название вкладки по номеру сессии: `Title` и вид `Kind` — `custom` (имя от
     # человека), `auto` (придуманное автоматически) или пусто (не найдено).
     #
@@ -338,11 +345,23 @@ function Get-SessionTitle {
     # автоматическое имя (оба уже очищены). Не JSON намеренно: разбор JSON в свежем процессе сторожа
     # стоит десятки миллисекунд на каждом ходу, а пять строк читаются одним обращением к диску. Из
     # журнала в кэш не попадает ничего, кроме этих двух имён. Пустой путь — «журнала не нашлось»: его
-    # ищут заново не чаще раза в `$script:TabTitleMissRecheckSeconds`.
+    # ищут заново не чаще раза в `$script:TabTitleMissRecheckSeconds`, а на месте смещения у промаха —
+    # число промахов подряд.
     #
     # `-Fresh` — начало сессии и объявление: журнал ищется заново, а не берётся из кэша (сессию могли
     # возобновить из другой папки, и журнал того же номера появился в другой папке проектов), и память
     # о промахе не действует. Совпал найденный журнал с запомненным — кэш остаётся в силе.
+    #
+    # `-RetryMiss` — первые ходы сессии: память о промахе не останавливает поиск, пока промахов подряд
+    # меньше `$script:TabTitleMissRetries`. Найденный журнал из кэша при этом не ищется заново.
+    #
+    # `-UseRecentCache` — ход человека: кэш с найденным журналом, записанный меньше двух минут назад,
+    # отвечает сам, и журнал не читается.
+    #
+    # ‼️ Имя от человека, стёртое в пустую строку, — это «имени нет», и действует автоматическое. Кэш его
+    # мог не знать: первое чтение останавливается на имени от человека и дальше назад не идёт. Поэтому,
+    # если в новом хвосте нашлось стирание, а автоматическое имя неизвестно, окно читается заново как без
+    # кэша — ответ с кэшем и без него один и тот же.
     #
     # Любая неудача — «не найдено», без исключения наружу.
     if (-not $SessionId -or $SessionId -cnotmatch $script:TabSessionIdPattern) { return @{ Title = ''; Kind = '' } }
@@ -356,9 +375,13 @@ function Get-SessionTitle {
         $known = if ($cached -and $cached.Count -eq 5 -and $cached[0] -eq $script:TabTitleCacheMark) { $cached[2] -as [long] } else { $null }
         $usable = $null -ne $known -and $known -ge 0
         $info = $null
+        $misses = [long]0
         if ($usable -and -not $cached[1]) {
             # Память о промахе: журнала не было совсем недавно — не перебираем папки проектов снова.
-            if (-not $Fresh -and ([datetime]::Now - [System.IO.File]::GetLastWriteTime($cacheFile)).TotalSeconds -lt $script:TabTitleMissRecheckSeconds) {
+            # Первые ходы сессии ищут мимо неё, но не больше `$script:TabTitleMissRetries` промахов подряд.
+            $misses = $known
+            if (-not $Fresh -and -not ($RetryMiss -and $misses -lt $script:TabTitleMissRetries) -and
+                ([datetime]::Now - [System.IO.File]::GetLastWriteTime($cacheFile)).TotalSeconds -lt $script:TabTitleMissRecheckSeconds) {
                 return @{ Title = ''; Kind = '' }
             }
             $usable = $false
@@ -374,6 +397,12 @@ function Get-SessionTitle {
             if ($info.Name -cne "$SessionId.jsonl" -or -not [string]::Equals($journalRoot, $projects, [System.StringComparison]::OrdinalIgnoreCase)) {
                 $usable = $false
                 $info = $null
+            } elseif ($UseRecentCache -and -not $Fresh -and
+                ([datetime]::Now - [System.IO.File]::GetLastWriteTime($cacheFile)).TotalSeconds -lt $script:TabTitleRereadSeconds) {
+                # Журнал читали меньше двух минут назад — ход человека берёт названия из кэша.
+                if ($cached[3]) { return @{ Title = $cached[3]; Kind = 'custom' } }
+                if ($cached[4]) { return @{ Title = $cached[4]; Kind = 'auto' } }
+                return @{ Title = ''; Kind = '' }
             } elseif (-not $Fresh -and -not $info.Exists) {
                 $info = $null
             }
@@ -393,7 +422,8 @@ function Get-SessionTitle {
         $custom = if ($usable) { $cached[3] } else { '' }
         $auto = if ($usable) { $cached[4] } else { '' }
         $pathText = ''
-        $offset = [long]0
+        # Промах запоминается с числом промахов подряд на месте смещения.
+        $offset = $misses + 1
         $write = $true
         if ($info) {
             $pathText = $info.FullName
@@ -438,6 +468,17 @@ function Get-SessionTitle {
                     if ($from -lt $known) { $from = $known }
                     $found = @{ Custom = $null; Auto = $null; Offset = $null }
                     if ($size -gt $from) { $found = Read-TitleRecords -Path $info.FullName -From $from -To $size }
+                    if ($usable -and $cached[3] -and -not $cached[4] -and '' -ceq $found.Custom -and $null -eq $found.Auto) {
+                        # Имя от человека стёрто только что, а автоматическое, лежащее до него, кэш не знает:
+                        # первое чтение на имени от человека остановилось. Читаем окно заново, как без кэша.
+                        $usable = $false
+                        $known = [long]0
+                        $custom = ''
+                        $auto = ''
+                        $from = $size - [long]$script:TabTitleCeilingBytes
+                        if ($from -lt 0) { $from = [long]0 }
+                        $found = Read-TitleRecords -Path $info.FullName -From $from -To $size
+                    }
                     if ($null -ne $found.Custom) { $custom = Get-CleanTitle -Raw $found.Custom }
                     if ($null -ne $found.Auto) { $auto = Get-CleanTitle -Raw $found.Auto }
                     $offset = if ($null -ne $found.Offset) { [long]$found.Offset } elseif ($usable) { $known } else { $from }
@@ -474,8 +515,9 @@ function Get-SessionTitle {
 # рабочим деревьям и переживает удаление дерева.
 #
 # На сессию до трёх файлов:
-#   • `<номер>.json` — сама запись (номер, папка, дерево, стартовое дерево, название, вид);
-#     переписывается только когда что-то из этого изменилось;
+#   • `<номер>.json` — сама запись (номер, папка, дерево, стартовое дерево, название, вид и время, когда
+#     подхват заявки отступил перед другой вкладкой дерева); переписывается только когда что-то из этого
+#     изменилось;
 #   • `<номер>.prompt` — отметка: время её правки и есть время последнего сообщения человека, а
 #     внутри — те же папка, дерево и название, чтобы на ходе человека сверить их без разбора JSON;
 #   • `cache/<номер>.txt` — кэш названия (см. `Get-SessionTitle`).
@@ -492,6 +534,13 @@ $script:TabSilentHours = 24
 # Подхват заявки без сессии не случается, если в том же дереве за столько часов писал человек в
 # ДРУГОЙ вкладке: две вкладки в дереве — неоднозначность, и выбирать за человека нельзя.
 $script:TabAdoptRivalHours = 24
+
+# Подхват отступил из-за другой вкладки дерева — перепроверять не чаще раза в столько секунд. Проверка
+# перебирает весь реестр вкладок (сотни записей — десятые доли секунды), а идёт она до доставки находок
+# на каждом сообщении обеих вкладок, пока заявку не объявят заново. Время отказа лежит в записи своей
+# вкладки (`adopt_refused_at`), а в этом запуске — здесь, пока запись не переписана в конце хода.
+$script:TabAdoptRecheckSeconds = 120
+$script:TabAdoptRefusedNow = @{}
 
 # Столько живёт запись вкладки без единого хода: дальше её убирает сторож на начале сессии. Месяц
 # покрывает волну с запасом; вкладку, молчащую месяц, по названию уже не ищут.
@@ -511,8 +560,11 @@ function Get-TabsDir {
 }
 
 function Read-TabRecordFile {
-    param([string]$Path)
+    param([string]$Path, [switch]$Strict)
     # Запись вкладки — плоский JSON из строк. Нечитаемое и неразбираемое — пустота, а не падение.
+    #
+    # `-Strict` — для того, кто запись перепишет: файл есть, а прочитать его не удалось (занят, нет
+    # прав) — исключение, а не пустота. Иначе переписанная запись молча потеряла бы стартовое дерево.
     #
     # Время последнего сообщения человека берётся из отметки сессии (время её правки), если она есть:
     # запись вкладки на каждом ходу не переписывается. Нет отметки — поле самой записи.
@@ -524,6 +576,7 @@ function Read-TabRecordFile {
     try {
         $text = [System.IO.File]::ReadAllText($Path)
     } catch {
+        if ($Strict -and [System.IO.File]::Exists($Path)) { throw }
         return $null
     }
     $doc = $null
@@ -597,7 +650,11 @@ function Update-TabRecord {
     # ‼️ Самый частый вызов набора — ход человека. Там, в пределах двух минут от последнего чтения
     # журнала, работа — одно чтение маленькой отметки и одно касание её времени: название берётся из
     # отметки же, запись вкладки (JSON) не разбирается и не переписывается, если не изменились папка,
-    # дерево или название. Сборка и запись — на месте, без помощников (см. шапку файла).
+    # дерево или название. Сборка и запись — на месте, без помощников (см. шапку файла); за пределами
+    # частого пути название берёт `Get-TabPromptTitle` — то же правило, что у решения о переносе заявки.
+    #
+    # Файл записи есть, а прочитать его не удалось — в этот ход запись не переписывается: иначе она
+    # потеряла бы стартовое дерево, и защита подхвата у этой сессии тихо выключилась бы.
     #
     # Немая при любой неудаче: сорванная запись вкладки не повод мешать работе.
     if (-not $Dir -or -not $SessionId -or $SessionId -cnotmatch $script:TabSessionIdPattern) { return }
@@ -613,22 +670,25 @@ function Update-TabRecord {
         $treeText = (([string]$Tree -replace '\\', '/').TrimEnd('/')) -replace '[\x00-\x1f]', ' '
         $title = $script:TabTitleNow[$SessionId]
         if (-not $title) {
-            if ($Stage -eq 'Prompt' -and $stateOk -and
+            if ($Stage -eq 'Prompt' -and $stateOk -and $state[3] -and
                 ([datetime]::Now - [System.IO.File]::GetLastWriteTime([System.IO.Path]::Combine($cacheDir, "$SessionId.txt"))).TotalSeconds -lt $script:TabTitleRereadSeconds) {
                 $title = @{ Title = $state[4]; Kind = $state[3] }
+            } elseif ($Stage -eq 'Prompt') {
+                $title = Get-TabPromptTitle -Dir $Dir -SessionId $SessionId -State $state
             } else {
-                $title = Get-SessionTitle -SessionId $SessionId -CacheDir $cacheDir -Fresh:($Stage -ne 'Prompt')
+                $title = Get-SessionTitle -SessionId $SessionId -CacheDir $cacheDir -Fresh
             }
         }
         # Журнал на миг не прочитался — прежнее название лучше пустоты.
         if (-not $title.Kind -and $stateOk -and $state[3]) { $title = @{ Title = $state[4]; Kind = $state[3] } }
-        if ($Stage -eq 'Prompt' -and -not $Force -and $stateOk -and $state[1] -ceq $cwdText -and $state[2] -ceq $treeText -and
+        $refusedNow = [string]$script:TabAdoptRefusedNow[$SessionId]
+        if ($Stage -eq 'Prompt' -and -not $Force -and -not $refusedNow -and $stateOk -and $state[1] -ceq $cwdText -and $state[2] -ceq $treeText -and
             $state[3] -ceq [string]$title.Kind -and $state[4] -ceq [string]$title.Title) {
             # Ничего не изменилось: время сообщения — касанием отметки.
             [System.IO.File]::SetLastWriteTime($markFile, [datetime]::Now)
             return
         }
-        $old = Read-TabRecordFile -Path $file
+        $old = Read-TabRecordFile -Path $file -Strict
         if (-not $title.Kind -and $old -and $old.title) {
             $title = @{ Title = [string]$old.title; Kind = [string]$old.title_kind }
         }
@@ -652,6 +712,9 @@ function Update-TabRecord {
             prompt_at  = $promptAt
             seen_at    = $now
         }
+        # Когда подхват заявки последний раз отступил перед другой вкладкой дерева — хранится, пока есть.
+        $refusedAt = if ($refusedNow) { $refusedNow } elseif ($old) { [string]$old.adopt_refused_at } else { '' }
+        if ($refusedAt) { $record['adopt_refused_at'] = $refusedAt }
         # Плоская запись из строк — в JSON руками, а не общим преобразователем оболочки: тот в свежем
         # процессе стоит десятки миллисекунд. Экранируются обратная косая и кавычка; управляющих
         # знаков в полях нет (название чищено, пути их не содержат), а на всякий случай они
@@ -821,25 +884,60 @@ function Get-TabFolderKey {
     return (([string]$Path -replace '\\', '/').TrimEnd('/')).ToLowerInvariant()
 }
 
+function Get-TabPromptTitle {
+    param([string]$Dir, [string]$SessionId, $State)
+    # Название своей вкладки на ходе человека. Одно правило на двоих — на запись вкладки и на решение о
+    # переносе заявки; `$State` — строки отметки сессии, если их уже прочли.
+    #
+    #   • В отметке есть название, а журнал читали меньше двух минут назад — название из отметки.
+    #   • Отметки нет или вид названия в ней пуст — это первые ходы сессии: журнал новой сессии появляется
+    #     после её начала, поэтому память о промахе поиск не останавливает (иначе перенос заявки после
+    #     очистки контекста ждал бы двух минут). Найденный журнал при пустом виде перечитывается не чаще
+    #     раза в две минуты, как и всё остальное.
+    #   • Иначе — дочитывание журнала.
+    $stateOk = $State -and $State.Count -eq 5 -and $State[0] -eq $script:TabStateMark
+    $cacheDir = [System.IO.Path]::Combine($Dir, 'cache')
+    if ($stateOk -and $State[3] -and
+        ([datetime]::Now - [System.IO.File]::GetLastWriteTime([System.IO.Path]::Combine($cacheDir, "$SessionId.txt"))).TotalSeconds -lt $script:TabTitleRereadSeconds) {
+        return @{ Title = $State[4]; Kind = $State[3] }
+    }
+    return (Get-SessionTitle -SessionId $SessionId -CacheDir $cacheDir -RetryMiss:(-not $stateOk -or -not $State[3]) -UseRecentCache:$stateOk)
+}
+
 function Get-TabOwnTitle {
     param([string]$Dir, [string]$SessionId, [string]$Stage)
-    # Название своей вкладки для решения о переносе заявки. На ходе человека — из отметки сессии
-    # (свежее двух минут), на начале сессии — из журнала. Прочитанное из журнала запоминается: запись
-    # вкладки в конце хода его не перечитывает.
+    # Название своей вкладки для решения о переносе заявки. На ходе человека — по правилу
+    # `Get-TabPromptTitle`, на начале сессии — из журнала. Ответ запоминается: запись вкладки в конце
+    # хода не спрашивает его второй раз.
     if ($script:TabTitleNow.ContainsKey($SessionId)) { return $script:TabTitleNow[$SessionId] }
     if ($Stage -eq 'Prompt') {
-        try {
-            $state = [System.IO.File]::ReadAllLines([System.IO.Path]::Combine($Dir, "$SessionId.prompt"))
-            if ($state.Count -eq 5 -and $state[0] -eq $script:TabStateMark -and $state[3]) {
-                return @{ Title = $state[4]; Kind = $state[3] }
-            }
-        } catch {
-            # Отметки ещё нет — первый ход сессии: читаем журнал.
-        }
+        $state = $null
+        # Отметки ещё нет — первый ход сессии: правило само прочтёт журнал.
+        try { $state = [System.IO.File]::ReadAllLines([System.IO.Path]::Combine($Dir, "$SessionId.prompt")) } catch { $state = $null }
+        $title = Get-TabPromptTitle -Dir $Dir -SessionId $SessionId -State $state
+    } else {
+        $title = Get-SessionTitle -SessionId $SessionId -CacheDir ([System.IO.Path]::Combine($Dir, 'cache')) -Fresh
     }
-    $title = Get-SessionTitle -SessionId $SessionId -CacheDir ([System.IO.Path]::Combine($Dir, 'cache')) -Fresh:($Stage -ne 'Prompt')
     $script:TabTitleNow[$SessionId] = $title
     return $title
+}
+
+function Get-TabSameKey {
+    param($Tab)
+    # Ключ «той же вкладки»: две записи с одинаковым непустым ключом — одна вкладка под разными номерами
+    # сессии. Очистка контекста и возобновление с ответвлением дают вкладке новый номер, а имя, данное
+    # человеком, переносится. Признак один на весь набор: по нему сторож переносит заявку на новый номер,
+    # а показы не зовут прежний номер двойником и не ставят его отдельной строкой.
+    #
+    # Ключ — дерево и имя от человека, чищеное и без учёта регистра. ‼️ Безымянным и названным
+    # автоматически ключа нет: иначе две вкладки одного дерева перетягивали бы заявку на каждом сообщении.
+    # Пусто — запись одной вкладкой ни с какой другой не считается.
+    if (-not $Tab -or [string]$Tab.title_kind -ne 'custom') { return '' }
+    $name = (Get-CleanTitle -Raw ([string]$Tab.title)).ToLowerInvariant()
+    $tree = Get-TabFolderKey -Path ([string]$Tab.tree)
+    if (-not $name -or -not $tree) { return '' }
+    # Перевода строки в чищеном названии не бывает, поэтому склейка по нему однозначна.
+    return "$tree`n$name"
 }
 
 function Test-TabMayAdoptClaim {
@@ -851,17 +949,28 @@ function Test-TabMayAdoptClaim {
     #   • Нет ДРУГОЙ вкладки этого дерева, где человек писал за последние сутки: две вкладки в дереве —
     #     неоднозначность, и первая написавшая назвала бы себя ведущей навсегда.
     # Стартового дерева нет (сессия началась до обновления) — решает только второе условие.
+    #
+    # Второе условие перебирает весь реестр вкладок, поэтому отказ по нему помнится: следующие ходы в
+    # течение `$script:TabAdoptRecheckSeconds` отступают сразу, не перебирая реестр.
     $treeKey = Get-TabFolderKey -Path $Tree
     if (-not $treeKey) { return $false }
     $own = Get-TabRecord -Dir $Dir -SessionId $SessionId
     $startTree = if ($own) { [string]$own.start_tree } else { '' }
     if ($startTree -and (Get-TabFolderKey -Path $startTree) -ne $treeKey) { return $false }
-    $since = (Get-Date).AddHours(-$script:TabAdoptRivalHours)
+    $now = Get-Date
+    $refused = [datetime]::MinValue
+    if ($own -and [string]$own.adopt_refused_at -and [datetime]::TryParse([string]$own.adopt_refused_at, [ref]$refused)) {
+        $passed = ($now - $refused).TotalSeconds
+        if ($passed -ge 0 -and $passed -lt $script:TabAdoptRecheckSeconds) { return $false }
+    }
+    $since = $now.AddHours(-$script:TabAdoptRivalHours)
     foreach ($tab in (Get-TabRecords -Dir $Dir)) {
         if ([string]$tab.session_id -ceq $SessionId) { continue }
         if ((Get-TabFolderKey -Path ([string]$tab.tree)) -ne $treeKey) { continue }
         $moment = [datetime]::MinValue
         if ([string]$tab.prompt_at -and [datetime]::TryParse([string]$tab.prompt_at, [ref]$moment) -and $moment -ge $since) {
+            # Запись вкладки допишет время отказа в конце хода.
+            $script:TabAdoptRefusedNow[$SessionId] = $now.ToString('s')
             return $false
         }
     }
@@ -872,18 +981,18 @@ function Test-TabIsSameNamedTab {
     param([string]$Dir, [string]$SessionId, [string]$HeldSession, [string]$Tree, [string]$Stage)
     # Та же ли это вкладка, что записана в заявке, только с новым номером сессии.
     #
-    # Очистка контекста и возобновление с ответвлением дают вкладке новый номер, а имя, данное
-    # человеком, переносится. Признак один: у записанной сессии то же дерево, и у обеих — имя от
-    # человека, непустое и совпадающее без учёта регистра. ‼️ Безымянные и названные по-разному НЕ
-    # совпадают никогда: иначе две вкладки в одном дереве перетягивали бы заявку на каждом сообщении.
+    # Признак — `Get-TabSameKey`: у записанной сессии то же дерево, и у обеих — имя от человека, непустое
+    # и совпадающее без учёта регистра. ‼️ Безымянные и названные по-разному НЕ совпадают никогда: иначе
+    # две вкладки в одном дереве перетягивали бы заявку на каждом сообщении.
     $held = Get-TabRecord -Dir $Dir -SessionId $HeldSession
-    if (-not $held -or [string]$held.title_kind -ne 'custom') { return $false }
-    if ((Get-TabFolderKey -Path ([string]$held.tree)) -ne (Get-TabFolderKey -Path $Tree)) { return $false }
-    $heldName = (Get-CleanTitle -Raw ([string]$held.title)).ToLowerInvariant()
-    if (-not $heldName) { return $false }
+    $heldKey = Get-TabSameKey -Tab $held
+    # Сперва дешёвое: может ли записанная вкладка вообще совпасть с вкладкой этого дерева. Своё название
+    # (журнал) спрашивается только тогда.
+    if (-not $heldKey -or $heldKey -cne (Get-TabSameKey -Tab @{ title_kind = 'custom'; title = [string]$held.title; tree = $Tree })) {
+        return $false
+    }
     $mine = Get-TabOwnTitle -Dir $Dir -SessionId $SessionId -Stage $Stage
-    if ([string]$mine.Kind -ne 'custom') { return $false }
-    return ((Get-CleanTitle -Raw ([string]$mine.Title)).ToLowerInvariant() -ceq $heldName)
+    return ($heldKey -ceq (Get-TabSameKey -Tab @{ title_kind = [string]$mine.Kind; title = [string]$mine.Title; tree = $Tree }))
 }
 
 function Update-ClaimSessionFromTab {
