@@ -24,9 +24,12 @@ exit — see the comment next to it.
 
 It also keeps this session's record in the tab registry: the name the person gave the tab, the
 folder, and the time of the last message. That is how the board answers WHICH tab runs a stream
-(`lib/tab-titles.ps1`). ‼️ This is done LAST, after the delivery has been printed: the name is a
-convenience, delivery is what the hook is for, and a slow transcript read has no right to hold up the
-neighbours' findings.
+(`lib/tab-titles.ps1`). ‼️ The tab record is written LAST, after the delivery has been printed: the
+name is a convenience, delivery is what the hook is for, and a slow transcript read has no right to
+break the output of the neighbours' findings. That doesn't make the turn faster: a human message waits
+for the whole hook. Nor does everything about the name come after delivery: the decision about the
+claim's session (adoption and hand-over — with this tab's own name and a walk of the tab registry)
+comes earlier, together with the claim mark.
 
 The hook blocks NOTHING, and on any unexpected condition it exits silently with zero: a hook that
 misfires must not get in the way of the work.
@@ -459,8 +462,9 @@ try {
 } finally {
     # ‼️ This session's tab record goes LAST — after the claim mark and the delivery already printed, on
     # any of the exits above (this block runs on `exit` too). The name is a convenience, delivery is
-    # what the hook is for: a slow transcript read has no right either to hold up the neighbours'
-    # findings or to break their output.
+    # what the hook is for: a slow transcript read has no right to break the findings' output. It
+    # doesn't remove the delay of the turn — a human message waits for the whole hook — and the
+    # decision about the claim's session comes earlier, before delivery.
     #
     # Every listing names the tab running a stream from it. Only a human turn moves the message time; a
     # session start doesn't, but it writes the session's starting tree (after a context compaction it

@@ -74,6 +74,10 @@ ask about tabs directly:
 - `-Mode Tabs` — the project's tabs, freshest first; tabs silent for over a day in a short separate
   tail, and matching names marked.
 
+The previous session id of the same tab (after a context clear: the same worktree and the same
+human-given name) isn't a twin: the listing folds it into the line of the fresh id, and it gives no
+another-tab mark.
+
 **A tab name is a hint telling a person where to go, not proof.** It changes addressing and delivery
 nowhere: findings still go by the stream's address, and the session id is only for listings.
 
@@ -86,10 +90,13 @@ the tab and the automatic one; nothing from the conversation is read or kept. A 
 means only the transcript's new tail is read.
 
 The cost on a human message. The hook runs on every one of them, so on a human message the name is
-re-read from the transcript at most every two minutes — a rename reaches the listings within that; a
-session start and a stream announcement always read it. The tab record is rewritten only when its
-folder, worktree or name changed, and the message time is a touch of the marker. All of this runs last
-in the hook — after the findings are delivered.
+re-read from the transcript at most every two minutes — a rename reaches the listings on the first
+human message after two minutes, and without messages it doesn't; a session start and a stream
+announcement always read it. The tab record is rewritten only when its folder, worktree or name
+changed, and the message time is a touch of the marker. The tab record and the cleanup run last in the
+hook, after the delivery is printed: a slow transcript read won't break the findings' output, but it
+won't make the turn faster either — a human message waits for the whole hook. The decision about the
+claim's session (below) comes earlier, before delivery, together with the claim mark.
 
 Besides an announcement, the delivery hook writes a session into a claim in two cases, and both are
 marked as its guess (an announcement clears the mark):
@@ -97,12 +104,15 @@ marked as its guess (an announcement clears the mark):
 - **adoption** of a claim filed before this or without the variable — on a human message, only in a
   linked worktree (not the main folder: many tabs live there at once), only by a tab that started in
   that worktree (or started before the kit was updated), and only if no other tab wrote in the same
-  worktree within the last day. A released or moved claim is left alone;
+  worktree within the last day. If the adoption stepped back for another tab, the check is repeated at
+  most every two minutes: it walks the whole tab registry. A released or moved claim is left alone;
 - **hand-over** to the same tab's new id. Clearing the context and resuming with a fork give a tab a
   new session id, while the name a person gave it carries over. If the claim names another session,
   that session's tab works in the same worktree, and both carry the same human-given name, the claim
-  moves to the current one. Tabs with different names, or with no name, never take a claim from each
-  other.
+  moves to the current one. A new session's transcript appears after the session starts, so while the
+  tab has no name its first messages look for the transcript again (no more than five misses in a row)
+  — the hand-over doesn't wait two minutes. Tabs with different names, or with no name, never take a
+  claim from each other.
 
 Known limits:
 
@@ -121,8 +131,19 @@ Known limits:
   registry. Message times and renames aren't tracked here for it.
 - **The claim mark reads the file and writes it whole without the registry lock.** If an announcement
   from the same folder wrote a new claim at that very moment, the hook may overwrite it with the old
-  content, session included. The race existed before (the time stamp); it isn't fixed separately — a
-  repeated announcement corrects it.
+  content, session included. The window is up to a fraction of a second: between the read and the write
+  sit the decision about the session and, at a session start after a context clear, a transcript search
+  and read too. The race existed before (the time stamp); it isn't fixed separately — a repeated
+  announcement corrects it.
+- **Two tabs of one worktree that write their first message in the same second** both pass the
+  "another tab" check (neither has a marker yet): a claim without a session goes to whichever writes
+  last, and the listing marks it as the hook's guess.
+- **A session start or an announcement that coincides with a human message of the same session** may
+  give the marker its old time back: they rewrite the marker after noting its time and restore that time
+  after the write.
+- **Two tabs with the same human-given name in one worktree** (a forked resume while the original is
+  still open) are one tab to the board: the claim is pulled to whichever had the last turn, the listing
+  shows them as one line, and they get no twin mark.
 
 ## Working without a wave
 
