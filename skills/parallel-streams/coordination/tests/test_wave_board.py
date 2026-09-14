@@ -8616,7 +8616,7 @@ def test_the_second_read_takes_only_the_new_tail_and_the_cache_keeps_nothing_but
     assert ask_titles(tmp_path, [session], cache=cache)[session]["title"] == "О1-3-1"
 
     old = journal.read_bytes()
-    swapped = old.replace("О1-3-1".encode("utf-8"), "Ж9-9-9".encode("utf-8"))
+    swapped = old.replace("О1-3-1".encode(), "Ж9-9-9".encode())
     assert len(swapped) == len(old)
     journal.write_bytes(swapped + (talk(500) + "\n").encode("utf-8"))
     assert ask_titles(tmp_path, [session], cache=cache)[session]["title"] == "О1-3-1", (

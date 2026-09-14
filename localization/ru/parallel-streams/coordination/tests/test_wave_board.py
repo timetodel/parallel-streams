@@ -8220,7 +8220,10 @@ def test_the_tab_title_is_not_fooled_by_the_same_words_inside_the_conversation(
             ),
             # Вложенный объект того же вида — результат инструмента, разобранный в структуру.
             json.dumps(
-                {"type": "user", "toolUseResult": json.loads(custom_title("ЛОЖЬ-вложенная", "trap-1"))},
+                {
+                    "type": "user",
+                    "toolUseResult": json.loads(custom_title("ЛОЖЬ-вложенная", "trap-1")),
+                },
                 ensure_ascii=False,
             ),
             # Поле названия у записи другого вида — и слово вида записи в кавычках рядом, значением
@@ -8361,7 +8364,11 @@ def test_an_automatic_title_is_named_as_such_and_a_missing_journal_is_just_unkno
     """
     write_journal(
         journal_path(claude_config, "auto-1"),
-        [ai_title("Первое автоматическое", "auto-1"), talk(400), ai_title("Второе автоматическое", "auto-1")],
+        [
+            ai_title("Первое автоматическое", "auto-1"),
+            talk(400),
+            ai_title("Второе автоматическое", "auto-1"),
+        ],
     )
     write_journal(journal_path(claude_config, "silent-1"), [talk(400), talk(400)])
 
@@ -8392,7 +8399,7 @@ def test_the_second_read_takes_only_the_new_tail_and_the_cache_keeps_nothing_but
     assert ask_titles(tmp_path, [session], cache=cache)[session]["title"] == "О1-3-1"
 
     old = journal.read_bytes()
-    swapped = old.replace("О1-3-1".encode("utf-8"), "Ж9-9-9".encode("utf-8"))
+    swapped = old.replace("О1-3-1".encode(), "Ж9-9-9".encode())
     assert len(swapped) == len(old)
     journal.write_bytes(swapped + (talk(500) + "\n").encode("utf-8"))
     assert ask_titles(tmp_path, [session], cache=cache)[session]["title"] == "О1-3-1", (
@@ -8401,9 +8408,10 @@ def test_the_second_read_takes_only_the_new_tail_and_the_cache_keeps_nothing_but
 
     with journal.open("ab") as handle:
         handle.write((custom_title("О2-1", session) + "\n").encode("utf-8"))
-    assert ask_titles(tmp_path, [session], cache=cache)[session] == {"title": "О2-1", "kind": "custom"}, (
-        "переименование в новом хвосте не дошло"
-    )
+    assert ask_titles(tmp_path, [session], cache=cache)[session] == {
+        "title": "О2-1",
+        "kind": "custom",
+    }, "переименование в новом хвосте не дошло"
 
     # Кэш — пять строк: метка вида, путь журнала, смещение и два имени. Ничего из разговора.
     stored = (cache / f"{session}.txt").read_text(encoding="utf-8").split("\n")
@@ -8424,9 +8432,10 @@ def test_a_journal_that_got_shorter_is_read_again(tmp_path: Path, claude_config:
     assert ask_titles(tmp_path, [session], cache=cache)[session]["title"] == "Старое"
 
     write_journal(journal, [custom_title("Новое", session)])
-    assert ask_titles(tmp_path, [session], cache=cache)[session] == {"title": "Новое", "kind": "custom"}, (
-        "переписанный журнал не перечитан — вкладка осталась со старым именем"
-    )
+    assert ask_titles(tmp_path, [session], cache=cache)[session] == {
+        "title": "Новое",
+        "kind": "custom",
+    }, "переписанный журнал не перечитан — вкладка осталась со старым именем"
 
 
 @needs_pwsh
@@ -8436,7 +8445,12 @@ def test_the_ceiling_gives_up_the_human_name_but_keeps_the_automatic_one(
     """Дальше потолка назад не читаем: не нашли имени от человека — отдаём автоматическое, если было."""
     write_journal(
         journal_path(claude_config, "ceil-1"),
-        [custom_title("За-потолком", "ceil-1"), talk_exact(20_000), ai_title("В-окне", "ceil-1"), talk(500)],
+        [
+            custom_title("За-потолком", "ceil-1"),
+            talk_exact(20_000),
+            ai_title("В-окне", "ceil-1"),
+            talk(500),
+        ],
     )
     write_journal(
         journal_path(claude_config, "ceil-2"),
@@ -8486,9 +8500,9 @@ def test_a_claim_remembers_its_session_and_the_tab_is_named_in_the_listing(
     assert claim_of(board, mine, only_open=True).fields.get("session_id") == "sess-dispatch"
     listed = run_tool(board, "-Mode", "Streams")
     assert "ведёт, вкладка О1-3-1 (" in stream_line_of(listed, mine), listed
-    assert "ведёт, вкладка без имени (авто: Только автоматическое) (" in stream_line_of(listed, other), (
-        f"автоматическое название не помечено как автоматическое: {listed!r}"
-    )
+    assert "ведёт, вкладка без имени (авто: Только автоматическое) (" in stream_line_of(
+        listed, other
+    ), f"автоматическое название не помечено как автоматическое: {listed!r}"
     tab = tab_record(board, "sess-dispatch")
     assert (tab["title"], tab["title_kind"], tab["prompt_at"]) == ("О1-3-1", "custom", ""), (
         f"объявление — не сообщение человека, а запись вкладки говорит иное: {tab}"
@@ -8538,8 +8552,12 @@ def test_a_takeover_carries_the_session_of_the_new_folder(
 ) -> None:
     """Перенос адреса — сессия новой папки; «кто ведёт» называет её первой, а прежнюю — «вела»."""
     board = tmp_path / "board.jsonl"
-    write_journal(journal_path(claude_config, "sess-left"), [custom_title("Покинутая", "sess-left")])
-    write_journal(journal_path(claude_config, "sess-moved"), [custom_title("Переехавшая", "sess-moved")])
+    write_journal(
+        journal_path(claude_config, "sess-left"), [custom_title("Покинутая", "sess-left")]
+    )
+    write_journal(
+        journal_path(claude_config, "sess-moved"), [custom_title("Переехавшая", "sess-moved")]
+    )
     left = tmp_path / "wave9-left"
     moved = tmp_path / "wave9-moved"
 
@@ -8550,7 +8568,9 @@ def test_a_takeover_carries_the_session_of_the_new_folder(
     monkeypatch.delenv("CLAUDE_CODE_SESSION_ID")
 
     assert claim_of(board, moved, only_open=True).fields.get("session_id") == "sess-moved"
-    answer = [line.strip() for line in run_tool(board, "-Mode", "Who", "-To", "wave9/3").splitlines()]
+    answer = [
+        line.strip() for line in run_tool(board, "-Mode", "Who", "-To", "wave9/3").splitlines()
+    ]
     rows = [line for line in answer if line.startswith("wave9/3")]
     assert len(rows) == 2, answer
     assert "вкладка Переехавшая" in rows[0] and "вела" not in rows[0], (
@@ -8631,7 +8651,11 @@ def test_the_delivery_guard_keeps_the_tab_record_and_follows_a_rename(
 
     run_deliver(board, mine, "Start", "sess-rename")
     started = tab_record(board, "sess-rename")
-    assert (started["title"], started["title_kind"], started["prompt_at"]) == ("Авто", "auto", ""), started
+    assert (started["title"], started["title_kind"], started["prompt_at"]) == (
+        "Авто",
+        "auto",
+        "",
+    ), started
     assert folder_key(started["tree"]) == folder_key(mine), started
 
     run_deliver(board, mine, "Prompt", "sess-rename")
@@ -8714,7 +8738,8 @@ def test_the_owner_learns_which_tab_ran_a_released_stream(
     assert release(board, gone).returncode == 0
     with board.open("a", encoding="utf-8") as handle:
         handle.write(
-            board_line(id="lost0044", at=now_minus(3), to="wave9/44", title="некому получить") + "\n"
+            board_line(id="lost0044", at=now_minus(3), to="wave9/44", title="некому получить")
+            + "\n"
         )
 
     owner = context_text(run_deliver(board, wave_repo, "Start", "s-owner-tab"))
@@ -8858,15 +8883,19 @@ def test_tabs_lists_fresh_tabs_first_moves_silent_ones_to_a_tail_and_marks_twins
         assert len(found) == 1, f"«{piece}» в перечне не одной строкой: {lines}"
         return found[0]
 
-    assert where("папка d:/деревья/второе") < where("папка d:/деревья/третье") < where(
-        "папка d:/деревья/первое"
+    assert (
+        where("папка d:/деревья/второе")
+        < where("папка d:/деревья/третье")
+        < where("папка d:/деревья/первое")
     ), f"свежие вкладки не сверху: {lines}"
     tail = where("Давно молчат")
     assert where("папка d:/деревья/первое") < tail < where("папка d:/деревья/четвёртое"), lines
     assert lines[where("четвёртое")].startswith("вкладка без имени (авто: Старое окно)"), lines
     assert lines[where("второе")].startswith("вкладка 2026-09-04 — поток wave9/3"), lines
     for folder in ("первое", "третье"):
-        assert "‼️ то же название у другой вкладки" in lines[where(f"папка d:/деревья/{folder}")], lines
+        assert "‼️ то же название у другой вкладки" in lines[where(f"папка d:/деревья/{folder}")], (
+            lines
+        )
     assert "‼️" not in lines[where("папка d:/деревья/второе")], lines
 
 
@@ -8883,7 +8912,9 @@ def put_tab_record(board: Path, session: str, **fields: object) -> Path:
     folder = tabs_dir(board)
     folder.mkdir(parents=True, exist_ok=True)
     path = folder / f"{session}.json"
-    path.write_text(json.dumps({"session_id": session, **fields}, ensure_ascii=False), encoding="utf-8")
+    path.write_text(
+        json.dumps({"session_id": session, **fields}, ensure_ascii=False), encoding="utf-8"
+    )
     return path
 
 
@@ -8947,7 +8978,9 @@ def test_the_cleanup_removes_only_its_own_files_and_the_leftovers_of_killed_writ
         assert path.exists(), f"чистка удалила чужой файл {path.name} — удаление необратимо"
     for path in ours:
         assert not path.exists(), f"свой старый файл {path.name} остался после чистки"
-    assert fresh_leftover.exists(), "чистка убрала временный файл, который, возможно, пишут прямо сейчас"
+    assert fresh_leftover.exists(), (
+        "чистка убрала временный файл, который, возможно, пишут прямо сейчас"
+    )
     assert alive.exists(), "чистка убрала запись вкладки, где человек писал только что"
 
 
@@ -8988,7 +9021,9 @@ def test_the_cleanup_never_enters_a_tabs_folder_that_is_a_link(tmp_path: Path) -
     run_deliver(plain_board, mine, "Start", "sess-linked")
 
     assert behind.exists(), "чистка зашла за ссылку и удалила файл в чужом каталоге"
-    assert not plain.exists(), "в обычном каталоге чистка не сработала — тишина за ссылкой ничего не доказывает"
+    assert not plain.exists(), (
+        "в обычном каталоге чистка не сработала — тишина за ссылкой ничего не доказывает"
+    )
 
 
 @needs_pwsh
@@ -9011,7 +9046,9 @@ def test_a_title_cut_on_an_emoji_still_reaches_the_cache_and_the_tab_record(
     run_deliver(board, mine, "Start", "sess-emoji")
 
     cut = "Я" * 78 + "…"
-    assert tab_record(board, "sess-emoji")["title"] == cut, "запись вкладки не завелась или название обрезано не так"
+    assert tab_record(board, "sess-emoji")["title"] == cut, (
+        "запись вкладки не завелась или название обрезано не так"
+    )
     cached = title_cache(board, "sess-emoji").read_text(encoding="utf-8").split("\n")
     assert cached[3] == cut, f"кэш названия не записался: {cached}"
     assert ask_titles(tmp_path, ["sess-whole"])["sess-whole"]["title"] == "Я" * 77 + "😀" + "…", (
@@ -9042,15 +9079,19 @@ def test_a_forged_cache_path_is_not_trusted_and_the_start_looks_for_the_journal_
         cache.mkdir()
         size = fake.stat().st_size
         (cache / "sess-c.txt").write_text(f"{mark}\n{fake}\n{size}\nЧужая\n\n", encoding="utf-8")
-        assert ask_titles(tmp_path, ["sess-c"], cache=cache)["sess-c"] == {"title": "Своя", "kind": "custom"}, (
-            f"кэш с подменённым путём ({fake}) назвал вкладку чужим именем"
-        )
+        assert ask_titles(tmp_path, ["sess-c"], cache=cache)["sess-c"] == {
+            "title": "Своя",
+            "kind": "custom",
+        }, f"кэш с подменённым путём ({fake}) назвал вкладку чужим именем"
 
     cache = tmp_path / "cache-moved"
-    write_journal(journal_path(claude_config, "sess-e", "D--папка-А"), [custom_title("Из-А", "sess-e")])
+    write_journal(
+        journal_path(claude_config, "sess-e", "D--папка-А"), [custom_title("Из-А", "sess-e")]
+    )
     assert ask_titles(tmp_path, ["sess-e"], cache=cache)["sess-e"]["title"] == "Из-А"
     write_journal(
-        journal_path(claude_config, "sess-e", "D--папка-Б"), [talk(2_000), custom_title("Из-Б", "sess-e")]
+        journal_path(claude_config, "sess-e", "D--папка-Б"),
+        [talk(2_000), custom_title("Из-Б", "sess-e")],
     )
     assert ask_titles(tmp_path, ["sess-e"], cache=cache)["sess-e"]["title"] == "Из-А", (
         "обычный ход искал журнал заново — на каждом сообщении это перебор всех папок проектов"
@@ -9081,15 +9122,23 @@ def test_a_dense_run_of_lookalike_lines_stops_at_the_budget_and_a_long_line_is_n
     )
     with journal.open("ab") as handle:
         handle.write((custom_title("Свежее", session) + "\n").encode("utf-8"))
-    assert ask_titles(tmp_path, [session], cache=cache)[session] == {"title": "Свежее", "kind": "custom"}, (
-        "после остановки по бюджету новое переименование не нашлось"
-    )
+    assert ask_titles(tmp_path, [session], cache=cache)[session] == {
+        "title": "Свежее",
+        "kind": "custom",
+    }, "после остановки по бюджету новое переименование не нашлось"
 
     padded = json.dumps(
-        {"type": "custom-title", "customTitle": "Длинная-запись", "pad": "x" * 9_000, "sessionId": "sess-long"},
+        {
+            "type": "custom-title",
+            "customTitle": "Длинная-запись",
+            "pad": "x" * 9_000,
+            "sessionId": "sess-long",
+        },
         ensure_ascii=False,
     )
-    write_journal(journal_path(claude_config, "sess-long"), [custom_title("Короткая", "sess-long"), padded])
+    write_journal(
+        journal_path(claude_config, "sess-long"), [custom_title("Короткая", "sess-long"), padded]
+    )
     assert ask_titles(tmp_path, ["sess-long"])["sess-long"]["title"] == "Короткая", (
         "строка длиннее 8 КБ разобрана как запись названия"
     )
@@ -9112,13 +9161,17 @@ def test_the_tab_record_is_kept_on_every_way_out_of_the_delivery_guard(
     empty_board = tmp_path / "пусто" / "board.jsonl"
     empty_board.parent.mkdir()
     run_deliver(empty_board, mine, "Prompt", "sess-ways")
-    assert tab_record(empty_board, "sess-ways")["title"] == "О1-7", "на выходе без доски запись вкладки не завелась"
+    assert tab_record(empty_board, "sess-ways")["title"] == "О1-7", (
+        "на выходе без доски запись вкладки не завелась"
+    )
 
     board = tmp_path / "board.jsonl"
     add(board, "wave9-ways", "находка для вкладки")
     delivered = context_text(run_deliver(board, mine, "Prompt", "sess-ways"))
     assert "находка для вкладки" in delivered, "доставка сорвалась"
-    assert tab_record(board, "sess-ways")["title"] == "О1-7", "на выходе с находкой запись вкладки не завелась"
+    assert tab_record(board, "sess-ways")["title"] == "О1-7", (
+        "на выходе с находкой запись вкладки не завелась"
+    )
 
 
 @needs_pwsh
@@ -9130,7 +9183,9 @@ def test_everything_printed_from_a_tab_record_is_cleaned_at_print_time(tmp_path:
     строку, неотличимую от строк самого канала.
     """
     board = tmp_path / "board.jsonl"
-    put_claim(registry_dir(board), "ядовитый", **open_claim("d:/деревья/яд", session_id="sess-poison"))
+    put_claim(
+        registry_dir(board), "ядовитый", **open_claim("d:/деревья/яд", session_id="sess-poison")
+    )
     put_tab_record(
         board,
         "sess-poison",
@@ -9197,7 +9252,7 @@ def test_only_a_real_linked_worktree_counts_as_one(tmp_path: Path) -> None:
     linked_store = tmp_path / "склад-2" / "worktrees" / "x"
     linked_store.mkdir(parents=True)
     (linked_store / "commondir").write_text("../..\n", encoding="utf-8")
-    (relative / ".git").write_bytes("gitdir: ../склад-2/worktrees/x\r\n".encode("utf-8"))
+    (relative / ".git").write_bytes("gitdir: ../склад-2/worktrees/x\r\n".encode())
 
     places = {
         "linked": tmp_path / "linked-tree",
@@ -9235,15 +9290,27 @@ def test_who_marks_a_twin_title_and_says_where_the_session_came_from(tmp_path: P
     board = tmp_path / "board.jsonl"
     put_tab_record(board, "sess-one", title="О1-3", title_kind="custom", tree="d:/деревья/один")
     put_tab_record(board, "sess-two", title="о1-3", title_kind="custom", tree="d:/деревья/два")
-    put_claim(registry_dir(board), "один", **open_claim("d:/деревья/один", stream="3", session_id="sess-one"))
+    put_claim(
+        registry_dir(board),
+        "один",
+        **open_claim("d:/деревья/один", stream="3", session_id="sess-one"),
+    )
     put_claim(
         registry_dir(board),
         "два",
         **open_claim("d:/деревья/два", stream="4", session_id="sess-two", session_adopted=True),
     )
 
-    announced = [line for line in said(run_tool(board, "-Mode", "Who", "-To", "wave9/3")) if line.startswith("wave9/3")]
-    adopted = [line for line in said(run_tool(board, "-Mode", "Who", "-To", "wave9/4")) if line.startswith("wave9/4")]
+    announced = [
+        line
+        for line in said(run_tool(board, "-Mode", "Who", "-To", "wave9/3"))
+        if line.startswith("wave9/3")
+    ]
+    adopted = [
+        line
+        for line in said(run_tool(board, "-Mode", "Who", "-To", "wave9/4"))
+        if line.startswith("wave9/4")
+    ]
 
     assert len(announced) == 1 and "вкладка О1-3 (сессия sess-one" in announced[0], announced
     assert "то же название у другой вкладки" in announced[0], announced
@@ -9273,7 +9340,9 @@ def test_the_tab_folder_and_tree_come_from_the_hook_input_and_disagreeing_trees_
     # Процесс сторожа — в дереве с заявкой, а сессия по входным данным — в другом дереве.
     deliver_payload(board, tab, "Prompt", {"session_id": "sess-input", "cwd": str(elsewhere)})
     record = tab_record(board, "sess-input")
-    assert folder_key(record["cwd"]) == folder_key(elsewhere) and folder_key(record["tree"]) == folder_key(elsewhere), (
+    assert folder_key(record["cwd"]) == folder_key(elsewhere) and folder_key(
+        record["tree"]
+    ) == folder_key(elsewhere), (
         f"запись вкладки взяла папку или дерево не из входных данных сторожа: {record}"
     )
     assert "session_id" not in claim_of(board, tab, only_open=True).fields, (
@@ -9298,12 +9367,20 @@ def test_the_start_writes_the_starting_tree_and_a_compaction_keeps_it(tmp_path: 
     main = tmp_path / "repo"
     tab = tmp_path / "tab-start"
 
-    deliver_payload(board, main, "Start", {"session_id": "sess-start", "cwd": str(main), "source": "startup"})
+    deliver_payload(
+        board, main, "Start", {"session_id": "sess-start", "cwd": str(main), "source": "startup"}
+    )
     assert folder_key(tab_record(board, "sess-start")["start_tree"]) == folder_key(main)
-    deliver_payload(board, tab, "Start", {"session_id": "sess-start", "cwd": str(tab), "source": "compact"})
+    deliver_payload(
+        board, tab, "Start", {"session_id": "sess-start", "cwd": str(tab), "source": "compact"}
+    )
     after = tab_record(board, "sess-start")
-    assert folder_key(after["start_tree"]) == folder_key(main) and folder_key(after["tree"]) == folder_key(tab), after
-    deliver_payload(board, tab, "Start", {"session_id": "sess-start", "cwd": str(tab), "source": "resume"})
+    assert folder_key(after["start_tree"]) == folder_key(main) and folder_key(
+        after["tree"]
+    ) == folder_key(tab), after
+    deliver_payload(
+        board, tab, "Start", {"session_id": "sess-start", "cwd": str(tab), "source": "resume"}
+    )
     assert folder_key(tab_record(board, "sess-start")["start_tree"]) == folder_key(tab)
 
 
@@ -9336,7 +9413,9 @@ def test_a_claim_without_a_session_is_adopted_only_by_a_tab_that_started_in_its_
     deliver_payload(board, tab, "Start", {"session_id": "sess-owner", "cwd": str(tab)})
     deliver_payload(board, tab, "Prompt", {"session_id": "sess-owner", "cwd": str(tab)})
     fields = claim_of(board, tab, only_open=True).fields
-    assert fields.get("session_id") == "sess-owner" and fields.get("session_adopted") is True, fields
+    assert fields.get("session_id") == "sess-owner" and fields.get("session_adopted") is True, (
+        fields
+    )
 
     monkeypatch.setenv("CLAUDE_CODE_SESSION_ID", "sess-owner")
     claim(board, tab, "wave9", "17")
@@ -9349,7 +9428,9 @@ def test_a_claim_without_a_session_is_adopted_only_by_a_tab_that_started_in_its_
 
 @needs_pwsh
 @needs_git
-def test_adoption_steps_back_for_another_tab_of_the_tree_and_for_a_closed_claim(tmp_path: Path) -> None:
+def test_adoption_steps_back_for_another_tab_of_the_tree_and_for_a_closed_claim(
+    tmp_path: Path,
+) -> None:
     """Подхвата нет, если в дереве сегодня писали из другой вкладки, и у сданной или перенесённой заявки.
 
     Две вкладки в дереве — неоднозначность: выбирать за человека нельзя. Сданную и перенесённую заявку
@@ -9357,12 +9438,19 @@ def test_adoption_steps_back_for_another_tab_of_the_tree_and_for_a_closed_claim(
     """
     real_worktrees(
         tmp_path,
-        {"tab-rival": "feat/tab-rival", "tab-done": "feat/tab-done", "tab-left": "feat/tab-left", "tab-new": "feat/tab-new"},
+        {
+            "tab-rival": "feat/tab-rival",
+            "tab-done": "feat/tab-done",
+            "tab-left": "feat/tab-left",
+            "tab-new": "feat/tab-new",
+        },
     )
     board = tmp_path / "board.jsonl"
     rival = tmp_path / "tab-rival"
     claim(board, rival, "wave9", "13")
-    put_tab_record(board, "sess-other", title="Другая", title_kind="custom", tree=str(rival).replace("\\", "/"))
+    put_tab_record(
+        board, "sess-other", title="Другая", title_kind="custom", tree=str(rival).replace("\\", "/")
+    )
     mark = put_prompt_mark(board, "sess-other", seconds_ago=3600)
 
     run_deliver(board, rival, "Prompt", "sess-late")
@@ -9381,13 +9469,17 @@ def test_adoption_steps_back_for_another_tab_of_the_tree_and_for_a_closed_claim(
     claim(board, done, "wave9", "14")
     assert release(board, done).returncode == 0
     run_deliver(board, done, "Prompt", "sess-done")
-    assert "session_id" not in claim_of(board, done, only_open=False).fields, "сданная заявка получила сессию"
+    assert "session_id" not in claim_of(board, done, only_open=False).fields, (
+        "сданная заявка получила сессию"
+    )
 
     left = tmp_path / "tab-left"
     claim(board, left, "wave9", "15")
     claim(board, tmp_path / "tab-new", "wave9", "15", "-TakeOver")
     run_deliver(board, left, "Prompt", "sess-left")
-    assert "session_id" not in claim_of(board, left, only_open=False).fields, "перенесённая заявка получила сессию"
+    assert "session_id" not in claim_of(board, left, only_open=False).fields, (
+        "перенесённая заявка получила сессию"
+    )
 
 
 @needs_pwsh
@@ -9407,13 +9499,17 @@ def test_a_cleared_context_moves_the_claim_to_the_new_number_of_the_same_tab(
     tab = tmp_path / "tab-clear"
     write_journal(journal_path(claude_config, "sess-before"), [custom_title("О1-3", "sess-before")])
     write_journal(journal_path(claude_config, "sess-after"), [custom_title("о1-3", "sess-after")])
-    write_journal(journal_path(claude_config, "sess-stranger"), [custom_title("Другая", "sess-stranger")])
+    write_journal(
+        journal_path(claude_config, "sess-stranger"), [custom_title("Другая", "sess-stranger")]
+    )
     write_journal(journal_path(claude_config, "sess-auto"), [ai_title("О1-3", "sess-auto")])
     monkeypatch.setenv("CLAUDE_CODE_SESSION_ID", "sess-before")
     claim(board, tab, "wave9", "16")
     monkeypatch.delenv("CLAUDE_CODE_SESSION_ID")
 
-    deliver_payload(board, tab, "Start", {"session_id": "sess-after", "cwd": str(tab), "source": "clear"})
+    deliver_payload(
+        board, tab, "Start", {"session_id": "sess-after", "cwd": str(tab), "source": "clear"}
+    )
     assert claim_of(board, tab, only_open=True).fields.get("session_id") == "sess-after", (
         "после очистки контекста заявка осталась на прежнем номере той же вкладки"
     )
@@ -9423,7 +9519,11 @@ def test_a_cleared_context_moves_the_claim_to_the_new_number_of_the_same_tab(
         assert claim_of(board, tab, only_open=True).fields.get("session_id") == "sess-after", (
             f"вкладка {other} с другим именем или без имени перебила заявку"
         )
-    rows = [line for line in said(run_tool(board, "-Mode", "Who", "-To", "wave9/16")) if line.startswith("wave9/16")]
+    rows = [
+        line
+        for line in said(run_tool(board, "-Mode", "Who", "-To", "wave9/16"))
+        if line.startswith("wave9/16")
+    ]
     assert len(rows) == 1 and "сессию вписал сторож доставки" in rows[0], rows
 
 
@@ -9452,10 +9552,12 @@ def test_the_title_is_reread_at_most_every_two_minutes_and_the_record_is_not_rew
     age(prompt_mark(board, session), 3600)
 
     run_deliver(board, mine, "Prompt", session)
-    assert record_file.stat().st_mtime == aged and record_file.read_text(encoding="utf-8") == before, (
-        "запись вкладки переписана, хотя ничего в ней не изменилось"
+    assert (
+        record_file.stat().st_mtime == aged and record_file.read_text(encoding="utf-8") == before
+    ), "запись вкладки переписана, хотя ничего в ней не изменилось"
+    assert time.time() - prompt_mark(board, session).stat().st_mtime < 600, (
+        "ход человека не коснулся отметки"
     )
-    assert time.time() - prompt_mark(board, session).stat().st_mtime < 600, "ход человека не коснулся отметки"
 
     with journal.open("ab") as handle:
         handle.write((custom_title("Второе", session) + "\n").encode("utf-8"))
@@ -9463,7 +9565,9 @@ def test_the_title_is_reread_at_most_every_two_minutes_and_the_record_is_not_rew
     assert tab_record(board, session)["title"] == "Первое", "журнал перечитан раньше двух минут"
     age(title_cache(board, session), 180)
     run_deliver(board, mine, "Prompt", session)
-    assert tab_record(board, session)["title"] == "Второе", "переименование не дошло и через две минуты"
+    assert tab_record(board, session)["title"] == "Второе", (
+        "переименование не дошло и через две минуты"
+    )
 
     stamp = datetime(2026, 1, 2, 3, 4).timestamp()
     os.utime(prompt_mark(board, session), (stamp, stamp))
@@ -9483,15 +9587,27 @@ def test_a_missing_journal_is_looked_for_again_only_after_a_pause(
     """
     write_journal(journal_path(claude_config, "sess-exists"), [talk(100)])
     cache = tmp_path / "cache-missing"
-    assert ask_titles(tmp_path, ["sess-late-journal"], cache=cache)["sess-late-journal"]["title"] == ""
-    remembered = (cache / "sess-late-journal.txt").read_text(encoding="utf-8").split("\n")
-    assert remembered[1] == "" and remembered[0].startswith("parallel-streams tab title cache"), remembered
-
-    write_journal(journal_path(claude_config, "sess-late-journal"), [custom_title("Нашлась", "sess-late-journal")])
-    assert ask_titles(tmp_path, ["sess-late-journal"], cache=cache)["sess-late-journal"]["title"] == "", (
-        "промах не запомнился — папки проектов перебираются на каждом ходу"
+    assert (
+        ask_titles(tmp_path, ["sess-late-journal"], cache=cache)["sess-late-journal"]["title"] == ""
     )
-    assert ask_titles(tmp_path, ["sess-late-journal"], cache=cache, fresh=True)["sess-late-journal"]["title"] == "Нашлась"
+    remembered = (cache / "sess-late-journal.txt").read_text(encoding="utf-8").split("\n")
+    assert remembered[1] == "" and remembered[0].startswith("parallel-streams tab title cache"), (
+        remembered
+    )
+
+    write_journal(
+        journal_path(claude_config, "sess-late-journal"),
+        [custom_title("Нашлась", "sess-late-journal")],
+    )
+    assert (
+        ask_titles(tmp_path, ["sess-late-journal"], cache=cache)["sess-late-journal"]["title"] == ""
+    ), "промах не запомнился — папки проектов перебираются на каждом ходу"
+    assert (
+        ask_titles(tmp_path, ["sess-late-journal"], cache=cache, fresh=True)["sess-late-journal"][
+            "title"
+        ]
+        == "Нашлась"
+    )
 
     second = tmp_path / "cache-missing-2"
     assert ask_titles(tmp_path, ["sess-later"], cache=second)["sess-later"]["title"] == ""
@@ -9527,7 +9643,10 @@ def test_the_short_path_never_passes_a_last_line_that_is_still_being_written(
 
     with journal.open("ab") as handle:
         handle.write(('ещё"}}\n' + custom_title("Два", session) + "\n").encode("utf-8"))
-    assert ask_titles(tmp_path, [session], cache=cache)[session] == {"title": "Два", "kind": "custom"}
+    assert ask_titles(tmp_path, [session], cache=cache)[session] == {
+        "title": "Два",
+        "kind": "custom",
+    }
 
 
 # ─── Название вкладки: доводка по повторной проверке ──────────────────────────────────────────────
@@ -9541,8 +9660,12 @@ def age_adoption_refusal(board: Path, session: str, seconds: float) -> None:
     """Отодвигает время отказа подхвата в записи вкладки — так проверка «проживает» память об отказе."""
     path = tabs_dir(board) / f"{session}.json"
     record = json.loads(path.read_text(encoding="utf-8"))
-    assert record.get("adopt_refused_at"), f"отказ подхвата не запомнился в записи вкладки: {record}"
-    record["adopt_refused_at"] = (datetime.now() - timedelta(seconds=seconds)).isoformat(timespec="seconds")
+    assert record.get("adopt_refused_at"), (
+        f"отказ подхвата не запомнился в записи вкладки: {record}"
+    )
+    record["adopt_refused_at"] = (datetime.now() - timedelta(seconds=seconds)).isoformat(
+        timespec="seconds"
+    )
     path.write_text(json.dumps(record, ensure_ascii=False), encoding="utf-8")
 
 
@@ -9567,11 +9690,17 @@ def test_the_previous_number_of_the_same_tab_is_neither_a_twin_nor_a_second_line
     claim(board, tab, "wave9", "19")
     monkeypatch.delenv("CLAUDE_CODE_SESSION_ID")
     deliver_payload(board, tab, "Prompt", {"session_id": "sess-before", "cwd": str(tab)})
-    deliver_payload(board, tab, "Start", {"session_id": "sess-after", "cwd": str(tab), "source": "clear"})
+    deliver_payload(
+        board, tab, "Start", {"session_id": "sess-after", "cwd": str(tab), "source": "clear"}
+    )
     deliver_payload(board, tab, "Prompt", {"session_id": "sess-after", "cwd": str(tab)})
     assert claim_of(board, tab, only_open=True).fields.get("session_id") == "sess-after"
 
-    rows = [line for line in said(run_tool(board, "-Mode", "Who", "-To", "wave9/19")) if line.startswith("wave9/19")]
+    rows = [
+        line
+        for line in said(run_tool(board, "-Mode", "Who", "-To", "wave9/19"))
+        if line.startswith("wave9/19")
+    ]
     assert len(rows) == 1 and "вкладка О1-3" in rows[0], rows
     assert "то же название у другой вкладки" not in rows[0], (
         f"прежний номер той же вкладки назван двойником: {rows[0]}"
@@ -9584,14 +9713,28 @@ def test_the_previous_number_of_the_same_tab_is_neither_a_twin_nor_a_second_line
 
     now = datetime.now().isoformat(timespec="seconds")
     put_tab_record(
-        board, "sess-namesake", title="о1-3", title_kind="custom", tree="d:/деревья/другое", prompt_at=now, seen_at=now
+        board,
+        "sess-namesake",
+        title="о1-3",
+        title_kind="custom",
+        tree="d:/деревья/другое",
+        prompt_at=now,
+        seen_at=now,
     )
-    rows = [line for line in said(run_tool(board, "-Mode", "Who", "-To", "wave9/19")) if line.startswith("wave9/19")]
+    rows = [
+        line
+        for line in said(run_tool(board, "-Mode", "Who", "-To", "wave9/19"))
+        if line.startswith("wave9/19")
+    ]
     assert len(rows) == 1 and "то же название у другой вкладки" in rows[0], (
         f"вкладка с тем же именем в другом дереве не помечена: {rows}"
     )
-    named = [line for line in said(run_tool(board, "-Mode", "Tabs")) if "О1-3" in line or "о1-3" in line]
-    assert len(named) == 2 and all("‼️ то же название у другой вкладки" in line for line in named), named
+    named = [
+        line for line in said(run_tool(board, "-Mode", "Tabs")) if "О1-3" in line or "о1-3" in line
+    ]
+    assert len(named) == 2 and all("‼️ то же название у другой вкладки" in line for line in named), (
+        named
+    )
 
 
 @needs_pwsh
@@ -9614,7 +9757,9 @@ def test_a_journal_that_appears_after_the_start_moves_the_claim_on_the_very_next
     monkeypatch.setenv("CLAUDE_CODE_SESSION_ID", "sess-old")
     claim(board, late, "wave9", "21")
     monkeypatch.delenv("CLAUDE_CODE_SESSION_ID")
-    deliver_payload(board, late, "Start", {"session_id": "sess-new", "cwd": str(late), "source": "clear"})
+    deliver_payload(
+        board, late, "Start", {"session_id": "sess-new", "cwd": str(late), "source": "clear"}
+    )
     assert claim_of(board, late, only_open=True).fields.get("session_id") == "sess-old"
     write_journal(journal_path(claude_config, "sess-new"), [custom_title("О2-1", "sess-new")])
     deliver_payload(board, late, "Prompt", {"session_id": "sess-new", "cwd": str(late)})
@@ -9627,7 +9772,9 @@ def test_a_journal_that_appears_after_the_start_moves_the_claim_on_the_very_next
     monkeypatch.setenv("CLAUDE_CODE_SESSION_ID", "sess-first")
     claim(board, later, "wave9", "22")
     monkeypatch.delenv("CLAUDE_CODE_SESSION_ID")
-    deliver_payload(board, later, "Start", {"session_id": "sess-second", "cwd": str(later), "source": "clear"})
+    deliver_payload(
+        board, later, "Start", {"session_id": "sess-second", "cwd": str(later), "source": "clear"}
+    )
     deliver_payload(board, later, "Prompt", {"session_id": "sess-second", "cwd": str(later)})
     assert claim_of(board, later, only_open=True).fields.get("session_id") == "sess-first"
     write_journal(journal_path(claude_config, "sess-second"), [custom_title("О2-2", "sess-second")])
@@ -9678,9 +9825,14 @@ def test_an_erased_human_name_gives_the_automatic_one_with_or_without_the_cache(
     """
     session = "sess-erased"
     journal = journal_path(claude_config, session)
-    write_journal(journal, [ai_title("Авто-раньше", session), talk(3000), custom_title("Имя", session)])
+    write_journal(
+        journal, [ai_title("Авто-раньше", session), talk(3000), custom_title("Имя", session)]
+    )
     cache = tmp_path / "cache-erased"
-    assert ask_titles(tmp_path, [session], cache=cache, chunk=1024)[session] == {"title": "Имя", "kind": "custom"}
+    assert ask_titles(tmp_path, [session], cache=cache, chunk=1024)[session] == {
+        "title": "Имя",
+        "kind": "custom",
+    }
 
     with journal.open("ab") as handle:
         handle.write((custom_title("", session) + "\n").encode("utf-8"))
@@ -9692,7 +9844,9 @@ def test_an_erased_human_name_gives_the_automatic_one_with_or_without_the_cache(
 
 @needs_pwsh
 @needs_git
-def test_a_refused_adoption_is_remembered_so_the_next_turns_do_not_scan_the_tabs_again(tmp_path: Path) -> None:
+def test_a_refused_adoption_is_remembered_so_the_next_turns_do_not_scan_the_tabs_again(
+    tmp_path: Path,
+) -> None:
     """Подхват, отступивший перед другой вкладкой дерева, помнит отказ две минуты — реестр вкладок не перебирается на каждом ходу.
 
     Проверка перебирает весь реестр вкладок (сотни записей — десятые доли секунды) и идёт до доставки
@@ -9704,7 +9858,13 @@ def test_a_refused_adoption_is_remembered_so_the_next_turns_do_not_scan_the_tabs
     board = tmp_path / "board.jsonl"
     tab = tmp_path / "tab-memo"
     claim(board, tab, "wave9", "18")
-    put_tab_record(board, "sess-neighbour", title="Соседка", title_kind="custom", tree=str(tab).replace("\\", "/"))
+    put_tab_record(
+        board,
+        "sess-neighbour",
+        title="Соседка",
+        title_kind="custom",
+        tree=str(tab).replace("\\", "/"),
+    )
     mark = put_prompt_mark(board, "sess-neighbour", seconds_ago=600)
 
     run_deliver(board, tab, "Prompt", "sess-memo")
@@ -9737,7 +9897,9 @@ def test_a_nameless_tab_under_a_named_claim_rereads_its_title_at_most_every_two_
     real_worktrees(tmp_path, {"tab-anon": "feat/tab-anon"})
     board = tmp_path / "board.jsonl"
     tab = tmp_path / "tab-anon"
-    write_journal(journal_path(claude_config, "sess-holder"), [custom_title("Держатель", "sess-holder")])
+    write_journal(
+        journal_path(claude_config, "sess-holder"), [custom_title("Держатель", "sess-holder")]
+    )
     monkeypatch.setenv("CLAUDE_CODE_SESSION_ID", "sess-holder")
     claim(board, tab, "wave9", "23")
     monkeypatch.delenv("CLAUDE_CODE_SESSION_ID")
@@ -9749,18 +9911,24 @@ def test_a_nameless_tab_under_a_named_claim_rereads_its_title_at_most_every_two_
     with journal.open("ab") as handle:
         handle.write((ai_title("Придумано", "sess-anon") + "\n").encode("utf-8"))
     run_deliver(board, tab, "Prompt", "sess-anon")
-    assert tab_record(board, "sess-anon")["title"] == "", "безымянная вкладка дочитала журнал раньше двух минут"
+    assert tab_record(board, "sess-anon")["title"] == "", (
+        "безымянная вкладка дочитала журнал раньше двух минут"
+    )
 
     age(title_cache(board, "sess-anon"), 180)
     run_deliver(board, tab, "Prompt", "sess-anon")
-    assert tab_record(board, "sess-anon")["title"] == "Придумано", "название не дошло и через две минуты"
+    assert tab_record(board, "sess-anon")["title"] == "Придумано", (
+        "название не дошло и через две минуты"
+    )
     assert claim_of(board, tab, only_open=True).fields.get("session_id") == "sess-holder"
 
 
 def deny_reading(path: Path) -> None:
     """Запрещает чтение файла — так выглядит запись вкладки, которую на миг не удалось прочитать."""
     if os.name == "nt":
-        subprocess.run(["icacls", str(path), "/deny", "*S-1-1-0:(RD)"], check=True, capture_output=True)
+        subprocess.run(
+            ["icacls", str(path), "/deny", "*S-1-1-0:(RD)"], check=True, capture_output=True
+        )
     else:
         path.chmod(0)
 
@@ -9775,7 +9943,9 @@ def allow_reading(path: Path) -> None:
 
 
 @needs_pwsh
-def test_a_tab_record_that_exists_but_cannot_be_read_is_not_rewritten(tmp_path: Path, claude_config: Path) -> None:
+def test_a_tab_record_that_exists_but_cannot_be_read_is_not_rewritten(
+    tmp_path: Path, claude_config: Path
+) -> None:
     """Запись вкладки есть, а прочитать её не удалось — в этот ход она не переписывается.
 
     Переписанная вслепую запись теряла бы стартовое дерево, а пустое стартовое дерево значит «сессия до
@@ -9786,7 +9956,9 @@ def test_a_tab_record_that_exists_but_cannot_be_read_is_not_rewritten(tmp_path: 
     board = tmp_path / "board.jsonl"
     mine = tmp_path / "wave9-locked"
     mine.mkdir()
-    write_journal(journal_path(claude_config, "sess-locked"), [custom_title("Запертая", "sess-locked")])
+    write_journal(
+        journal_path(claude_config, "sess-locked"), [custom_title("Запертая", "sess-locked")]
+    )
     run_deliver(board, mine, "Start", "sess-locked")
     record_file = tabs_dir(board) / "sess-locked.json"
     started = tab_record(board, "sess-locked")
@@ -9807,7 +9979,9 @@ def test_a_tab_record_that_exists_but_cannot_be_read_is_not_rewritten(tmp_path: 
     assert tab_record(board, "sess-locked")["start_tree"] == started["start_tree"], (
         "нечитаемую запись вкладки переписали вслепую — стартовое дерево потеряно"
     )
-    assert not prompt_mark(board, "sess-locked").exists(), "ход, не переписавший запись, завёл отметку"
+    assert not prompt_mark(board, "sess-locked").exists(), (
+        "ход, не переписавший запись, завёл отметку"
+    )
 
     run_deliver(board, mine, "Prompt", "sess-locked")
     after = tab_record(board, "sess-locked")
