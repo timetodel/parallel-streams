@@ -5,7 +5,7 @@
 [![tests](https://github.com/timetodel/parallel-streams/actions/workflows/tests.yml/badge.svg)](https://github.com/timetodel/parallel-streams/actions/workflows/tests.yml)
 [![license](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![skill](https://img.shields.io/badge/Claude%20Code-skill-orange.svg)](https://code.claude.com/docs/en/skills)
-[![version](https://img.shields.io/badge/version-1.16.0-brightgreen.svg)](CHANGELOG.md)
+[![version](https://img.shields.io/badge/version-1.16.1-brightgreen.svg)](CHANGELOG.md)
 
 You open six agent sessions on one repository because the plan is big and the model is fast. An hour
 later two of them have rewritten the same file, a third built a helper the fourth had already
@@ -299,6 +299,10 @@ That gives a project five commands, which the skill then writes into every brief
 | `-Mode Done` | close what arrived, so it stops coming back after each context compaction |
 | `-Mode Release` | hand the stream back with the very last command, once nothing is left to commit — refused while the inbox still has open entries |
 | `-Mode Streams` | ask who owns which task, before proposing work outside your own |
+
+Two more questions answer *which tab* runs a stream, by the name you gave the tab: `-Mode Who -To
+wave6/3` (tab, folder, branch, when a person last wrote there) and `-Mode Tabs` (every tab in the
+project, freshest first). Every listing above names the tab too.
 
 The board and the claims live in the repository's shared internal directory, so every worktree sees
 them at once, they belong to no branch, and they never need merging.

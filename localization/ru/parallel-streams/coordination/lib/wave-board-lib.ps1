@@ -17,6 +17,10 @@
 # Разбор ловушки целиком — в подключаемом файле.
 . (Join-Path $PSScriptRoot 'git-env-clean.ps1')
 
+# Название вкладки, ведущей поток, и реестр вкладок — отдельным файлом: чтение журнала сессии это
+# своя граница, и всё, что из журнала берётся, должно быть видно в одном месте.
+. (Join-Path $PSScriptRoot 'tab-titles.ps1')
+
 function Get-BoardPath {
     param([string]$Override)
     if ($Override) { return $Override }
@@ -809,10 +813,38 @@ function Set-KnownWavesFromRegistry {
     # Удобная форма для тех, у кого реестр под рукой. Молчит при любой неудаче: не разобранный
     # список волн — это адрес, который не разберётся, а не поломка механизма у всех остальных.
     try {
-        Set-KnownWaves -Keys @((Get-Claims -Dir $Dir) | ForEach-Object { $_.WaveKey })
+        Set-KnownWaves -Keys @((Get-RegistrySnapshot -Dir $Dir) | ForEach-Object { $_.WaveKey })
     } catch {
         Set-KnownWaves -Keys @()
     }
+}
+
+# Терпимый снимок реестра, прочитанный в этом запуске, и каталог, из которого он прочитан.
+$script:WaveBoardRegistrySnapshot = $null
+$script:WaveBoardRegistrySnapshotDir = ''
+
+function Get-RegistrySnapshot {
+    param([string]$Dir)
+    # Реестр заявок, прочитанный ТЕРПИМО и ОДИН раз за запуск — для тех, кому он нужен только для
+    # показа. Показ доски спрашивает его ради названия вкладки у адресата, а разбор адреса того же
+    # запуска уже прочитал его ради имён волн: второе чтение стоило бы тех же долей секунды на
+    # каждом показе.
+    #
+    # ‼️ Не для решающих мест: объявление, сдача и приём находки читают реестр строго и заново — снимок
+    # мог устареть на их собственную запись.
+    if ($null -ne $script:WaveBoardRegistrySnapshot -and $script:WaveBoardRegistrySnapshotDir -eq $Dir) {
+        return @($script:WaveBoardRegistrySnapshot)
+    }
+    $claims = @()
+    try { $claims = @(Get-Claims -Dir $Dir) } catch { $claims = @() }
+    $script:WaveBoardRegistrySnapshot = $claims
+    $script:WaveBoardRegistrySnapshotDir = $Dir
+    # Имена волн из того же снимка, если их ещё не спрашивали: иначе первый разбор адреса прочитал бы
+    # реестр ещё раз.
+    if (-not $script:WaveBoardKnownWavesLoaded) {
+        Set-KnownWaves -Keys @($claims | ForEach-Object { $_.WaveKey })
+    }
+    return @($claims)
 }
 
 function Get-StreamAddress {
@@ -2258,8 +2290,12 @@ function Write-ClaimFile {
     }
 }
 
+# Сменил ли сторож доставки в этом запуске сессию в своей заявке: тогда запись вкладки переписывается
+# в конце хода, даже если в ней самой ничего не изменилось.
+$script:WaveBoardClaimSessionChanged = $false
+
 function Update-ClaimSeen {
-    param([string]$Dir, [string]$TreePath, [string]$Path, $Claims)
+    param([string]$Dir, [string]$TreePath, [string]$Path, $Claims, [string]$Session, [string]$Stage, [string]$TabsDir, [string]$Tree)
     # Отметка «вкладка на ходу». Зовётся сторожем доставки на каждом ходу и обязана быть немой:
     # сорвавшаяся отметка не повод мешать работе.
     #
@@ -2281,6 +2317,18 @@ function Update-ClaimSeen {
         # Через `Add-Member -Force`, а не присваиванием: у заявки прежней версии поля отметки может
         # не быть вовсе, и присваивание сорвалось бы — то есть такая заявка молчала бы навсегда.
         $claim | Add-Member -NotePropertyName seen_at -NotePropertyValue ((Get-Date).ToString('s')) -Force
+        # Какая сессия ведёт заявку: подхват заявки без сессии и перенос на новый номер той же вкладки —
+        # в ту же отметку, чтобы не писать файл второй раз за ход. Правила и их причины — у
+        # `Update-ClaimSessionFromTab` (`lib/tab-titles.ps1`). Дорогие проверки там идут только тогда,
+        # когда сессия заявки не совпала с этой, то есть редко.
+        #
+        # ‼️ `-Tree` — дерево из папки, пришедшей сторожу во входных данных, а `-TreePath` — ключ
+        # заявки. Разошлись они (процесс сторожа запущен не в папке сессии) — сессию не трогаем вовсе:
+        # решать про заявку одного дерева по вкладке другого нельзя.
+        if ($Session -and $Tree -and $TreePath -and (Get-FolderKey -Path $Tree) -eq (Get-FolderKey -Path $TreePath) -and
+            (Update-ClaimSessionFromTab -Claim $claim -Session $Session -Stage $Stage -TabsDir $TabsDir -Tree $Tree)) {
+            $script:WaveBoardClaimSessionChanged = $true
+        }
         Write-ClaimFile -Path $Path -Claim $claim
     } catch {
         return
@@ -2456,9 +2504,14 @@ function Get-StuckRecords {
         $parsed = [datetime]::TryParse([string]$record.at, [cultureinfo]::InvariantCulture,
             [System.Globalization.DateTimeStyles]::None, [ref]$when)
         $reason = ''
-        if (@($addressed | Where-Object { $_.State -eq 'сдан' }).Count -gt 0) {
+        # Какая вкладка вела поток — рядом с причиной: владелец идёт разбираться именно в неё, а искать
+        # её перебором журналов стоит минут. Сессия неизвестна — строку не засоряем.
+        $releasedEntries = @($addressed | Where-Object { $_.State -eq 'сдан' })
+        if ($releasedEntries.Count -gt 0) {
             # Сдан — случай, где ждать нечего вовсе: вкладки нет и не будет.
             $reason = 'поток сдан'
+            $tab = @($releasedEntries | ForEach-Object { Get-ClaimTabText -Claim $_ } | Where-Object { $_ })
+            if ($tab.Count -gt 0) { $reason += ", $($tab[0])" }
         } elseif (@($addressed | Where-Object { $_.Closed }).Count -eq $addressed.Count -and
             $addressed.Count -gt 0) {
             # Все записи адреса перенесены, а ведущей не осталось. Цепочка переездов сюда больше не
@@ -2466,9 +2519,13 @@ function Get-StuckRecords {
             # адрес друг у друга, и ждать по нему нечего. Причина не «сдан», и врать про сдачу
             # нельзя — человек пошёл бы искать итог сданного потока, которого никто не писал.
             $reason = 'адрес перенесён, а ведущей записи у него не осталось'
+            $tab = @($addressed | ForEach-Object { Get-ClaimTabText -Claim $_ } | Where-Object { $_ })
+            if ($tab.Count -gt 0) { $reason += ", $($tab[0])" }
         } elseif ($addressed.Count -gt 0) {
             if ($parsed -and $when -gt $deadline) { continue }
             $reason = "поток молчит с $(Format-Stamp -Raw $addressed[0].Record.seen_at)"
+            $tab = Get-ClaimTabText -Claim $addressed[0]
+            if ($tab) { $reason += ", $tab" }
         } else {
             if ($parsed -and $when -gt $deadline) { continue }
             # Ключи сюда передают ОТМЕТИВШИХСЯ: дерево само по себе адресата не делает — вкладку
@@ -2676,5 +2733,9 @@ function Format-ClaimLine {
     } else {
         $Claim.State
     }
+    # Какая вкладка ведёт поток — сразу за состоянием: это ответ на вопрос «где его ведут», ради
+    # которого показ и открывают. Сессия неизвестна (заявка прежней версии) — ничего не добавляем.
+    $tab = Get-ClaimTabText -Claim $Claim
+    if ($tab) { $state = "$state, $tab" }
     return "  $($record.wave)/$($record.stream)$name$tasks — $state (отметка $(Format-Stamp -Raw $record.seen_at), ветка $($record.branch)$folder$memory)"
 }

@@ -42,8 +42,9 @@ script point at the folder, not at its contents.
 
 | File | What it holds |
 |---|---|
-| `wave-board.ps1` | The tool: announce, post a finding, close what arrived, release a stream, ask who owns this task |
+| `wave-board.ps1` | The tool: announce, post a finding, close what arrived, release a stream, ask who owns this task and which tab runs a stream |
 | `lib/wave-board-lib.ps1` | How the board and the claim registry are built: where they live, how they're read, who's alive, who's silent |
+| `lib/tab-titles.ps1` | Which tab runs a stream: reading the tab's name from its session transcript, and the tab registry |
 | `lib/git-env-clean.ps1` | Strips git environment variables — otherwise the board would end up in someone else's repository |
 | `lib/hook-io.ps1` | Reads the data that reaches a hook |
 | `hooks/wave-board-deliver.ps1` | Delivery: brings a session the records addressed to it at session start and before every human turn |
@@ -59,6 +60,90 @@ script point at the folder, not at its contents.
 The board and the claim registry sit in the repository's shared internal directory
 (`.git/wave-board/`). That's why every worktree can see them at once, they never land in any
 branch, and they need no merge.
+
+## Which tab runs a stream
+
+People name their tabs ("O1-3-1"), and the board answers by that name: the stream listing, the board
+listing, the stuck summary and the refusals say "tab O1-3-1" next to a stream; an automatically
+named tab shows as "unnamed tab (auto: …)"; a tab nobody knows adds nothing to the line. Two questions
+ask about tabs directly:
+
+- `-Mode Who -To <wave/stream, branch or folder>` — one line per answer: address, tab, folder, branch,
+  when a person last wrote in that tab, and where the board got the session from (the announcement, or
+  the delivery hook); if another tab carries the same name, the start of the session id is added;
+- `-Mode Tabs` — the project's tabs, freshest first; tabs silent for over a day in a short separate
+  tail, and matching names marked.
+
+The previous session id of the same tab (after a context clear: the same worktree and the same
+human-given name) isn't a twin: the listing folds it into the line of the fresh id, and it gives no
+another-tab mark.
+
+**A tab name is a hint telling a person where to go, not proof.** It changes addressing and delivery
+nowhere: findings still go by the stream's address, and the session id is only for listings.
+
+How the board knows. A claim records the session it was made from — the host puts the session id into
+the environment of every command a tab runs. The delivery hook keeps a small record per session in
+`.git/wave-board/tabs/`: folder, worktree, the worktree the session started in, tab name; the time of
+the last human message is the modification time of a small marker next to it. The name is read from
+the session's transcript, and exactly two service records are read from it — the name a person gave
+the tab and the automatic one; nothing from the conversation is read or kept. A per-session cache
+means only the transcript's new tail is read.
+
+The cost on a human message. The hook runs on every one of them, so on a human message the name is
+re-read from the transcript at most every two minutes — a rename reaches the listings on the first
+human message after two minutes, and without messages it doesn't; a session start and a stream
+announcement always read it. The tab record is rewritten only when its folder, worktree or name
+changed, and the message time is a touch of the marker. The tab record and the cleanup run last in the
+hook, after the delivery is printed: a slow transcript read won't break the findings' output, but it
+won't make the turn faster either — a human message waits for the whole hook. The decision about the
+claim's session (below) comes earlier, before delivery, together with the claim mark.
+
+Besides an announcement, the delivery hook writes a session into a claim in two cases, and both are
+marked as its guess (an announcement clears the mark):
+
+- **adoption** of a claim filed before this or without the variable — on a human message, only in a
+  linked worktree (not the main folder: many tabs live there at once), only by a tab that started in
+  that worktree (or started before the kit was updated), and only if no other tab wrote in the same
+  worktree within the last day. If the adoption stepped back for another tab, the check is repeated at
+  most every two minutes: it walks the whole tab registry. A released or moved claim is left alone;
+- **hand-over** to the same tab's new id. Clearing the context and resuming with a fork give a tab a
+  new session id, while the name a person gave it carries over. If the claim names another session,
+  that session's tab works in the same worktree, and both carry the same human-given name, the claim
+  moves to the current one. A new session's transcript appears after the session starts, so while the
+  tab has no name its first messages look for the transcript again (no more than five misses in a row)
+  — the hand-over doesn't wait two minutes. Tabs with different names, or with no name, never take a
+  claim from each other.
+
+Known limits:
+
+- **The session id comes from an environment variable the Claude Code docs don't describe** (relied
+  on as observed on 2026-09-13). If it disappears, claims simply stop remembering the session;
+  everything else works as before.
+- **The automatic name is made up by the model from the conversation**, and every tab of the project
+  sees it: the tab record lives in the shared directory and is printed into listings and into the
+  neighbours' context. Worth remembering when several people share one project folder.
+- **The contents of `.git/wave-board/` are trusted** — any process of the same person can write
+  there. So everything printed from the tab registry is cleaned at print time, the transcript path
+  from the cache is checked against the transcripts directory, and cleanup deletes only files it
+  recognizes by their content.
+- **A tab working in this repository from a tab of another project** gets a tab record only when it
+  announces: the delivery hook runs in the project where the tab is open and writes THAT repository's
+  registry. Message times and renames aren't tracked here for it.
+- **The claim mark reads the file and writes it whole without the registry lock.** If an announcement
+  from the same folder wrote a new claim at that very moment, the hook may overwrite it with the old
+  content, session included. The window is up to a fraction of a second: between the read and the write
+  sit the decision about the session and, at a session start after a context clear, a transcript search
+  and read too. The race existed before (the time stamp); it isn't fixed separately — a repeated
+  announcement corrects it.
+- **Two tabs of one worktree that write their first message in the same second** both pass the
+  "another tab" check (neither has a marker yet): a claim without a session goes to whichever writes
+  last, and the listing marks it as the hook's guess.
+- **A session start or an announcement that coincides with a human message of the same session** may
+  give the marker its old time back: they rewrite the marker after noting its time and restore that time
+  after the write.
+- **Two tabs with the same human-given name in one worktree** (a forked resume while the original is
+  still open) are one tab to the board: the claim is pulled to whichever had the last turn, the listing
+  shows them as one line, and they get no twin mark.
 
 ## Working without a wave
 

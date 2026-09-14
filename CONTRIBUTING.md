@@ -74,7 +74,7 @@ Two rules that are not negotiable:
 
 ## Releasing
 
-A version bump is not done when the PR merges. Four surfaces carry the version, and they drift apart
+A version bump is not done when the PR merges. Five surfaces carry the version, and they drift apart
 in silence, because each one looks right on its own:
 
 - **Both `SKILL.md` headers** — `skills/parallel-streams/` and `localization/ru/parallel-streams/`.
@@ -82,11 +82,15 @@ in silence, because each one looks right on its own:
 - **`CHANGELOG.md`** — one section per version, written for someone deciding whether to update.
 - **The version badge in `README.md`** — the number the front page shows. It sat at 1.11.0 while the
   skill was at 1.16.0, because nothing ever compared the two.
+- **The version line in `localization/ru/README.md`** — "Версия соответствует английской: **X.Y.Z**".
+  The file itself says a mismatch means the translation fell behind, so a forgotten bump reads as a
+  stale translation. It was left at 1.16.0 in the first draft of 1.16.1, because this list didn't
+  name it.
 - **The GitHub release** — tag `vX.Y.Z` plus notes. Releases stopped at 1.9.1 while seven versions
   landed on main behind them, so the front page said "released a week ago" for a kit that had
   changed six times that week.
 
-The first three go in the PR that bumps the version. The release is published right after the merge:
+The first four go in the PR that bumps the version. The release is published right after the merge:
 
 ```bash
 git switch main && git pull --ff-only

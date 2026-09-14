@@ -3,6 +3,100 @@
 All notable changes to this project are documented here.
 This project follows [Semantic Versioning](https://semver.org/).
 
+## [1.16.1] — 2026-09-14
+
+### Added
+
+- **The board now says which tab runs a stream, by the name you gave the tab.** People keep dozens
+  of tabs open and name them by hand ("O1-3-1"), but the board knew a stream only by its folder and
+  branch — so "which tab is running wave9/3?" had no answer short of searching every session
+  transcript, which took minutes. Now a claim remembers the session it was made from (the host puts
+  the session id into the environment of every command a tab runs), and the delivery hook keeps a
+  small record per tab: its name, its folder, and when a person last wrote in it. The stream
+  listing, the board listing, the owner's stuck summary, the intake refusals and both claim refusals
+  say "tab O1-3-1" next to a stream; a released one says "was run by tab O1-3-1"; a tab with only an
+  automatic name shows as "unnamed tab (auto: …)"; an unknown tab adds nothing to the line.
+
+- **Two new questions: `-Mode Who` and `-Mode Tabs`.** `Who -To <wave/stream, branch or folder>`
+  answers in one line per record: address, tab, folder, branch, when a person last wrote there, and
+  where the board got the session from (the claim itself, or a guess by the delivery hook). If
+  another tab carries the same name, the line adds the start of the session id. `Tabs` lists the
+  project's tabs, freshest first, with the claimed stream; tabs silent for over a day go into a short
+  separate tail rather than disappearing, and two tabs with the same name are both shown and marked.
+  The same tab under its previous session id (after a context clear: the same worktree and the same
+  human-given name) is not a twin: `Tabs` folds it into one line, and neither question marks it.
+
+- **Claims filed before this pick their session up on their own** — on the next human message in
+  that worktree, and only when the guess is safe. Not in the repository's main folder (many tabs live
+  there at once); only by a tab that started in that worktree or before this update (a tab that
+  started in the main folder and wandered in to look doesn't take the stream); not while another tab
+  wrote in the same worktree within the last day; never for a released or moved claim. The board marks
+  such a session as the hook's guess until the tab announces again. When another tab of the worktree
+  makes the hook step back, it checks again at most every two minutes rather than walking the tab
+  registry on every message.
+
+- **Clearing the context no longer strands the claim.** Clearing the context or resuming with a fork
+  gives the tab a new session id but keeps the name a person gave it. When the claim names another
+  session of the same worktree and both carry the same human-given name, the claim moves to the new
+  session. Tabs with different names, or with no name, never take a claim from each other — two tabs
+  in one worktree would otherwise pull it back and forth on every message. A new session's transcript
+  appears after the session starts, so while the tab has no name yet its first messages look for the
+  transcript again (up to five misses in a row) — the claim moves on the first message that finds it,
+  not two minutes later.
+
+### Notes
+
+- **The tab name is a hint, not proof.** It tells a person which window to go to; addressing and
+  delivery never use it.
+
+- **Only the name is read from a transcript.** Exactly two service records — the name a person
+  gave the tab and the automatic one — are read; nothing from the conversation is read or stored. A
+  per-session cache means each read takes only the transcript's new tail, not the whole file.
+  The first read looks back at most 64 MB: in today's largest transcripts (up to 270 MB) the host
+  repeats the name record at least every 30 MB. A run of lines that only look like name records stops
+  the read after 200 of them, and a line longer than 8 KB is never parsed. A human-given name erased
+  to an empty string gives way to the automatic one, with a warm cache the same as with none.
+
+- **The automatic name is made up by the model from the conversation**, and every tab of the project
+  sees it: the tab record sits in the shared directory and is printed into listings and into the
+  neighbours' context. Worth remembering when several people share one project folder.
+
+- **The cost is on every human message, so it is kept to one touch of a small file.** On a human
+  message the name is re-read from the transcript at most every two minutes — a rename reaches the
+  listings on the first human message after two minutes, and with no messages it doesn't; a session
+  start and a claim always read it. The tab record is rewritten only when its folder, worktree or name
+  changed; the time of the last message is the modification time of a small marker file. The tab
+  record and the cleanup run last in the hook, after the findings are printed, so a slow read can't
+  break their output — but a human message still waits for the whole hook, and the decision about the
+  claim's session (adoption and hand-over) runs before delivery, with the claim mark. Measured
+  inside a fresh hook process on a machine under 57–77% load: a message within two minutes of the
+  last read adds about 36 ms (the first draft of this release added about 94 ms on every message); a
+  message after a longer pause adds about 0.13 s, most of it PowerShell's first-call overhead.
+
+- **Everything printed from the tab records is cleaned at print time**, not only when the transcript
+  is read: control and formatting characters, invisible tag characters and direction switches never
+  reach a terminal or a neighbour's context, whoever wrote the record. The cache is trusted only for
+  the transcript of its own session inside the transcripts directory, and the cleanup of month-old
+  records deletes only files it recognises by their content — never a stranger's `package.json` — and
+  doesn't enter a tabs folder that is a link.
+
+- **The session id comes from an environment variable the Claude Code docs don't describe** (relied
+  on as observed on 2026-09-13). If it disappears, claims simply stop remembering the session;
+  everything else works as before.
+
+- **Known limits of the session guess**, listed in the channel reference: the claim mark still reads
+  and writes the claim without the registry lock, and the window is now up to a fraction of a second;
+  two tabs of one worktree writing their first message in the same second both pass the "another tab"
+  check; a session start or an announcement coinciding with a human message of the same session may
+  give the marker its old time back; and two tabs with the same human-given name in one worktree (a
+  forked resume while the original is open) are one tab to the board — the claim follows whichever had
+  the last turn.
+
+- **Tests never see the real session.** The suite is often run from inside the host, which exports
+  its own session id; every check in `test_wave_board.py` now runs with that variable removed and with
+  its own temporary config directory, so none of them reads the real transcripts of whoever runs it.
+  `test_install.py` needs no such guard: nothing it runs reads a transcript.
+
 ## [1.16.0] — 2026-09-07
 
 ### Fixed

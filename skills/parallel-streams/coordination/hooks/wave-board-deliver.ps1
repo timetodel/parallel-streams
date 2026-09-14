@@ -22,6 +22,15 @@ Along the way the hook also marks its own worktree as alive (the beacon
 working session apart from an abandoned worktree. The mark is set on every turn, before any early
 exit — see the comment next to it.
 
+It also keeps this session's record in the tab registry: the name the person gave the tab, the
+folder, and the time of the last message. That is how the board answers WHICH tab runs a stream
+(`lib/tab-titles.ps1`). ‼️ The tab record is written LAST, after the delivery has been printed: the
+name is a convenience, delivery is what the hook is for, and a slow transcript read has no right to
+break the output of the neighbours' findings. That doesn't make the turn faster: a human message waits
+for the whole hook. Nor does everything about the name come after delivery: the decision about the
+claim's session (adoption and hand-over — with this tab's own name and a walk of the tab registry)
+comes earlier, together with the claim mark.
+
 The hook blocks NOTHING, and on any unexpected condition it exits silently with zero: a hook that
 misfires must not get in the way of the work.
 #>
@@ -78,7 +87,9 @@ function Get-OverlapBlock {
             $names = @($overlap.Files | Select-Object -First 3) -join ', '
             $more = if ($overlap.Files.Count -gt 3) { " … and $($overlap.Files.Count - 3) more" } else { '' }
             $who = $overlap.Claim.Record
-            "  • stream $($who.wave)/$($who.stream)$(if ($who.name) { ' "' + $who.name + '"' }) — shared files: $names$more"
+            # Which tab — so the owner can go straight to the neighbour instead of hunting for it.
+            $tab = Get-ClaimTabText -Claim $overlap.Claim
+            "  • stream $($who.wave)/$($who.stream)$(if ($who.name) { ' "' + $who.name + '"' })$(if ($tab) { ", $tab" }) — shared files: $names$more"
         }
         return @(
             'A neighbouring stream is editing the same files right now:'
@@ -195,10 +206,42 @@ try {
     # for it.
     Set-KnownWaves -Keys @($claims | ForEach-Object { $_.WaveKey })
 
+    # Who this tab is for the tab registry. The "nosession" placeholder is not a session: a tab record
+    # with no session id is no use to anyone.
+    $tabsDir = Get-TabsDir -RegistryDir $registry
+    $realSession = $call -and $call.session_id -and (Test-SessionId $sessionId)
+    # ‼️ The tab's folder comes from the hook's input, not from wherever the process happened to start.
+    # The tree root in the tab record and the decision about which session runs the claim come from it
+    # too: three answers from one source. The root is asked of git again only if the folders really
+    # differ (usually the hook process runs in the session's folder, and the answer is already there).
+    # If the trees differ, the hook leaves the claim's session alone (see `Update-ClaimSeen`): delivery
+    # still goes by the process folder, and deciding about one worktree's claim by a tab of another
+    # isn't allowed.
+    $tabCwd = if ($call -and $call.cwd -is [string] -and $call.cwd) { [string]$call.cwd } else { $PWD.Path }
+    $tabTree = Get-TreeRoot
+    if ((Get-FolderKey -Path $tabCwd) -ne (Get-FolderKey -Path $PWD.Path)) {
+        try {
+            $top = @(& git -C $tabCwd rev-parse --show-toplevel 2>$null)
+            $tabTree = if ($LASTEXITCODE -eq 0 -and $top.Count -gt 0 -and $top[0]) {
+                ("$($top[0])".Trim() -replace '\\', '/').TrimEnd('/')
+            } else {
+                ($tabCwd -replace '\\', '/').TrimEnd('/')
+            }
+        } catch {
+            $tabTree = ($tabCwd -replace '\\', '/').TrimEnd('/')
+        }
+    }
+    $tabSession = if ($realSession) { $sessionId } else { '' }
+
     # The same mark, but in the stream's claim: the beacon speaks about the FOLDER, the claim speaks
     # about the STREAM, and it survives the folder being deleted. No claim (the session never
     # announced) — quietly do nothing.
-    Update-ClaimSeen -Dir $registry -TreePath (Get-TreeRoot) -Claims $claims
+    #
+    # Along with it — which session runs the claim: adopting a claim without a session, and handing it
+    # over to the same tab's new id after a context clear. ‼️ The rules are strict (the session's
+    # starting tree, a second tab in the worktree, the same human-given name) and live in
+    # `lib/tab-titles.ps1` at `Update-ClaimSessionFromTab`.
+    Update-ClaimSeen -Dir $registry -TreePath (Get-TreeRoot) -Claims $claims -Session $tabSession -Stage $Stage -TabsDir $tabsDir -Tree $tabTree
 
     # Live-session mark: we bump the log's write time on EVERY turn, not only when there's something
     # to show. Otherwise a long session that went days without a finding would fall under cleanup
@@ -247,7 +290,7 @@ try {
                 # session as alive. No second writer appears here: the record was found by an EXACT
                 # match on the worktree folder, so it belongs to this very session. The ban on
                 # writing into SOMEONE ELSE'S file still stands.
-                Update-ClaimSeen -Path $found.File -Claims $claims
+                Update-ClaimSeen -Path $found.File -TreePath (Get-TreeRoot) -Claims $claims -Session $tabSession -Stage $Stage -TabsDir $tabsDir -Tree $tabTree
                 Update-ClaimFiles -Path $found.File -Claims $claims
             }
         } catch {
@@ -290,8 +333,9 @@ try {
                 # leader, the switch answers "wasn't needed", and the session goes in circles
                 # following the one piece of advice printed for it. A printed way out has to work.
                 $lines = if ($fate.StillLed) {
+                    $holderTab = Get-ClaimTabText -Claim $fate.Holder
                     @(
-                        "‼️ Your stream $($claim.wave)/$($claim.stream) was taken over into $($fate.Holder.Record.worktree) — this session is no longer addressable: findings for that address arrive there, and they can't be closed from here."
+                        "‼️ Your stream $($claim.wave)/$($claim.stream) was taken over into $($fate.Holder.Record.worktree)$(if ($holderTab) { " ($holderTab)" }) — this session is no longer addressable: findings for that address arrive there, and they can't be closed from here."
                         "This is your stream and it was taken over by mistake — take the address back: pwsh scripts/wave-board.ps1 -Mode Claim -Wave $($claim.wave) -Stream $($claim.stream) -TakeOver"
                     )
                 } else {
@@ -415,4 +459,23 @@ try {
     Send-Context -Text $text -HookEvent $hookEvent
 } catch {
     exit 0
+} finally {
+    # ‼️ This session's tab record goes LAST — after the claim mark and the delivery already printed, on
+    # any of the exits above (this block runs on `exit` too). The name is a convenience, delivery is
+    # what the hook is for: a slow transcript read has no right to break the findings' output. It
+    # doesn't remove the delay of the turn — a human message waits for the whole hook — and the
+    # decision about the claim's session comes earlier, before delivery.
+    #
+    # Every listing names the tab running a stream from it. Only a human turn moves the message time; a
+    # session start doesn't, but it writes the session's starting tree (after a context compaction it
+    # keeps the previous one) and removes the records of tabs silent for a month. Mute on any failure.
+    try {
+        if ($realSession -and $tabsDir) {
+            Update-TabRecord -Dir $tabsDir -SessionId $sessionId -Cwd $tabCwd -Tree $tabTree -Stage $Stage `
+                -KeepStartTree:([string]$call.source -eq 'compact') -Force:$script:WaveBoardClaimSessionChanged
+        }
+        if ($Stage -eq 'Start' -and $tabsDir) { Remove-StaleTabRecords -Dir $tabsDir }
+    } catch {
+        # Silent on purpose: the hook must not get in the way of work.
+    }
 }

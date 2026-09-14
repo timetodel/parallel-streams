@@ -21,6 +21,11 @@ The file does nothing by itself: it only declares functions.
 # The full breakdown of this trap is in the included file.
 . (Join-Path $PSScriptRoot 'git-env-clean.ps1')
 
+# The name of the tab running a stream, and the tab registry — in a file of their own: reading a
+# session transcript is a boundary of its own, and everything taken from a transcript has to be
+# visible in one place.
+. (Join-Path $PSScriptRoot 'tab-titles.ps1')
+
 function Get-BoardPath {
     param([string]$Override)
     if ($Override) { return $Override }
@@ -830,10 +835,33 @@ function Set-KnownWavesFromRegistry {
     # an unparsed wave list is an address that won't parse, not a breakdown of the mechanism for
     # everyone else.
     try {
-        Set-KnownWaves -Keys @((Get-Claims -Dir $Dir) | ForEach-Object { $_.WaveKey })
+        Set-KnownWaves -Keys @((Get-RegistrySnapshot -Dir $Dir) | ForEach-Object { $_.WaveKey })
     } catch {
         Set-KnownWaves -Keys @()
     }
+}
+
+# The tolerant registry snapshot read in this run, and the directory it was read from.
+$script:WaveBoardRegistrySnapshot = $null
+$script:WaveBoardRegistrySnapshotDir = ''
+
+function Get-RegistrySnapshot {
+    param([string]$Dir)
+    # The claims registry read TOLERANTLY and ONCE per run — for those who need it only for a listing.
+    # The board listing asks for it to name the addressee's tab, while the start of the same run has
+    # already read it for the wave names: a second read would cost the same fraction of a second on
+    # every listing.
+    #
+    # ‼️ Not for deciding places: announcement, release and taking a finding read the registry strictly
+    # and afresh — a snapshot could be stale by their own write.
+    if ($null -ne $script:WaveBoardRegistrySnapshot -and $script:WaveBoardRegistrySnapshotDir -eq $Dir) {
+        return @($script:WaveBoardRegistrySnapshot)
+    }
+    $claims = @()
+    try { $claims = @(Get-Claims -Dir $Dir) } catch { $claims = @() }
+    $script:WaveBoardRegistrySnapshot = $claims
+    $script:WaveBoardRegistrySnapshotDir = $Dir
+    return @($claims)
 }
 
 function Get-StreamAddress {
@@ -2370,8 +2398,12 @@ function Write-ClaimFile {
     }
 }
 
+# Whether the delivery hook changed the session in its own claim during this run: then the tab record is
+# rewritten at the end of the turn even if nothing in it changed.
+$script:WaveBoardClaimSessionChanged = $false
+
 function Update-ClaimSeen {
-    param([string]$Dir, [string]$TreePath, [string]$Path, $Claims)
+    param([string]$Dir, [string]$TreePath, [string]$Path, $Claims, [string]$Session, [string]$Stage, [string]$TabsDir, [string]$Tree)
     # The "session is active" mark. Called by the delivery hook on every move and has to stay quiet:
     # a failed mark update is no reason to get in the way of work.
     #
@@ -2394,6 +2426,19 @@ function Update-ClaimSeen {
         # Through `Add-Member -Force`, not assignment: a previous-version claim may have no mark
         # field at all, and assignment would fail — that is, such a claim would stay silent forever.
         $claim | Add-Member -NotePropertyName seen_at -NotePropertyValue ((Get-Date).ToString('s')) -Force
+        # Which session runs the claim: adopting a claim without a session and handing it over to the
+        # same tab's new id — as part of the same mark, so the file isn't written twice per turn. The
+        # rules and their reasons are at `Update-ClaimSessionFromTab` (`lib/tab-titles.ps1`). The
+        # expensive checks there run only when the claim's session isn't this one, which is rare.
+        #
+        # ‼️ `-Tree` is the worktree of the folder the hook received in its input, and `-TreePath` is the
+        # claim's key. If they differ (the hook process didn't start in the session's folder), the
+        # session is left alone entirely: deciding about one worktree's claim by a tab of another isn't
+        # allowed.
+        if ($Session -and $Tree -and $TreePath -and (Get-FolderKey -Path $Tree) -eq (Get-FolderKey -Path $TreePath) -and
+            (Update-ClaimSessionFromTab -Claim $claim -Session $Session -Stage $Stage -TabsDir $TabsDir -Tree $Tree)) {
+            $script:WaveBoardClaimSessionChanged = $true
+        }
         Write-ClaimFile -Path $Path -Claim $claim
     } catch {
         return
@@ -2576,9 +2621,15 @@ function Get-StuckRecords {
         $parsed = [datetime]::TryParse([string]$record.at, [cultureinfo]::InvariantCulture,
             [System.Globalization.DateTimeStyles]::None, [ref]$when)
         $reason = ''
-        if (@($addressed | Where-Object { $_.State -eq 'released' }).Count -gt 0) {
+        # Which tab ran the stream — right next to the reason: that's the tab the owner goes to sort
+        # things out in, and hunting for it through transcripts takes minutes. Session unknown — the
+        # line stays uncluttered.
+        $releasedEntries = @($addressed | Where-Object { $_.State -eq 'released' })
+        if ($releasedEntries.Count -gt 0) {
             # Released is a case with nothing left to wait for at all: the session is gone and won't be back.
             $reason = 'the stream was released'
+            $tab = @($releasedEntries | ForEach-Object { Get-ClaimTabText -Claim $_ } | Where-Object { $_ })
+            if ($tab.Count -gt 0) { $reason += ", $($tab[0])" }
         } elseif (@($addressed | Where-Object { $_.Closed }).Count -eq $addressed.Count -and
             $addressed.Count -gt 0) {
             # Every record on the address is superseded, and no leader is left. The chain of
@@ -2587,9 +2638,13 @@ function Get-StuckRecords {
             # for on it. The reason is not "released", and lying about a release is not allowed — the
             # human would go looking for the outcome of a released stream that nobody ever wrote.
             $reason = 'the address was handed on, and no record leads it any more'
+            $tab = @($addressed | ForEach-Object { Get-ClaimTabText -Claim $_ } | Where-Object { $_ })
+            if ($tab.Count -gt 0) { $reason += ", $($tab[0])" }
         } elseif ($addressed.Count -gt 0) {
             if ($parsed -and $when -gt $deadline) { continue }
             $reason = "the stream has been silent since $(Format-Stamp -Raw $addressed[0].Record.seen_at)"
+            $tab = Get-ClaimTabText -Claim $addressed[0]
+            if ($tab) { $reason += ", $tab" }
         } else {
             if ($parsed -and $when -gt $deadline) { continue }
             # The keys passed in here are ones that CHECKED IN: a tree by itself doesn't make a
@@ -2808,5 +2863,9 @@ function Format-ClaimLine {
     } else {
         $Claim.State
     }
+    # Which tab runs the stream — right after the state: that answers "where is it being run", the
+    # question the listing gets opened for. Session unknown (a previous-version claim) — add nothing.
+    $tab = Get-ClaimTabText -Claim $Claim
+    if ($tab) { $state = "$state, $tab" }
     return "  $($record.wave)/$($record.stream)$name$tasks — $state (checked in $(Format-Stamp -Raw $record.seen_at), branch $($record.branch)$folder$memory)"
 }
