@@ -3,6 +3,42 @@
 All notable changes to this project are documented here.
 This project follows [Semantic Versioning](https://semver.org/).
 
+## [1.17.0] — 2026-10-15
+
+### Added
+
+- **The commit guard steps aside in a clone of a contributor's fork.** A project may take work from
+  someone who works in their own copy of it and sends pull requests from there. The project's
+  settings travel into that clone, the commit guard with them — but the wave board does not: it
+  lives in the home repository's own folders. So every commit in the fork was refused for a stream
+  that had nowhere to announce, and the contributor's only answer was setting
+  `PARALLEL_STREAMS_ALLOW_UNCLAIMED=1` by hand, every session. Now the profile can name the home
+  repository in a new hand-written section, `## Home` — `owner/name`, one per line — and the guard
+  stays silent in every clone whose `origin` points somewhere else. A clone of the home repository
+  is refused exactly as before.
+
+### Notes
+
+- **Addresses are compared without the scheme, the host, `.git`, the trailing slash and letter
+  case**, so `https://github.com/Owner/Name.git`, `git@github.com:owner/name` and
+  `ssh://git@github.com:22/owner/name` all mean `owner/name`. Prose, `<!-- notes -->` and
+  placeholders in angle brackets inside the section are ignored — a placeholder taken for an
+  address would silently switch the guard off in the home repository too.
+
+- **Nothing changes without the section.** It is read only by the commit guard, only on a
+  publishing command, after the valve; the installer never writes it, and the skill never carries
+  it into briefs. With the section present, a clone with no `origin` (or git not answering) counts
+  as "not home" — the guard's standing rule for anything it cannot find out.
+
+- **The sign is the remote named `origin`.** A clone of the home repository that pushes to a fork
+  through another remote still counts as home; the valve is for that. A typo in the address makes
+  the guard stand aside in the home repository as well — check it once against
+  `git remote get-url origin` there.
+
+- **The delivery hook and the plan-edit nudge are unchanged.** Neither refuses anything, and in a
+  fork clone, where nobody announces, delivery has nothing to bring. A contributor who wants the
+  channel for parallel sessions inside their own fork keeps all of it.
+
 ## [1.16.1] — 2026-09-14
 
 ### Added

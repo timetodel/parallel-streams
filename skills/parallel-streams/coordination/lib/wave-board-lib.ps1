@@ -2460,33 +2460,131 @@ function Get-ProfilePlansFolder {
     # hardcoded path would never match in someone else's project: the hook would silently come back
     # with zero, and the wave plan would land in the overlap list — both indistinguishable from
     # working correctly.
-    if (-not $StartDir) { $StartDir = $PWD.Path }
     try {
-        $dir = $StartDir
-        while ($dir) {
-            $profilePath = Join-Path $dir '.parallel-streams.md'
-            if (Test-Path -LiteralPath $profilePath -PathType Leaf) {
-                $text = [System.IO.File]::ReadAllText($profilePath, [System.Text.UTF8Encoding]::new($false))
-                $section = [regex]::Match($text, '(?msi)^##\s+Plans\s*$(.*?)(?=^##\s|\z)')
-                if (-not $section.Success) { return '' }
-                foreach ($found in [regex]::Matches($section.Groups[1].Value, '`([^`]+)`')) {
-                    $value = ($found.Groups[1].Value.Trim() -replace '\\', '/') -replace '^\./', ''
-                    if ($value -match '\s') { continue }
-                    # A file name is never the plans folder: the section also marks up files in backticks.
-                    if ($value -notmatch '/$' -and $value -match '\.[A-Za-z0-9]{1,5}$') { continue }
-                    if (-not $value.EndsWith('/')) { $value += '/' }
-                    return $value
-                }
-                return ''
-            }
-            # We don't climb above the repository root: someone else's project with its own profile starts there.
-            if (Test-Path -LiteralPath (Join-Path $dir '.git')) { break }
-            $dir = Split-Path -Parent $dir
+        $text = Get-ProfileText -StartDir $StartDir
+        if (-not $text) { return '' }
+        $section = [regex]::Match($text, '(?msi)^##\s+Plans\s*$(.*?)(?=^##\s|\z)')
+        if (-not $section.Success) { return '' }
+        foreach ($found in [regex]::Matches($section.Groups[1].Value, '`([^`]+)`')) {
+            $value = ($found.Groups[1].Value.Trim() -replace '\\', '/') -replace '^\./', ''
+            if ($value -match '\s') { continue }
+            # A file name is never the plans folder: the section also marks up files in backticks.
+            if ($value -notmatch '/$' -and $value -match '\.[A-Za-z0-9]{1,5}$') { continue }
+            if (-not $value.EndsWith('/')) { $value += '/' }
+            return $value
         }
+        return ''
     } catch {
         return ''
     }
+}
+
+function Get-ProfileText {
+    param([string]$StartDir)
+    # The project profile's text — found the same way for every reader of it: climb from the given
+    # folder and take the first `.parallel-streams.md` on the way. Empty means there is no profile.
+    # A profile that cannot be read throws: each reader decides for itself what its silence means.
+    if (-not $StartDir) { $StartDir = $PWD.Path }
+    $dir = $StartDir
+    while ($dir) {
+        $profilePath = Join-Path $dir '.parallel-streams.md'
+        if (Test-Path -LiteralPath $profilePath -PathType Leaf) {
+            return [System.IO.File]::ReadAllText($profilePath, [System.Text.UTF8Encoding]::new($false))
+        }
+        # We don't climb above the repository root: someone else's project with its own profile starts there.
+        if (Test-Path -LiteralPath (Join-Path $dir '.git')) { break }
+        $dir = Split-Path -Parent $dir
+    }
     return ''
+}
+
+function ConvertTo-RepoSlug {
+    param([string]$Address)
+    # A repository address in ONE form, for comparison only: the path on the host, without the
+    # scheme, the user, the host, the port, the `.git` tail and the trailing slash, and without
+    # letter case. `https://github.com/Owner/Name.git`, `git@github.com:owner/name` and
+    # `ssh://git@github.com:22/owner/name/` all come out as `owner/name`; a bare `owner/name` stays
+    # as it is. The host is dropped on purpose: the profile names a repository the way people say it
+    # out loud, and the same repository is reached over https by one person and over ssh by another.
+    #
+    # Anything that doesn't look like a repository path — prose, a placeholder in angle brackets, a
+    # single word — comes out EMPTY, so it can never be mistaken for an address.
+    $value = (([string]$Address).Trim()) -replace '\\', '/'
+    if (-not $value) { return '' }
+    if ($value -match '^[A-Za-z][A-Za-z0-9+.-]*://[^/]*(/.*)?$') {
+        # scheme://[user@]host[:port]/path
+        $value = [string]$Matches[1]
+    } elseif ($value -match '^(?:[^@/\s]+@)?[^@/:\s]{2,}:(.+)$') {
+        # The short ssh form, [user@]host:path. The host is longer than one letter: `C:/folder` is a
+        # Windows drive, not a host.
+        $value = $Matches[1]
+    }
+    $value = ($value.Trim('/') -replace '(?i)\.git$', '').TrimEnd('/').ToLowerInvariant()
+    if ($value -notmatch '^[^\s/<>`]+(/[^\s/<>`]+)+$') { return '' }
+    return $value
+}
+
+function Get-ProfileHomeRepos {
+    param([string]$StartDir)
+    # The project's home repositories: the profile's `## Home` section, one address per line, as
+    # `owner/name` (a full address works too — see `ConvertTo-RepoSlug`). A list marker and
+    # backticks are tolerated: a person writes this section by hand, and the installer never does.
+    #
+    # ‼️ Only what reads as an address counts. A line is taken whole, or — when it carries backticks —
+    # only what sits inside them; prose, notes in `<!-- -->` and placeholders in angle brackets are
+    # dropped before that. A placeholder taken for an address would be the worst kind of failure
+    # here: the section would count as filled, no clone's origin would ever match it, and the
+    # commit guard would stand aside in the home repository too, in silence.
+    #
+    # The heading is matched CASE-INSENSITIVELY, like every other section. Empty means no section, or
+    # nothing in it that reads as an address — and then everything behaves as it did before the
+    # section existed.
+    $text = Get-ProfileText -StartDir $StartDir
+    if (-not $text) { return @() }
+    $section = [regex]::Match($text, '(?msi)^##[ \t]+Home[ \t]*\r?$(.*?)(?=^#{1,2}[ \t]|\z)')
+    if (-not $section.Success) { return @() }
+    $body = [regex]::Replace($section.Groups[1].Value, '(?s)<!--.*?-->|<[^<>]*>', '')
+    $found = [System.Collections.Generic.List[string]]::new()
+    foreach ($line in ($body -split "`r?`n")) {
+        $line = $line.Trim() -replace '^[-*+][ \t]+', ''
+        if (-not $line) { continue }
+        $quoted = @([regex]::Matches($line, '`([^`]+)`') | ForEach-Object { $_.Groups[1].Value })
+        $candidates = if ($quoted.Count -gt 0) { $quoted } else { @($line) }
+        foreach ($candidate in $candidates) {
+            $slug = ConvertTo-RepoSlug -Address $candidate
+            if ($slug -and -not $found.Contains($slug)) { $found.Add($slug) }
+        }
+    }
+    return @($found)
+}
+
+function Test-ForeignClone {
+    param([string]$StartDir)
+    # Is this a clone of someone's own copy of the project (a fork) rather than of its home
+    # repository? A contributor who works from a fork sends pull requests from there; the project's
+    # wave board lives in the home repository's folders and is not theirs, so a stream in such a
+    # clone has nowhere to announce.
+    #
+    # "No" whenever the profile names no home (`## Home`): without the section every clone is
+    # treated the same, exactly as before. With it — the origin's address is compared with the list.
+    # No origin, git not answering, an address that doesn't read: "yes", on purpose — the only caller
+    # is the commit guard, and its rule for anything unexpected is to stay out of the way.
+    #
+    # ‼️ The sign is the remote named `origin`. A clone of the home repository that pushes to a fork
+    # through another remote still counts as home.
+    $at = if ($StartDir) { $StartDir } else { $PWD.Path }
+    try {
+        # A profile that cannot be read is "couldn't find out" — the same rule as above.
+        $homes = @(Get-ProfileHomeRepos -StartDir $at)
+        if ($homes.Count -eq 0) { return $false }
+        $url = @(& git -C $at remote get-url origin 2>$null)
+        if ($LASTEXITCODE -ne 0 -or $url.Count -eq 0 -or -not $url[0]) { return $true }
+        $origin = ConvertTo-RepoSlug -Address ([string]$url[0])
+    } catch {
+        return $true
+    }
+    if (-not $origin) { return $true }
+    return -not ($homes -contains $origin)
 }
 
 function Get-SharedByDesignPattern {

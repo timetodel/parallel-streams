@@ -2347,33 +2347,129 @@ function Get-ProfilePlansFolder {
     # ‼️ Папка не названа — отвечаем пусто, и никаких значений по умолчанию на путь одного проекта.
     # Зашитый путь в чужом проекте не сошёлся бы никогда: сторож молча выходил бы нулём, а план
     # волны попадал бы в список пересечений — и то, и другое неотличимо от исправной работы.
-    if (-not $StartDir) { $StartDir = $PWD.Path }
     try {
-        $dir = $StartDir
-        while ($dir) {
-            $profilePath = Join-Path $dir '.parallel-streams.md'
-            if (Test-Path -LiteralPath $profilePath -PathType Leaf) {
-                $text = [System.IO.File]::ReadAllText($profilePath, [System.Text.UTF8Encoding]::new($false))
-                $section = [regex]::Match($text, '(?msi)^##\s+Plans\s*$(.*?)(?=^##\s|\z)')
-                if (-not $section.Success) { return '' }
-                foreach ($found in [regex]::Matches($section.Groups[1].Value, '`([^`]+)`')) {
-                    $value = ($found.Groups[1].Value.Trim() -replace '\\', '/') -replace '^\./', ''
-                    if ($value -match '\s') { continue }
-                    # Имя файла папкой планов не бывает: в разделе кавычками помечают и файлы.
-                    if ($value -notmatch '/$' -and $value -match '\.[A-Za-z0-9]{1,5}$') { continue }
-                    if (-not $value.EndsWith('/')) { $value += '/' }
-                    return $value
-                }
-                return ''
-            }
-            # Выше корня репозитория не поднимаемся: там начинается чужой проект со своим профилем.
-            if (Test-Path -LiteralPath (Join-Path $dir '.git')) { break }
-            $dir = Split-Path -Parent $dir
+        $text = Get-ProfileText -StartDir $StartDir
+        if (-not $text) { return '' }
+        $section = [regex]::Match($text, '(?msi)^##\s+Plans\s*$(.*?)(?=^##\s|\z)')
+        if (-not $section.Success) { return '' }
+        foreach ($found in [regex]::Matches($section.Groups[1].Value, '`([^`]+)`')) {
+            $value = ($found.Groups[1].Value.Trim() -replace '\\', '/') -replace '^\./', ''
+            if ($value -match '\s') { continue }
+            # Имя файла папкой планов не бывает: в разделе кавычками помечают и файлы.
+            if ($value -notmatch '/$' -and $value -match '\.[A-Za-z0-9]{1,5}$') { continue }
+            if (-not $value.EndsWith('/')) { $value += '/' }
+            return $value
         }
+        return ''
     } catch {
         return ''
     }
+}
+
+function Get-ProfileText {
+    param([string]$StartDir)
+    # Текст профиля проекта — его находят одинаково для всех, кто его читает: поднимаемся от
+    # заданной папки и берём первый `.parallel-streams.md` на пути. Пусто — профиля нет. Профиль,
+    # который не читается, бросает исключение: что значит молчание, каждый читатель решает сам.
+    if (-not $StartDir) { $StartDir = $PWD.Path }
+    $dir = $StartDir
+    while ($dir) {
+        $profilePath = Join-Path $dir '.parallel-streams.md'
+        if (Test-Path -LiteralPath $profilePath -PathType Leaf) {
+            return [System.IO.File]::ReadAllText($profilePath, [System.Text.UTF8Encoding]::new($false))
+        }
+        # Выше корня репозитория не поднимаемся: там начинается чужой проект со своим профилем.
+        if (Test-Path -LiteralPath (Join-Path $dir '.git')) { break }
+        $dir = Split-Path -Parent $dir
+    }
     return ''
+}
+
+function ConvertTo-RepoSlug {
+    param([string]$Address)
+    # Адрес репозитория в ОДНОЙ форме, только для сравнения: путь на сервере без схемы, имени
+    # пользователя, сервера, порта, хвоста `.git` и замыкающей косой черты, без учёта регистра.
+    # `https://github.com/Owner/Name.git`, `git@github.com:owner/name` и
+    # `ssh://git@github.com:22/owner/name/` дают одно и то же — `owner/name`; голое `owner/name`
+    # остаётся как есть. Сервер отбрасываем намеренно: в профиле репозиторий называют так, как его
+    # называют вслух, а один и тот же репозиторий один человек клонирует по https, другой — по ssh.
+    #
+    # Всё, что на путь репозитория не похоже, — проза, заготовка в угловых скобках, одно слово, —
+    # даёт ПУСТО, и за адрес это не примут никогда.
+    $value = (([string]$Address).Trim()) -replace '\\', '/'
+    if (-not $value) { return '' }
+    if ($value -match '^[A-Za-z][A-Za-z0-9+.-]*://[^/]*(/.*)?$') {
+        # схема://[пользователь@]сервер[:порт]/путь
+        $value = [string]$Matches[1]
+    } elseif ($value -match '^(?:[^@/\s]+@)?[^@/:\s]{2,}:(.+)$') {
+        # Короткая форма ssh: [пользователь@]сервер:путь. Имя сервера длиннее одной буквы:
+        # `C:/папка` — диск Windows, а не сервер.
+        $value = $Matches[1]
+    }
+    $value = ($value.Trim('/') -replace '(?i)\.git$', '').TrimEnd('/').ToLowerInvariant()
+    if ($value -notmatch '^[^\s/<>`]+(/[^\s/<>`]+)+$') { return '' }
+    return $value
+}
+
+function Get-ProfileHomeRepos {
+    param([string]$StartDir)
+    # Домашние репозитории проекта: раздел профиля `## Home`, по адресу на строку, в виде
+    # `owner/name` (годится и полный адрес — см. `ConvertTo-RepoSlug`). Маркер списка и обратные
+    # кавычки терпим: этот раздел пишет человек руками, установщик его не пишет никогда.
+    #
+    # ‼️ В зачёт идёт только то, что читается как адрес. Строка берётся целиком, а если в ней есть
+    # обратные кавычки — только то, что внутри них; прозу, заметки в `<!-- -->` и заготовки в угловых
+    # скобках выбрасываем до этого. Заготовка, принятая за адрес, — худший из здешних сбоев: раздел
+    # считался бы заполненным, origin ни одного клона с ним не совпал бы, и сторож фиксации молча
+    # отошёл бы в сторону и в домашнем репозитории.
+    #
+    # Заголовок ищем БЕЗ учёта регистра, как и все остальные разделы. Пусто — раздела нет или в нём
+    # нет ничего похожего на адрес, и тогда всё ведёт себя так же, как до появления раздела.
+    $text = Get-ProfileText -StartDir $StartDir
+    if (-not $text) { return @() }
+    $section = [regex]::Match($text, '(?msi)^##[ \t]+Home[ \t]*\r?$(.*?)(?=^#{1,2}[ \t]|\z)')
+    if (-not $section.Success) { return @() }
+    $body = [regex]::Replace($section.Groups[1].Value, '(?s)<!--.*?-->|<[^<>]*>', '')
+    $found = [System.Collections.Generic.List[string]]::new()
+    foreach ($line in ($body -split "`r?`n")) {
+        $line = $line.Trim() -replace '^[-*+][ \t]+', ''
+        if (-not $line) { continue }
+        $quoted = @([regex]::Matches($line, '`([^`]+)`') | ForEach-Object { $_.Groups[1].Value })
+        $candidates = if ($quoted.Count -gt 0) { $quoted } else { @($line) }
+        foreach ($candidate in $candidates) {
+            $slug = ConvertTo-RepoSlug -Address $candidate
+            if ($slug -and -not $found.Contains($slug)) { $found.Add($slug) }
+        }
+    }
+    return @($found)
+}
+
+function Test-ForeignClone {
+    param([string]$StartDir)
+    # Это клон чужой копии проекта (форка), а не его домашнего репозитория? Участник, работающий
+    # из своей копии, шлёт заявки на слияние оттуда; доска волн живёт в служебных папках домашнего
+    # репозитория и ему не принадлежит, так что потоку в таком клоне объявляться негде.
+    #
+    # «Нет» всякий раз, когда профиль дом не называет (`## Home`): без раздела все клоны равны, ровно
+    # как прежде. С ним — адрес origin сверяем со списком. Нет origin, git не ответил, адрес не
+    # читается — «да», намеренно: зовёт эту проверку один сторож фиксации, а его правило на любую
+    # неожиданность — уйти с дороги.
+    #
+    # ‼️ Признак — удалённый репозиторий с именем `origin`. Клон домашнего репозитория, который
+    # отправляет работу в форк через другое имя, по-прежнему считается домашним.
+    $at = if ($StartDir) { $StartDir } else { $PWD.Path }
+    try {
+        # Профиль, который не читается, — это «не удалось выяснить», то же правило, что выше.
+        $homes = @(Get-ProfileHomeRepos -StartDir $at)
+        if ($homes.Count -eq 0) { return $false }
+        $url = @(& git -C $at remote get-url origin 2>$null)
+        if ($LASTEXITCODE -ne 0 -or $url.Count -eq 0 -or -not $url[0]) { return $true }
+        $origin = ConvertTo-RepoSlug -Address ([string]$url[0])
+    } catch {
+        return $true
+    }
+    if (-not $origin) { return $true }
+    return -not ($homes -contains $origin)
 }
 
 function Get-SharedByDesignPattern {

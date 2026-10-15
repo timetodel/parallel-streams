@@ -49,7 +49,7 @@ script point at the folder, not at its contents.
 | `lib/hook-io.ps1` | Reads the data that reaches a hook |
 | `hooks/wave-board-deliver.ps1` | Delivery: brings a session the records addressed to it at session start and before every human turn |
 | `hooks/pretooluse-wave-board-nudge.ps1` | A nudge when the wave plan is edited: an addition to the plan doesn't catch up with a live neighbour |
-| `hooks/pretooluse-claim-before-publish.ps1` | The one refusal in the kit: a commit from a stream that never announced itself is stopped, and handed the line that fixes it |
+| `hooks/pretooluse-claim-before-publish.ps1` | The one refusal in the kit: a commit from a stream that never announced itself is stopped, and handed the line that fixes it; a clone of a contributor's fork is left alone once the profile names its home repository |
 | `install.ps1` | Install, uninstall, and check wiring |
 | `templates/profile.md` | Profile scaffold for a new project |
 | `templates/profile-coordination.md` | Coordination sections — the ones the installer adds to a profile that already exists |
@@ -175,6 +175,49 @@ The guard asks the registry STRICTLY: an unreadable registry, a dropped drive, a
 a moment all mean "couldn't find out", never "the stream didn't announce". In every one of those it
 stays silent and lets the commit through — a kit installed into someone else's project has no
 business turning its own trouble into a project that can't commit.
+
+## A clone of a contributor's own copy (fork)
+
+A project may take work from someone who works in their own copy of it — a fork — and sends pull
+requests from there. The project's settings travel into that clone with everything else, the commit
+guard included, but the wave board does not: it lives in the home repository's own folders. Such a
+clone has no board and should have none, and without help the guard would refuse every commit
+there, leaving the contributor one answer — setting the valve by hand, every session.
+
+Name the home repository in the profile, and the guard steps aside in every clone whose `origin`
+points somewhere else:
+
+```markdown
+## Home
+
+- `owner/name`
+```
+
+- **One address per line**, as `owner/name`; a list marker and backticks are fine. A full address
+  works too (`https://github.com/owner/name.git`, `git@github.com:owner/name`, `ssh://…`): both
+  sides are compared without the scheme, the host, `.git`, the trailing slash and letter case. Prose,
+  `<!-- notes -->` and placeholders in angle brackets inside the section are ignored.
+- **The section is written by a person.** The installer never writes it or changes it, and the
+  skill never carries it into briefs: it is read by the commit guard and nothing else.
+- **What changes, and when.** Only the commit guard reads it, only on a publishing command, after
+  the valve. In a clone of the home repository it refuses exactly as before. With no `origin`, or
+  with git not answering, the clone counts as "not home" — that is the guard's rule for anything it
+  cannot find out. No section, or nothing in it that reads as an address — everything as before.
+- **The delivery hook and the plan-edit nudge are left as they are** in a fork clone: neither ever
+  refuses anything. Where nobody announces, delivery has nothing to bring and stays silent; the
+  nudge speaks once per session, and only when a wave plan is edited. A contributor who wants the
+  channel for parallel sessions inside their own fork still has all of it — only the refusal is
+  lifted.
+
+Limits:
+
+- **The sign is the remote named `origin`.** A clone of the home repository that pushes to a fork
+  through another remote still counts as home; the valve is for that case.
+- **A typo in the address makes the guard stand aside in the home repository too, in silence.**
+  After writing the section, compare it once with `git remote get-url origin` in the home
+  repository: a refusal from an unannounced stream there is the proof that the guard still stands.
+- **The section is read from the clone's own checkout.** A fork that hasn't caught up with the commit
+  adding `## Home` keeps the old behaviour until it does.
 
 ## One claim per folder, one leading record per address
 

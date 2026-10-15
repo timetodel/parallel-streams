@@ -8236,6 +8236,143 @@ def test_the_guard_stays_out_of_the_way_when_it_cannot_answer(tmp_path: Path) ->
     )
 
 
+# A project that takes contributions from people working in their own copy (a fork) names its home
+# repository in the profile. The section is written the way a person writes it: prose around, a list
+# marker, backticks, a letter case of its own.
+HOME_PROFILE = (
+    "# Profile\n\n"
+    "## Home\n\n"
+    "The repository this project lives in; contributors send pull requests from their own forks.\n\n"
+    "- `Keeper/Project`\n\n"
+    "## Tests\n\n"
+    "`pytest`\n"
+)
+HOME_ORIGIN = "https://github.com/keeper/project.git"
+
+
+def clone_with_origin(root: Path, name: str, origin: str | None, profile: str = HOME_PROFILE) -> Path:
+    """A clone stand-in: a repository carrying the project's profile, with the given origin (or none)."""
+    project = stub_project(root, name, profile)
+    if origin is not None:
+        git(project, "remote", "add", "origin", origin)
+    return project
+
+
+@needs_pwsh
+@pytest.mark.parametrize(
+    "origin",
+    [
+        "https://github.com/someone/project.git",
+        "git@github.com:someone/project.git",
+        "ssh://git@github.com/someone/project",
+    ],
+)
+def test_the_guard_steps_aside_in_a_clone_of_a_fork(tmp_path: Path, origin: str) -> None:
+    """A clone of a contributor's fork commits without announcing — the board is not theirs.
+
+    The wave board lives in the home repository's folders: a fork clone has none and should have
+    none. Refusing every commit there leaves the contributor one answer — setting the valve by hand,
+    every session. Silence is ambiguous, so the same clone is then pointed back at home: the guard
+    must speak up there, or the silence above proves nothing.
+    """
+    board = tmp_path / "board.jsonl"
+    fork = clone_with_origin(tmp_path, "fork-clone", origin)
+
+    for command in ('git commit -m "the work"', "git push -u origin HEAD", "gh pr create --fill"):
+        assert refusal(board, fork, command) == "", (
+            f"a clone of a fork ({origin}) was refused {command!r} — the board is not theirs"
+        )
+
+    git(fork, "remote", "set-url", "origin", HOME_ORIGIN)
+    assert refusal(board, fork, 'git commit -m "the work"'), (
+        "the guard is mute in a clone of the home repository too — then its silence above proves nothing"
+    )
+
+
+@needs_pwsh
+@pytest.mark.parametrize(
+    "origin",
+    [
+        "https://github.com/Keeper/Project.git",
+        "https://github.com/keeper/project/",
+        "https://contributor@github.com/keeper/project",
+        "git@github.com:keeper/project.git",
+        "ssh://git@github.com:22/Keeper/Project.git",
+    ],
+)
+def test_a_clone_of_the_home_repository_is_still_refused(tmp_path: Path, origin: str) -> None:
+    """Home is home whichever way it is reached — https or ssh, any case, `.git` or not.
+
+    The same repository is cloned over https by one person and over ssh by another. Let one form slip
+    past the comparison, and the guard would stand aside in the very repository it exists for — a
+    silence indistinguishable from "every stream announced itself".
+    """
+    board = tmp_path / "board.jsonl"
+    home = clone_with_origin(tmp_path, "home-clone", origin)
+
+    said = refusal(board, home, 'git commit -m "the work"')
+
+    assert said, f"a clone of the home repository ({origin}) committed without announcing"
+    assert "-Mode Claim" in said, f"the refusal is not the usual one: {said!r}"
+
+
+@needs_pwsh
+def test_a_clone_with_no_origin_is_left_alone(tmp_path: Path) -> None:
+    """No origin at all — the guard cannot tell home from a fork, and stays out of the way.
+
+    That is its rule for anything it cannot find out. Then the origin is added, pointing home, and
+    the guard must speak up in the same folder: silence on its own proves nothing.
+    """
+    board = tmp_path / "board.jsonl"
+    bare = clone_with_origin(tmp_path, "no-origin", None)
+
+    assert refusal(board, bare, 'git commit -m "the work"') == "", (
+        "a clone with no origin was refused — the guard could not have known it was home"
+    )
+
+    git(bare, "remote", "add", "origin", HOME_ORIGIN)
+    assert refusal(board, bare, 'git commit -m "the work"'), (
+        "the guard stayed mute after origin pointed home — its silence above proves nothing"
+    )
+
+
+def scaffold_profile() -> str:
+    """The profile scaffold the installer drops into a new project — its `## Home` is a placeholder."""
+    return (COORDINATION_DIR / "templates" / "profile.md").read_text(encoding="utf-8")
+
+
+@needs_pwsh
+@pytest.mark.parametrize(
+    "profile",
+    [
+        "# Profile\n\n## Tests\n\n`pytest`\n",
+        "# Profile\n\n## Home\n\nNo address picked yet — `## Home` stays empty for now.\n",
+        "# Profile\n\n## Home\n\n<!-- e.g. `owner/name` -->\n<owner/name>\n",
+        "scaffold",
+    ],
+    ids=["no-section", "prose-only", "placeholders-only", "installer-scaffold"],
+)
+def test_without_a_home_address_every_clone_is_guarded_as_before(tmp_path: Path, profile: str) -> None:
+    """No home address in the profile — a clone of a fork is refused exactly as before.
+
+    The new section only ever lifts the refusal where it is filled in. A placeholder, a note or a line
+    of prose taken for an address would be the worst kind of failure: the section would count as
+    filled, no origin would ever match it, and the guard would go silent in the home repository too.
+    The installer's own scaffold is checked as it ships: it is the profile most projects start from.
+    """
+    board = tmp_path / "board.jsonl"
+    text = scaffold_profile() if profile == "scaffold" else profile
+    if profile == "scaffold":
+        assert re.search(r"(?mi)^## Home\s*$", text), (
+            "the scaffold no longer carries a `## Home` section — this case checks nothing"
+        )
+    fork = clone_with_origin(tmp_path, "fork-clone", "git@github.com:someone/project.git", text)
+
+    assert refusal(board, fork, 'git commit -m "the work"'), (
+        "with no home address named, a clone of a fork went unguarded — the section switched on by itself"
+    )
+
+
 # ─── Tab name: which tab runs a stream ───────────────────────────────────────────────────────────
 #
 # The owner keeps dozens of tabs and names them by hand. The board knew a stream only by folder and

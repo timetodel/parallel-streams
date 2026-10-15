@@ -8013,6 +8013,143 @@ def test_the_guard_stays_out_of_the_way_when_it_cannot_answer(tmp_path: Path) ->
     )
 
 
+# Проект, который принимает работу от участников из их собственных копий (форков), называет в
+# профиле свой домашний репозиторий. Раздел написан так, как его пишет человек: проза вокруг, маркер
+# списка, обратные кавычки, свой регистр букв.
+HOME_PROFILE = (
+    "# Профиль\n\n"
+    "## Home\n\n"
+    "Репозиторий, где живёт проект; участники шлют заявки на слияние из своих копий.\n\n"
+    "- `Keeper/Project`\n\n"
+    "## Tests\n\n"
+    "`pytest`\n"
+)
+HOME_ORIGIN = "https://github.com/keeper/project.git"
+
+
+def clone_with_origin(root: Path, name: str, origin: str | None, profile: str = HOME_PROFILE) -> Path:
+    """Подставной клон: репозиторий с профилем проекта и заданным origin (или без него)."""
+    project = stub_project(root, name, profile)
+    if origin is not None:
+        git(project, "remote", "add", "origin", origin)
+    return project
+
+
+@needs_pwsh
+@pytest.mark.parametrize(
+    "origin",
+    [
+        "https://github.com/someone/project.git",
+        "git@github.com:someone/project.git",
+        "ssh://git@github.com/someone/project",
+    ],
+)
+def test_the_guard_steps_aside_in_a_clone_of_a_fork(tmp_path: Path, origin: str) -> None:
+    """Клон форка участника фиксирует работу без объявления — доска не его.
+
+    Доска волн живёт в служебных папках домашнего репозитория: в клоне форка её нет и быть не
+    должно. Отказ на каждой фиксации оставляет участнику один ответ — клапан руками, каждую сессию.
+    Молчание двусмысленно, поэтому тот же клон затем направляют домой: там сторож обязан заговорить,
+    иначе молчание выше ничего не доказывает.
+    """
+    board = tmp_path / "board.jsonl"
+    fork = clone_with_origin(tmp_path, "fork-clone", origin)
+
+    for command in ('git commit -m "работа"', "git push -u origin HEAD", "gh pr create --fill"):
+        assert refusal(board, fork, command) == "", (
+            f"клону форка ({origin}) отказали в {command!r} — а доска не его"
+        )
+
+    git(fork, "remote", "set-url", "origin", HOME_ORIGIN)
+    assert refusal(board, fork, 'git commit -m "работа"'), (
+        "сторож молчит и в клоне домашнего репозитория — тогда его молчание выше ничего не доказывает"
+    )
+
+
+@needs_pwsh
+@pytest.mark.parametrize(
+    "origin",
+    [
+        "https://github.com/Keeper/Project.git",
+        "https://github.com/keeper/project/",
+        "https://contributor@github.com/keeper/project",
+        "git@github.com:keeper/project.git",
+        "ssh://git@github.com:22/Keeper/Project.git",
+    ],
+)
+def test_a_clone_of_the_home_repository_is_still_refused(tmp_path: Path, origin: str) -> None:
+    """Дом остаётся домом, каким путём к нему ни приди, — https или ssh, любой регистр, с `.git` и без.
+
+    Один и тот же репозиторий один человек клонирует по https, другой — по ssh. Проскочи одна форма
+    мимо сравнения — и сторож отошёл бы в сторону ровно в том репозитории, ради которого заведён, а
+    такое молчание неотличимо от «все потоки объявились».
+    """
+    board = tmp_path / "board.jsonl"
+    home = clone_with_origin(tmp_path, "home-clone", origin)
+
+    said = refusal(board, home, 'git commit -m "работа"')
+
+    assert said, f"клон домашнего репозитория ({origin}) зафиксировал работу без объявления"
+    assert "-Mode Claim" in said, f"отказ не тот, что обычно: {said!r}"
+
+
+@needs_pwsh
+def test_a_clone_with_no_origin_is_left_alone(tmp_path: Path) -> None:
+    """Origin нет вовсе — сторож не может отличить дом от форка и уходит с дороги.
+
+    Таково его правило на всё, чего он не может выяснить. Затем origin добавляют, направив домой, и в
+    той же папке сторож обязан заговорить: молчание само по себе ничего не доказывает.
+    """
+    board = tmp_path / "board.jsonl"
+    bare = clone_with_origin(tmp_path, "no-origin", None)
+
+    assert refusal(board, bare, 'git commit -m "работа"') == "", (
+        "клону без origin отказали — а сторож не мог знать, что это дом"
+    )
+
+    git(bare, "remote", "add", "origin", HOME_ORIGIN)
+    assert refusal(board, bare, 'git commit -m "работа"'), (
+        "сторож промолчал и после того, как origin направили домой, — его молчание выше ничего не доказывает"
+    )
+
+
+def scaffold_profile() -> str:
+    """Заготовка профиля, которую установщик кладёт в новый проект, — `## Home` в ней лишь заготовка."""
+    return (COORDINATION_DIR / "templates" / "profile.md").read_text(encoding="utf-8")
+
+
+@needs_pwsh
+@pytest.mark.parametrize(
+    "profile",
+    [
+        "# Профиль\n\n## Tests\n\n`pytest`\n",
+        "# Профиль\n\n## Home\n\nАдрес ещё не выбран — `## Home` пока пуст.\n",
+        "# Профиль\n\n## Home\n\n<!-- например, `owner/name` -->\n<owner/name>\n",
+        "scaffold",
+    ],
+    ids=["no-section", "prose-only", "placeholders-only", "installer-scaffold"],
+)
+def test_without_a_home_address_every_clone_is_guarded_as_before(tmp_path: Path, profile: str) -> None:
+    """Домашний адрес в профиле не назван — клону форка отказывают ровно как прежде.
+
+    Новый раздел снимает отказ только там, где он заполнен. Заготовка, заметка или строка прозы,
+    принятая за адрес, — худший из сбоев: раздел считался бы заполненным, origin не совпал бы с ним
+    никогда, и сторож замолчал бы и в домашнем репозитории. Заготовку самого установщика проверяем
+    такой, какой она уходит к людям: с неё начинается профиль в большинстве проектов.
+    """
+    board = tmp_path / "board.jsonl"
+    text = scaffold_profile() if profile == "scaffold" else profile
+    if profile == "scaffold":
+        assert re.search(r"(?mi)^## Home\s*$", text), (
+            "в заготовке больше нет раздела `## Home` — этот случай ничего не проверяет"
+        )
+    fork = clone_with_origin(tmp_path, "fork-clone", "git@github.com:someone/project.git", text)
+
+    assert refusal(board, fork, 'git commit -m "работа"'), (
+        "домашний адрес не назван, а клон форка остался без сторожа — раздел включился сам собой"
+    )
+
+
 # ─── Название вкладки: какая вкладка ведёт поток ─────────────────────────────────────────────────
 #
 # Владелец держит десятки вкладок и называет их сам. Доска знала поток только по папке и ветке, и на
