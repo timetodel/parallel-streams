@@ -8121,6 +8121,32 @@ def test_a_clone_of_the_home_repository_is_still_refused(tmp_path: Path, origin:
 
 @needs_pwsh
 @ISOLATED_GIT
+def test_a_home_address_with_an_encoded_character_still_counts(tmp_path: Path) -> None:
+    """Azure DevOps пишет пробел в имени проекта как `%20`; такой дом всё равно дом.
+
+    Не пройди закодированный знак проверку адреса — и раздел не смог бы назвать этот дом вовсе:
+    строка выпала бы, клон сочли бы чужим, и сторож отошёл бы в сторону там, где он нужен, — а
+    вписать в раздел, чтобы его вернуть, было бы нечего.
+    """
+    board = tmp_path / "board.jsonl"
+    address = "https://dev.azure.com/keeper/my%20project/_git/repo"
+    profile = f"# Profile\n\n## Home\n\n- {address}\n"
+    home = clone_with_origin(tmp_path, "home-clone", address, profile=profile)
+    fork = clone_with_origin(tmp_path, "fork-clone", "https://dev.azure.com/someone/my%20project/_git/repo", profile=profile)
+
+    said = refusal(board, home, 'git commit -m "работа"')
+
+    assert said, "дом с закодированным пробелом в адресе зафиксировал работу без объявления"
+    assert "-Mode Claim" in said, f"отказ не тот, что обычно: {said!r}"
+    # Выпавшая строка читается как «раздела нет», и дому тогда тоже откажут; различает эти два
+    # случая только форк — его пропустят, лишь если строка пошла в зачёт.
+    assert refusal(board, fork, 'git commit -m "работа"') == "", (
+        "закодированный адрес выпал из раздела: клону форка отказали так, будто дом не назван"
+    )
+
+
+@needs_pwsh
+@ISOLATED_GIT
 def test_a_clone_with_no_origin_counts_as_home(tmp_path: Path) -> None:
     """Origin нет вовсе — это однозначный ответ git, а не «не удалось выяснить», и значит он «дом».
 

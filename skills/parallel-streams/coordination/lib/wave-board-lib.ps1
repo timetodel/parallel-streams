@@ -2537,7 +2537,8 @@ function ConvertTo-RepoSlug {
     # way; an address that names no host then comes out empty.
     #
     # ‼️ Each part of the path is made of what hosts allow in a name — letters, digits, `.`, `_`, `~`,
-    # `-` — and nothing else. Anything else — prose, quotes, bold, brackets, `#main`, `@v1`, a
+    # `-`, and a percent-encoded character (`%20`: Azure DevOps writes a space in a project name that
+    # way) — and nothing else. Anything else — prose, quotes, bold, brackets, `#main`, `@v1`, a
     # placeholder in angle brackets, a single word — comes out EMPTY, so it can never be mistaken for
     # an address. The old check let through everything but blanks, slashes and angle brackets, and
     # `"owner/name"` became an address no origin would ever match: the guard stood aside at home.
@@ -2548,7 +2549,7 @@ function ConvertTo-RepoSlug {
         if ($parts.Kind -ne 'remote' -or -not $parts.Host) { return '' }
         $value = "$($parts.Host)/$value"
     }
-    if ($value -cnotmatch '^[a-z0-9._~-]+(?:/[a-z0-9._~-]+)+$') { return '' }
+    if ($value -cnotmatch '^(?:[a-z0-9._~-]|%[0-9a-f]{2})+(?:/(?:[a-z0-9._~-]|%[0-9a-f]{2})+)+$') { return '' }
     return $value
 }
 

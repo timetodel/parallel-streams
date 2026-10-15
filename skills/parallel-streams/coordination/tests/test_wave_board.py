@@ -8344,6 +8344,32 @@ def test_a_clone_of_the_home_repository_is_still_refused(tmp_path: Path, origin:
 
 @needs_pwsh
 @ISOLATED_GIT
+def test_a_home_address_with_an_encoded_character_still_counts(tmp_path: Path) -> None:
+    """Azure DevOps writes a space in a project name as `%20`; such a home is still home.
+
+    Let the encoded character fail the address check, and the section could never name this home:
+    the line would be dropped, the clone ruled foreign, and the guard would stand aside where it is
+    needed — with nothing the owner could write to bring it back.
+    """
+    board = tmp_path / "board.jsonl"
+    address = "https://dev.azure.com/keeper/my%20project/_git/repo"
+    profile = f"# Profile\n\n## Home\n\n- {address}\n"
+    home = clone_with_origin(tmp_path, "home-clone", address, profile=profile)
+    fork = clone_with_origin(tmp_path, "fork-clone", "https://dev.azure.com/someone/my%20project/_git/repo", profile=profile)
+
+    said = refusal(board, home, 'git commit -m "the work"')
+
+    assert said, "a home whose address carries an encoded space committed without announcing"
+    assert "-Mode Claim" in said, f"the refusal is not the usual one: {said!r}"
+    # A dropped line reads as "no section", and home is refused then too; only the fork tells the two
+    # apart — it is let through only when the line counted.
+    assert refusal(board, fork, 'git commit -m "the work"') == "", (
+        "the encoded address was dropped from the section: a clone of a fork is refused as if no home were named"
+    )
+
+
+@needs_pwsh
+@ISOLATED_GIT
 def test_a_clone_with_no_origin_counts_as_home(tmp_path: Path) -> None:
     """No origin at all is a clear answer from git, not a failure to find out — and it means home.
 
