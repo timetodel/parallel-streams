@@ -26,7 +26,7 @@ comes from a profile file, so the skill itself stays portable.
 | `## Persistent rules` | The file every session in this project loads on start (`CLAUDE.md`, `AGENTS.md`, …), which must carry the rules that hold even when a task did not come from this skill | absent — the skill says so once in the summary and offers the block in `references/persistent-rules.md` |
 | `## Coordination` | The commands running sessions use to reach each other, copied verbatim into blocks 4 and 9 of every brief | absent — the skill says nothing about coordination |
 | `## Plans` | The folder where wave plans live, backtick-quoted | absent — the channel's nudge guard stays disconnected |
-| `## Home` | The project's home repository as `owner/name`, one per line: in a clone whose `origin` points elsewhere (a contributor's fork) the channel's commit guard stands aside. Read by that guard only — never carried into briefs | absent — the commit guard treats every clone the same |
+| `## Home` | The project's home repository as `owner/name`, one per line: in a clone whose `origin` points elsewhere (a contributor's fork) the channel's commit guard stands aside, and the session hears so at its start. Read by the channel's hooks only — never carried into briefs | absent — the commit guard treats every clone the same |
 
 Unknown sections are ignored, so a profile can carry notes for humans too.
 
@@ -106,11 +106,12 @@ before the channel existed. Installing and removing: `coordination/README.md`.
 
 ## Home
 
-The one channel section that IS hand-written: the installer never writes it. It matters only to a
-project that takes work from contributors working in their own copies (forks): the commit guard
-refuses commits from a stream that never announced itself, and in a fork clone there is no board to
-announce on. Name the home repository here, and the guard steps aside wherever the clone's `origin`
-points somewhere else:
+The one channel section that IS hand-written: the installer never writes an address into it (a new
+profile's scaffold carries only a placeholder, which is ignored). It matters only to a project that
+takes work from contributors working in their own copies (forks): the commit guard refuses commits
+from a stream that never announced itself, and in a fork clone there is no board to announce on.
+Name the home repository here, and the guard steps aside wherever the clone's `origin` points
+somewhere else — and says so in one line at session start, so a wrong address is noticed at home:
 
 ```markdown
 ## Home

@@ -8248,6 +8248,30 @@ HOME_PROFILE = (
     "`pytest`\n"
 )
 HOME_ORIGIN = "https://github.com/keeper/project.git"
+FORK_ORIGIN = "git@github.com:someone/project.git"
+
+
+def home_profile(entry: str) -> str:
+    """A profile whose `## Home` holds one hand-written line."""
+    return f"# Profile\n\n## Home\n\n{entry}\n\n## Tests\n\n`pytest`\n"
+
+
+@pytest.fixture
+def machine_git_settings_ignored(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Every git call in the check sees only what the check itself set up.
+
+    `git remote get-url` applies the machine's `url.<base>.insteadOf`: on a machine that sends
+    github.com through a mirror, a clone of the home repository would read as somewhere else, and a
+    check would fail — or pass — for a reason that is not in it. An empty global file and no system
+    file take the machine out of it; the clone's own settings, which some checks set on purpose, stay.
+    """
+    empty = tmp_path / "gitconfig-empty"
+    empty.write_text("", encoding="utf-8")
+    monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(empty))
+    monkeypatch.setenv("GIT_CONFIG_NOSYSTEM", "1")
+
+
+ISOLATED_GIT = pytest.mark.usefixtures("machine_git_settings_ignored")
 
 
 def clone_with_origin(root: Path, name: str, origin: str | None, profile: str = HOME_PROFILE) -> Path:
@@ -8259,6 +8283,7 @@ def clone_with_origin(root: Path, name: str, origin: str | None, profile: str = 
 
 
 @needs_pwsh
+@ISOLATED_GIT
 @pytest.mark.parametrize(
     "origin",
     [
@@ -8290,6 +8315,7 @@ def test_the_guard_steps_aside_in_a_clone_of_a_fork(tmp_path: Path, origin: str)
 
 
 @needs_pwsh
+@ISOLATED_GIT
 @pytest.mark.parametrize(
     "origin",
     [
@@ -8317,22 +8343,179 @@ def test_a_clone_of_the_home_repository_is_still_refused(tmp_path: Path, origin:
 
 
 @needs_pwsh
-def test_a_clone_with_no_origin_is_left_alone(tmp_path: Path) -> None:
-    """No origin at all — the guard cannot tell home from a fork, and stays out of the way.
+@ISOLATED_GIT
+def test_a_clone_with_no_origin_counts_as_home(tmp_path: Path) -> None:
+    """No origin at all is a clear answer from git, not a failure to find out — and it means home.
 
-    That is its rule for anything it cannot find out. Then the origin is added, pointing home, and
-    the guard must speak up in the same folder: silence on its own proves nothing.
+    A fork is cloned from the fork, and `gh repo fork --clone` names it origin too: a fork clone with
+    no origin hardly exists. A home repository with none does — its main remote named `upstream`, or
+    nothing pushed anywhere yet — and silence there would lift the guard where it exists. Then an
+    origin pointing at a fork is added, and the guard must step aside in the same folder: otherwise
+    the refusal above came from a section nobody read.
     """
     board = tmp_path / "board.jsonl"
     bare = clone_with_origin(tmp_path, "no-origin", None)
+    git(bare, "remote", "add", "upstream", HOME_ORIGIN)
 
+    said = refusal(board, bare, 'git commit -m "the work"')
+    assert said, "a clone with no origin committed without announcing — the guard stood aside at home"
+    assert "-Mode Claim" in said, f"the refusal is not the usual one: {said!r}"
+
+    git(bare, "remote", "add", "origin", FORK_ORIGIN)
     assert refusal(board, bare, 'git commit -m "the work"') == "", (
-        "a clone with no origin was refused — the guard could not have known it was home"
+        "with origin pointing at a fork the guard still refused — the refusal above proves nothing"
     )
 
-    git(bare, "remote", "add", "origin", HOME_ORIGIN)
-    assert refusal(board, bare, 'git commit -m "the work"'), (
+
+@needs_pwsh
+@ISOLATED_GIT
+def test_a_clone_whose_origin_does_not_read_is_left_alone(tmp_path: Path) -> None:
+    """An origin naming no repository path — the guard cannot tell, and stays out of the way.
+
+    That is its rule for anything it cannot find out, and it is kept apart from "no origin", which
+    is an answer. Then origin is pointed home, and the guard must speak up in the same folder.
+    """
+    board = tmp_path / "board.jsonl"
+    odd = clone_with_origin(tmp_path, "odd-origin", "https://example.com/")
+
+    assert refusal(board, odd, 'git commit -m "the work"') == "", (
+        "an origin that names no repository was taken for an answer — the guard refused on a guess"
+    )
+
+    git(odd, "remote", "set-url", "origin", HOME_ORIGIN)
+    assert refusal(board, odd, 'git commit -m "the work"'), (
         "the guard stayed mute after origin pointed home — its silence above proves nothing"
+    )
+
+
+@needs_pwsh
+@ISOLATED_GIT
+def test_a_rewritten_origin_of_the_home_repository_is_still_refused(tmp_path: Path) -> None:
+    """`insteadOf` sends home through a mirror with a path of its own — it is still home.
+
+    `git remote get-url` answers with the rewritten address, and that alone would read as somewhere
+    else. The address as written in the clone's settings is compared too, and either one matching is
+    enough: the error falls toward a refusal, never toward silence at home.
+    """
+    board = tmp_path / "board.jsonl"
+    home = clone_with_origin(tmp_path, "mirrored-home", HOME_ORIGIN)
+    git(home, "config", "url.https://mirror.example/github/.insteadOf", "https://github.com/")
+    resolved = subprocess.run(
+        ["git", "remote", "get-url", "origin"],
+        cwd=str(home),
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        timeout=60,
+    )
+    assert "mirror.example/github/keeper/project" in resolved.stdout, (
+        f"git did not rewrite the address — this case checks nothing: {resolved.stdout!r} {resolved.stderr!r}"
+    )
+
+    said = refusal(board, home, 'git commit -m "the work"')
+
+    assert said, "the home clone behind a mirror rewrite committed without announcing"
+    assert "-Mode Claim" in said, f"the refusal is not the usual one: {said!r}"
+
+
+@needs_pwsh
+@ISOLATED_GIT
+@pytest.mark.parametrize("form", ["native-path", "posix-path", "file-url", "relative-path"])
+def test_a_clone_of_a_folder_on_disk_counts_as_home(tmp_path: Path, form: str) -> None:
+    """origin is a folder on this disk (`git clone <folder>`) — guarded the way it was before the section.
+
+    A path names no hosted repository, so nothing in `## Home` could ever match it, and standing
+    aside there would lift the guard in a local copy of the home repository.
+    """
+    board = tmp_path / "board.jsonl"
+    main_copy = tmp_path / "home-main"
+    origin = {
+        "native-path": str(main_copy),
+        "posix-path": main_copy.as_posix(),
+        "file-url": main_copy.as_uri(),
+        "relative-path": "../home-main",
+    }[form]
+    local = clone_with_origin(tmp_path, "local-clone", origin)
+
+    said = refusal(board, local, 'git commit -m "the work"')
+
+    assert said, f"a clone whose origin is a folder on disk ({origin}) committed without announcing"
+    assert "-Mode Claim" in said, f"the refusal is not the usual one: {said!r}"
+
+
+# The home address written the way people write things by hand. Each of these once read as an
+# address that no origin would ever match, and the guard stood aside in the home repository: quotes,
+# bold, brackets, a trailing comma, the host in front, a branch or a tag after the name.
+HOME_AS_WRITTEN = {
+    "double-quotes": '- "keeper/project"',
+    "single-quotes": "- 'keeper/project'",
+    "bold": "- **keeper/project**",
+    "italic-stars": "- *keeper/project*",
+    "italic-underscores": "- _keeper/project_",
+    "square-brackets": "- [keeper/project]",
+    "parentheses": "- (keeper/project)",
+    "trailing-comma": "- keeper/project,",
+    "trailing-period": "- keeper/project.",
+    "trailing-semicolon": "- keeper/project;",
+    "host-in-front": "- github.com/keeper/project",
+    "branch-after": "- keeper/project#main",
+    "tag-after": "- keeper/project@v1",
+}
+
+
+@needs_pwsh
+@ISOLATED_GIT
+@pytest.mark.parametrize("entry", list(HOME_AS_WRITTEN.values()), ids=list(HOME_AS_WRITTEN))
+def test_the_home_clone_is_refused_however_the_address_is_written(tmp_path: Path, entry: str) -> None:
+    """Whatever is written around the home address, the guard still stands in the home repository.
+
+    Either the markup comes off and the address matches home, or the line does not read as an
+    address at all and the section stays empty — both end in the usual refusal. What must never
+    happen is the old way: the markup kept as part of an "address" no origin matches, and the guard
+    standing aside at home in silence.
+    """
+    board = tmp_path / "board.jsonl"
+    home = clone_with_origin(tmp_path, "home-clone", HOME_ORIGIN, home_profile(entry))
+
+    said = refusal(board, home, 'git commit -m "the work"')
+
+    assert said, f"the home clone committed without announcing with `## Home` written as {entry!r}"
+    assert "-Mode Claim" in said, f"the refusal is not the usual one: {said!r}"
+
+
+# Lines whose address must be read through the markup — numbered list items included.
+HOME_READ_THROUGH = {
+    "double-quotes": '- "keeper/project"',
+    "bold": "- **keeper/project**",
+    "parentheses": "- (keeper/project)",
+    "trailing-comma": "- keeper/project,",
+    "host-in-front": "- github.com/keeper/project",
+    "numbered-period": "1. keeper/project",
+    "numbered-parenthesis": "2) keeper/project",
+    "quotes-inside-backticks": '- `"keeper/project"` — the home repository',
+}
+
+
+@needs_pwsh
+@ISOLATED_GIT
+@pytest.mark.parametrize("entry", list(HOME_READ_THROUGH.values()), ids=list(HOME_READ_THROUGH))
+def test_the_address_is_read_through_the_markup_around_it(tmp_path: Path, entry: str) -> None:
+    """The address under the markup is read — or the section would quietly do nothing at all.
+
+    Taken for a non-address, the line would leave the section empty: the guard would go on refusing
+    in the fork, and the contributor would not know why. So the fork commits freely, and the same
+    clone pointed home is refused — silence alone proves nothing.
+    """
+    board = tmp_path / "board.jsonl"
+    fork = clone_with_origin(tmp_path, "fork-clone", FORK_ORIGIN, home_profile(entry))
+
+    assert refusal(board, fork, 'git commit -m "the work"') == "", (
+        f"`## Home` written as {entry!r} was not read as the address — the fork is still refused"
+    )
+
+    git(fork, "remote", "set-url", "origin", HOME_ORIGIN)
+    assert refusal(board, fork, 'git commit -m "the work"'), (
+        f"with `## Home` written as {entry!r} the guard is mute at home too — its silence proves nothing"
     )
 
 
@@ -8342,15 +8525,29 @@ def scaffold_profile() -> str:
 
 
 @needs_pwsh
+@ISOLATED_GIT
 @pytest.mark.parametrize(
     "profile",
     [
         "# Profile\n\n## Tests\n\n`pytest`\n",
         "# Profile\n\n## Home\n\nNo address picked yet — `## Home` stays empty for now.\n",
         "# Profile\n\n## Home\n\n<!-- e.g. `owner/name` -->\n<owner/name>\n",
+        "# Profile\n\n## Home\n\n<!-- e.g. `example/repo`\n     or `other/repo`\n",
+        "# Profile\n\n## Plans\n\nThe section looks like this:\n\n```markdown\n## Home\n\n- `ex/ample`\n```\n",
+        "# Profile\n\n## Plans\n\n~~~\n## Home\n\nex/ample\n~~~\n",
+        "# Profile\n\n## Home\n\n- someone/project#main\n- someone/project@v1\n",
         "scaffold",
     ],
-    ids=["no-section", "prose-only", "placeholders-only", "installer-scaffold"],
+    ids=[
+        "no-section",
+        "prose-only",
+        "placeholders-only",
+        "unclosed-note",
+        "fenced-example",
+        "tilde-fenced-example",
+        "branch-and-tag-only",
+        "installer-scaffold",
+    ],
 )
 def test_without_a_home_address_every_clone_is_guarded_as_before(tmp_path: Path, profile: str) -> None:
     """No home address in the profile — a clone of a fork is refused exactly as before.
@@ -8358,7 +8555,9 @@ def test_without_a_home_address_every_clone_is_guarded_as_before(tmp_path: Path,
     The new section only ever lifts the refusal where it is filled in. A placeholder, a note or a line
     of prose taken for an address would be the worst kind of failure: the section would count as
     filled, no origin would ever match it, and the guard would go silent in the home repository too.
-    The installer's own scaffold is checked as it ships: it is the profile most projects start from.
+    So would an example: the docs show `## Home` in a code block, and pasted with its fence it is
+    still an example; a note left open runs to the end of the section. The installer's own scaffold
+    is checked as it ships: it is the profile most projects start from.
     """
     board = tmp_path / "board.jsonl"
     text = scaffold_profile() if profile == "scaffold" else profile
@@ -8366,11 +8565,62 @@ def test_without_a_home_address_every_clone_is_guarded_as_before(tmp_path: Path,
         assert re.search(r"(?mi)^## Home\s*$", text), (
             "the scaffold no longer carries a `## Home` section — this case checks nothing"
         )
-    fork = clone_with_origin(tmp_path, "fork-clone", "git@github.com:someone/project.git", text)
+    fork = clone_with_origin(tmp_path, "fork-clone", FORK_ORIGIN, text)
 
     assert refusal(board, fork, 'git commit -m "the work"'), (
         "with no home address named, a clone of a fork went unguarded — the section switched on by itself"
     )
+
+
+# The words the session-start line is recognised by.
+STANDS_ASIDE = "stands aside in this clone"
+
+
+@needs_pwsh
+@ISOLATED_GIT
+def test_session_start_says_where_the_guard_stands_aside(tmp_path: Path) -> None:
+    """In a fork clone the session hears at its start that the commit guard stands aside — once.
+
+    Standing aside is silent at the guard itself, and silence is ambiguous. One line at session start
+    makes it visible, never on an ordinary turn: the context is resent on every turn. Checked first
+    where the guard stands guard — the same clone pointed home — so the line is not printed always.
+    """
+    board = tmp_path / "board.jsonl"
+    clone = clone_with_origin(tmp_path, "clone", HOME_ORIGIN)
+
+    at_home = context_text(run_deliver(board, clone, "Start", "s-aside-home"))
+    assert STANDS_ASIDE not in at_home, f"the session at home was told the guard stands aside: {at_home!r}"
+
+    git(clone, "remote", "set-url", "origin", FORK_ORIGIN)
+    told = context_text(run_deliver(board, clone, "Start", "s-aside-fork"))
+    assert STANDS_ASIDE in told, f"the guard stands aside in the fork clone in silence: {told!r}"
+    assert "github.com/someone/project" in told, f"the line does not name the origin: {told!r}"
+    assert "keeper/project" in told, f"the line does not name the home the section holds: {told!r}"
+
+    turn = context_text(run_deliver(board, clone, "Prompt", "s-aside-fork"))
+    assert STANDS_ASIDE not in turn, f"the line came back on an ordinary turn — it is for session start: {turn!r}"
+
+
+@needs_pwsh
+@ISOLATED_GIT
+@pytest.mark.parametrize("entry", ["N/A", "TODO/TBD", "- and/or"], ids=["n-a", "todo-tbd", "and-or"])
+def test_a_home_section_that_names_no_real_address_is_heard_about_at_home(
+    tmp_path: Path, entry: str
+) -> None:
+    """`N/A` in `## Home` reads as an address by its shape — so the departure is made visible at home.
+
+    Nothing in the line tells it from a real `owner/name`, and no origin will ever match it: the
+    guard stands aside in the home repository too. That much is the known limit; what must not
+    happen is that it goes unnoticed. The first session started at home is told, and names the
+    origin, so the section gets fixed.
+    """
+    board = tmp_path / "board.jsonl"
+    home = clone_with_origin(tmp_path, "home-clone", HOME_ORIGIN, home_profile(entry))
+
+    told = context_text(run_deliver(board, home, "Start", "s-aside-na"))
+
+    assert STANDS_ASIDE in told, f"`## Home` holding {entry!r} lifts the guard at home in silence: {told!r}"
+    assert "github.com/keeper/project" in told, f"the line does not name the origin: {told!r}"
 
 
 # ─── Tab name: which tab runs a stream ───────────────────────────────────────────────────────────

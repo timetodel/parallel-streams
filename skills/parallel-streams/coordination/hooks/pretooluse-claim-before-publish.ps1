@@ -30,7 +30,8 @@ refusal.
 A clone of a contributor's own copy (a fork) is not refused at all, once the project's profile names
 its home repository in `## Home`: the guard steps aside wherever `origin` points somewhere else. The
 board belongs to the home repository, and a contributor sending pull requests from a fork has no
-stream on it to announce.
+stream on it to announce. Standing aside is never silent: the delivery hook says so in one line at
+session start, so a section that names the wrong address is noticed in the home repository itself.
 
 On ANY unexpected condition the guard stays out of the way and exits with zero: a broken registry, an
 unreadable claim, git not answering. A kit that installs itself into someone else's project may not
@@ -97,8 +98,10 @@ try {
     # and every commit there would be refused for a stream that has nowhere to announce — a refusal
     # its session can only answer with the valve, by hand, every time. Asked only when the profile
     # names its home (`## Home`), and only here, after the command filter and the valve: on calls
-    # that are none of the guard's business it still costs nothing. No origin, or git not answering,
-    # counts as "not home" — the rule for anything unexpected, below, is the same.
+    # that are none of the guard's business it still costs nothing. No origin at all, or a folder on
+    # disk, counts as home; git not answering, or an origin that does not read, counts as "not home"
+    # — the rule for anything unexpected, below, is the same. The session hears about standing aside
+    # at its start, from the delivery hook: a wrong section at home must not stay silent.
     if (Test-ForeignClone) { exit 0 }
 
     # ‼️ Asked STRICTLY, and this is the whole difference between a guard and a nuisance. Everywhere

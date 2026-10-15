@@ -47,7 +47,7 @@ script point at the folder, not at its contents.
 | `lib/tab-titles.ps1` | Which tab runs a stream: reading the tab's name from its session transcript, and the tab registry |
 | `lib/git-env-clean.ps1` | Strips git environment variables — otherwise the board would end up in someone else's repository |
 | `lib/hook-io.ps1` | Reads the data that reaches a hook |
-| `hooks/wave-board-deliver.ps1` | Delivery: brings a session the records addressed to it at session start and before every human turn |
+| `hooks/wave-board-deliver.ps1` | Delivery: brings a session the records addressed to it at session start and before every human turn; at session start it also says, in one line, when the commit guard stands aside in this clone |
 | `hooks/pretooluse-wave-board-nudge.ps1` | A nudge when the wave plan is edited: an addition to the plan doesn't catch up with a live neighbour |
 | `hooks/pretooluse-claim-before-publish.ps1` | The one refusal in the kit: a commit from a stream that never announced itself is stopped, and handed the line that fixes it; a clone of a contributor's fork is left alone once the profile names its home repository |
 | `install.ps1` | Install, uninstall, and check wiring |
@@ -193,29 +193,59 @@ points somewhere else:
 - `owner/name`
 ```
 
-- **One address per line**, as `owner/name`; a list marker and backticks are fine. A full address
-  works too (`https://github.com/owner/name.git`, `git@github.com:owner/name`, `ssh://…`): both
-  sides are compared without the scheme, the host, `.git`, the trailing slash and letter case. Prose,
-  `<!-- notes -->` and placeholders in angle brackets inside the section are ignored.
-- **The section is written by a person.** The installer never writes it or changes it, and the
-  skill never carries it into briefs: it is read by the commit guard and nothing else.
-- **What changes, and when.** Only the commit guard reads it, only on a publishing command, after
-  the valve. In a clone of the home repository it refuses exactly as before. With no `origin`, or
-  with git not answering, the clone counts as "not home" — that is the guard's rule for anything it
-  cannot find out. No section, or nothing in it that reads as an address — everything as before.
-- **The delivery hook and the plan-edit nudge are left as they are** in a fork clone: neither ever
-  refuses anything. Where nobody announces, delivery has nothing to bring and stays silent; the
-  nudge speaks once per session, and only when a wave plan is edited. A contributor who wants the
-  channel for parallel sessions inside their own fork still has all of it — only the refusal is
-  lifted.
+- **One address per line, and the line as a whole is the address** — or the address sits in
+  backticks, and then the rest of the line may be prose. A list marker is fine (`-`, `*`, `+`, `1.`,
+  `1)`), and so are quotes, bold, brackets and a trailing comma or period around the address: they
+  come off before the check. Nothing may follow the address on its own line — `owner/name # main`
+  does not read.
+- **What reads as an address.** `owner/name` (a group path like `group/sub/name` too), the host in
+  front (`github.com/owner/name`), or a full address (`https://github.com/owner/name.git`,
+  `git@github.com:owner/name`, `ssh://…`). Every part of the path is made of letters, digits, `.`,
+  `_`, `~` and `-`: anything else — `#main`, `@v1`, a space — and the line is not an address at all.
+  Prose, `<!-- notes -->` (one left open runs to the end of the section) and placeholders in angle
+  brackets are ignored, and so is any fenced code block anywhere in the profile: a `## Home` shown
+  inside one is an example, not the section.
+- **How addresses are compared.** Both sides without the scheme, the user, the port, `.git`, the
+  trailing slash and letter case; a line with the host in front is compared with origin's host and
+  path. `origin` is read twice — as written in the clone's settings and as git resolves it, with
+  `url.<base>.insteadOf` applied — and either one matching makes the clone home.
+- **https and ssh meet on GitHub and GitLab.** There both forms of one repository give the same path.
+  On other hosts they do not — Azure DevOps (`org/proj/_git/repo` against `v3/org/proj/repo`),
+  Bitbucket Server and Data Center (`scm/proj/repo` against `proj/repo`), GitLab served under a
+  relative root (`gitlab/group/name` against `group/name`). There, list every form your people clone
+  by, one per line.
+- **The section is written by a person.** The installer never writes an address into it — its
+  scaffold for a new profile carries only a placeholder, which is ignored — and the skill never
+  carries the section into briefs: it is read by the commit guard and the delivery hook, nobody else.
+- **What changes, and when.** The commit guard reads it only on a publishing command, after the
+  valve. In a clone of the home repository it refuses exactly as before. **No `origin` at all**
+  counts as home — that is a clear answer from git, and a fork clone always has one. **Git not
+  answering, or an origin that does not read** (no repository path in it), counts as "not home" —
+  the guard's rule for anything it cannot find out. No section, or nothing in it that reads as an
+  address — everything as before.
+- **Standing aside is said out loud.** Whenever the guard stands aside in a clone, the delivery hook
+  says so in one line at session start — never on an ordinary turn: which origin, and which home
+  addresses the section names. In a fork clone that is the design. In the home repository it means
+  the section is wrong, and that is how it gets noticed.
+- **Otherwise the delivery hook and the plan-edit nudge are left as they are** in a fork clone:
+  neither ever refuses anything. Where nobody announces, delivery has nothing to bring; the nudge
+  speaks once per session, and only when a wave plan is edited. A contributor who wants the channel
+  for parallel sessions inside their own fork still has all of it — only the refusal is lifted.
 
 Limits:
 
 - **The sign is the remote named `origin`.** A clone of the home repository that pushes to a fork
-  through another remote still counts as home; the valve is for that case.
-- **A typo in the address makes the guard stand aside in the home repository too, in silence.**
-  After writing the section, compare it once with `git remote get-url origin` in the home
-  repository: a refusal from an unannounced stream there is the proof that the guard still stands.
+  through another remote still counts as home; the valve is for that case. `pushurl` is not looked
+  at either: a clone whose `origin` fetches from home and pushes to a fork counts as home and is
+  refused, as before the section.
+- **A line that reads as an address but names nothing real** — `N/A`, `TODO/TBD`, `and/or`, a typo
+  — makes the guard stand aside in the home repository too. Its shape cannot tell it from a real
+  `owner/name`; the session-start line is what gives it away. After writing the section, open a
+  session in the home repository once: no such line, and a refusal for an unannounced stream, is
+  the proof that the guard still stands.
+- **A local clone counts as home.** When `origin` is a folder on disk or a `file://` address
+  (`git clone <folder>`), no hosted address can match it, and the clone is guarded as it was before
+  the section — whether it copies home or a fork.
 - **The section is read from the clone's own checkout.** A fork that hasn't caught up with the commit
   adding `## Home` keeps the old behaviour until it does.
 

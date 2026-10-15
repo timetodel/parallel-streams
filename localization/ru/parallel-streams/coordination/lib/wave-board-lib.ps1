@@ -2385,91 +2385,235 @@ function Get-ProfileText {
     return ''
 }
 
-function ConvertTo-RepoSlug {
+function Split-RepoAddress {
     param([string]$Address)
+    # Адрес репозитория по частям: какого он рода, сервер и путь на сервере.
+    #   • `remote` — `схема://[пользователь@]сервер[:порт]/путь` или короткая форма ssh
+    #     `[пользователь@]сервер:путь`;
+    #   • `local`  — папка на диске: `file://…`, путь с диском или сетевой, любой другой путь.
+    # Так их различает и сам git: всё, что не адрес со схемой и не короткая форма ssh, — путь. Голое
+    # `owner/name` тоже попадает в `local`: в профиле это обычный способ назвать репозиторий, в origin —
+    # соседняя папка, и каждый, кто зовёт разбор, знает, что именно читает. Имя пользователя и порт
+    # отбрасываем, сервер — без учёта регистра.
+    $value = (([string]$Address).Trim()) -replace '\\', '/'
+    if (-not $value) { return $null }
+    if ($value -match '^(?i:file)://') {
+        return [pscustomobject]@{ Kind = 'local'; Host = ''; Path = ($value -replace '^(?i:file)://', '') }
+    }
+    if ($value -match '^[A-Za-z][A-Za-z0-9+.-]*://([^/]*)(/.*)?$') {
+        $authority = [string]$Matches[1]
+        $path = [string]$Matches[2]
+        $hostName = ($authority -replace '^.*@', '') -replace ':[0-9]*$', ''
+        return [pscustomobject]@{ Kind = 'remote'; Host = $hostName.ToLowerInvariant(); Path = $path }
+    }
+    if ($value -match '^(?:[^@/\s]+@)?([^@/:\s]{2,}):(.+)$') {
+        # Имя сервера длиннее одной буквы: `C:/папка` — диск Windows, а не сервер.
+        return [pscustomobject]@{ Kind = 'remote'; Host = $Matches[1].ToLowerInvariant(); Path = $Matches[2] }
+    }
+    return [pscustomobject]@{ Kind = 'local'; Host = ''; Path = $value }
+}
+
+function ConvertTo-RepoSlug {
+    param([string]$Address, [switch]$WithHost)
     # Адрес репозитория в ОДНОЙ форме, только для сравнения: путь на сервере без схемы, имени
     # пользователя, сервера, порта, хвоста `.git` и замыкающей косой черты, без учёта регистра.
     # `https://github.com/Owner/Name.git`, `git@github.com:owner/name` и
     # `ssh://git@github.com:22/owner/name/` дают одно и то же — `owner/name`; голое `owner/name`
     # остаётся как есть. Сервер отбрасываем намеренно: в профиле репозиторий называют так, как его
     # называют вслух, а один и тот же репозиторий один человек клонирует по https, другой — по ssh.
+    # `-WithHost` оставляет сервер впереди (`github.com/owner/name`) — для строки профиля, записанной
+    # так; адрес без сервера тогда даёт пусто.
     #
-    # Всё, что на путь репозитория не похоже, — проза, заготовка в угловых скобках, одно слово, —
-    # даёт ПУСТО, и за адрес это не примут никогда.
-    $value = (([string]$Address).Trim()) -replace '\\', '/'
-    if (-not $value) { return '' }
-    if ($value -match '^[A-Za-z][A-Za-z0-9+.-]*://[^/]*(/.*)?$') {
-        # схема://[пользователь@]сервер[:порт]/путь
-        $value = [string]$Matches[1]
-    } elseif ($value -match '^(?:[^@/\s]+@)?[^@/:\s]{2,}:(.+)$') {
-        # Короткая форма ssh: [пользователь@]сервер:путь. Имя сервера длиннее одной буквы:
-        # `C:/папка` — диск Windows, а не сервер.
-        $value = $Matches[1]
+    # ‼️ Каждая часть пути состоит из того, что хостинги допускают в имени, — буквы, цифры, `.`, `_`,
+    # `~`, `-` — и ни из чего больше. Всё остальное — проза, кавычки, жирный, скобки, `#main`, `@v1`,
+    # заготовка в угловых скобках, одно слово — даёт ПУСТО, и за адрес это не примут никогда. Прежняя
+    # проверка пропускала всё, кроме пробелов, косых черт и угловых скобок, и `"owner/name"` становился
+    # адресом, с которым не совпадёт ни один origin: сторож отходил в сторону и дома.
+    $parts = Split-RepoAddress -Address $Address
+    if (-not $parts) { return '' }
+    $value = ($parts.Path.Trim('/') -replace '(?i)\.git$', '').TrimEnd('/').ToLowerInvariant()
+    if ($WithHost) {
+        if ($parts.Kind -ne 'remote' -or -not $parts.Host) { return '' }
+        $value = "$($parts.Host)/$value"
     }
-    $value = ($value.Trim('/') -replace '(?i)\.git$', '').TrimEnd('/').ToLowerInvariant()
-    if ($value -notmatch '^[^\s/<>`]+(/[^\s/<>`]+)+$') { return '' }
+    if ($value -cnotmatch '^[a-z0-9._~-]+(?:/[a-z0-9._~-]+)+$') { return '' }
+    return $value
+}
+
+function Remove-AddressMarkup {
+    param([string]$Text)
+    # То, что человек ставит ВОКРУГ адреса, когда пишет его руками, — снимаем: хвостовую запятую,
+    # точку, точку с запятой, двоеточие, `!` или `?` и пару обрамлений — одинаковую серию `*`, `_` или
+    # кавычек с обоих концов, скобки, типографские кавычки. Снимаются только ПАРЫ: одиночное `_` в
+    # конце может быть частью самого имени. Что осталось, проверяет `ConvertTo-RepoSlug`, как обычно.
+    $value = ([string]$Text).Trim()
+    do {
+        $before = $value
+        $value = ($value -replace '[.,;:!?]+$', '').Trim()
+        if ($value -match '^([*_"''])\1*') {
+            $run = $Matches[0]
+            if ($value.Length -gt 2 * $run.Length -and $value.EndsWith($run)) {
+                $value = $value.Substring($run.Length, $value.Length - 2 * $run.Length).Trim()
+            }
+        }
+        foreach ($pair in @('()', '[]', '{}', '«»', '“”', '„“', '‘’')) {
+            if ($value.Length -gt 2 -and $value[0] -eq $pair[0] -and $value[-1] -eq $pair[1]) {
+                $value = $value.Substring(1, $value.Length - 2).Trim()
+            }
+        }
+    } while ($value -ne $before)
     return $value
 }
 
 function Get-ProfileHomeRepos {
     param([string]$StartDir)
     # Домашние репозитории проекта: раздел профиля `## Home`, по адресу на строку, в виде
-    # `owner/name` (годится и полный адрес — см. `ConvertTo-RepoSlug`). Маркер списка и обратные
-    # кавычки терпим: этот раздел пишет человек руками, установщик его не пишет никогда.
+    # `owner/name` (годится и полный адрес — см. `ConvertTo-RepoSlug`). Маркер списка — `-`, `*`,
+    # `+`, `1.`, `1)` — и обратные кавычки терпим: этот раздел пишет человек руками, а установщик
+    # адреса в него не пишет никогда (в его заготовке — только заглушка).
     #
     # ‼️ В зачёт идёт только то, что читается как адрес. Строка берётся целиком, а если в ней есть
     # обратные кавычки — только то, что внутри них; прозу, заметки в `<!-- -->` и заготовки в угловых
-    # скобках выбрасываем до этого. Заготовка, принятая за адрес, — худший из здешних сбоев: раздел
-    # считался бы заполненным, origin ни одного клона с ним не совпал бы, и сторож фиксации молча
-    # отошёл бы в сторону и в домашнем репозитории.
+    # скобках выбрасываем до этого, а огороженные блоки кода вырезаем из всего профиля ещё до поиска
+    # заголовка. Заготовка, принятая за адрес, — худший из здешних сбоев: раздел считался бы
+    # заполненным, origin ни одного клона с ним не совпал бы, и сторож фиксации молча отошёл бы в
+    # сторону и в домашнем репозитории. Чего по форме строки не решить (`N/A`, `and/or`), то делаем
+    # видимым: см. `Get-StandAsideNotice`.
     #
     # Заголовок ищем БЕЗ учёта регистра, как и все остальные разделы. Пусто — раздела нет или в нём
     # нет ничего похожего на адрес, и тогда всё ведёт себя так же, как до появления раздела.
     $text = Get-ProfileText -StartDir $StartDir
     if (-not $text) { return @() }
+    # Блок кода — это пример, а не сам раздел: документация показывает `## Home` именно таким блоком,
+    # и вставленный в профиль вместе с ограждением он иначе включил бы сторожа с адресом из примера.
+    # Незакрытое ограждение идёт до конца профиля — так его читает и сама разметка.
+    $text = [regex]::Replace($text,
+        '(?ms)^[ ]{0,3}(?<fence>`{3,}(?=[^`\n]*$)|~{3,})[^\n]*(?:\n|\z).*?(?:^[ ]{0,3}\k<fence>[`~]*[ \t]*\r?$|\z)', '')
     $section = [regex]::Match($text, '(?msi)^##[ \t]+Home[ \t]*\r?$(.*?)(?=^#{1,2}[ \t]|\z)')
     if (-not $section.Success) { return @() }
-    $body = [regex]::Replace($section.Groups[1].Value, '(?s)<!--.*?-->|<[^<>]*>', '')
+    # Незакрытая заметка (`<!--` без `-->`) идёт до конца раздела: пример внутри неё — всё равно пример.
+    $body = [regex]::Replace($section.Groups[1].Value, '(?s)<!--.*?(?:-->|\z)|<[^<>]*>', '')
     $found = [System.Collections.Generic.List[string]]::new()
     foreach ($line in ($body -split "`r?`n")) {
-        $line = $line.Trim() -replace '^[-*+][ \t]+', ''
+        $line = $line.Trim() -replace '^(?:[-*+]|[0-9]+[.)])[ \t]+', ''
         if (-not $line) { continue }
         $quoted = @([regex]::Matches($line, '`([^`]+)`') | ForEach-Object { $_.Groups[1].Value })
         $candidates = if ($quoted.Count -gt 0) { $quoted } else { @($line) }
         foreach ($candidate in $candidates) {
-            $slug = ConvertTo-RepoSlug -Address $candidate
-            if ($slug -and -not $found.Contains($slug)) { $found.Add($slug) }
+            # Как написано И со снятой вокруг разметкой: `"owner/name",` читается как `owner/name`, и
+            # имя, которое и правда кончается на `.` или `_`, тоже не теряется — лишний адрес в списке
+            # может только заставить сторожа отказать, но не замолчать.
+            foreach ($form in @($candidate, (Remove-AddressMarkup -Text $candidate))) {
+                $slug = ConvertTo-RepoSlug -Address $form
+                if ($slug -and -not $found.Contains($slug)) { $found.Add($slug) }
+            }
         }
     }
     return @($found)
+}
+
+function Get-CloneStanding {
+    param([string]$StartDir)
+    # Чей это клон, как его видит сторож фиксации: `Foreign` — сторож здесь отходит в сторону; `Why` —
+    # причина, одним словом; `Homes` — что называет `## Home`; `Origin` — origin в том виде, в каком
+    # его сравнивали, с сервером впереди, чтобы назвать его вслух (имя пользователя и всё секретное
+    # из адреса туда не попадает никогда).
+    #
+    #   • `no-home`   — профиль дом не называет: все клоны равны, ровно как прежде;
+    #   • `home`      — origin совпал со списком; или origin НЕТ вовсе (`no-origin`): это однозначный
+    #                   ответ git, а не «не удалось выяснить», и у клона форка он есть всегда —
+    #                   `git clone <форк>` и `gh repo fork --clone` оба называют форк origin. Без
+    #                   него как раз бывает домашний репозиторий, где главный удалённый переименован
+    #                   или работа ещё никуда не отправлена;
+    #   • `local`     — origin — папка на этом диске или адрес `file://`: с ним не совпадёт ни один
+    #                   адрес хостинга, и отход в сторону снял бы сторожа в локальной копии дома.
+    #                   Сторож — как до появления раздела;
+    #   • `elsewhere` — origin читается и смотрит в другое место: клон форка, сторож отходит;
+    #   • `unknown`   — git не ответил или адрес не читается: сторож тоже отходит, таково его правило
+    #                   на всё, чего он не может выяснить.
+    #
+    # ‼️ origin читаем ДВАЖДЫ: как он записан в настройках клона и как его разворачивает git (с
+    # `url.<base>.insteadOf`). Переписывание на зеркало со своим путём превратило бы дом в «другое
+    # место»; совпало хоть одно прочтение — дом: ошибка уходит в сторону отказа, а не молчания дома.
+    #
+    # ‼️ Признак — удалённый репозиторий с именем `origin`. Клон домашнего репозитория, который
+    # отправляет работу в форк через другое имя, по-прежнему считается домашним.
+    $at = if ($StartDir) { $StartDir } else { $PWD.Path }
+    $homes = @()
+    try {
+        # Профиль, который не читается, — это «не удалось выяснить», то же правило, что у `unknown`.
+        $homes = @(Get-ProfileHomeRepos -StartDir $at)
+        if ($homes.Count -eq 0) {
+            return [pscustomobject]@{ Foreign = $false; Why = 'no-home'; Homes = @(); Origin = '' }
+        }
+        $written = @(& git -C $at config --get-all remote.origin.url 2>$null)
+        $writtenCode = $LASTEXITCODE
+        $resolved = @(& git -C $at remote get-url origin 2>$null)
+        $resolvedCode = $LASTEXITCODE
+        # Коды выхода замерены на git 2.53: `config --get-all` отвечает 1 на ключ, которого нет,
+        # `remote get-url` — 2 на «No such remote». Вне репозитория второй отвечает 128 — это не
+        # ответ, и он остаётся `unknown`.
+        if ($writtenCode -eq 1 -and $resolvedCode -eq 2) {
+            return [pscustomobject]@{ Foreign = $false; Why = 'no-origin'; Homes = $homes; Origin = '' }
+        }
+        $addresses = @(@(
+                if ($resolvedCode -eq 0) { $resolved }
+                if ($writtenCode -eq 0) { $written }
+            ) | ForEach-Object { ([string]$_).Trim() } | Where-Object { $_ })
+        $said = ''
+        foreach ($address in $addresses) {
+            $parts = Split-RepoAddress -Address $address
+            if ($parts -and $parts.Kind -eq 'local') {
+                return [pscustomobject]@{ Foreign = $false; Why = 'local'; Homes = $homes; Origin = '' }
+            }
+            $forms = @((ConvertTo-RepoSlug -Address $address), (ConvertTo-RepoSlug -Address $address -WithHost) |
+                    Where-Object { $_ })
+            foreach ($form in $forms) {
+                if ($homes -contains $form) {
+                    return [pscustomobject]@{ Foreign = $false; Why = 'home'; Homes = $homes; Origin = $form }
+                }
+            }
+            if (-not $said -and $forms.Count -gt 0) { $said = $forms[-1] }
+        }
+        if ($said) {
+            return [pscustomobject]@{ Foreign = $true; Why = 'elsewhere'; Homes = $homes; Origin = $said }
+        }
+        return [pscustomobject]@{ Foreign = $true; Why = 'unknown'; Homes = $homes; Origin = '' }
+    } catch {
+        return [pscustomobject]@{ Foreign = $true; Why = 'unknown'; Homes = @($homes); Origin = '' }
+    }
 }
 
 function Test-ForeignClone {
     param([string]$StartDir)
     # Это клон чужой копии проекта (форка), а не его домашнего репозитория? Участник, работающий
     # из своей копии, шлёт заявки на слияние оттуда; доска волн живёт в служебных папках домашнего
-    # репозитория и ему не принадлежит, так что потоку в таком клоне объявляться негде.
-    #
-    # «Нет» всякий раз, когда профиль дом не называет (`## Home`): без раздела все клоны равны, ровно
-    # как прежде. С ним — адрес origin сверяем со списком. Нет origin, git не ответил, адрес не
-    # читается — «да», намеренно: зовёт эту проверку один сторож фиксации, а его правило на любую
-    # неожиданность — уйти с дороги.
-    #
-    # ‼️ Признак — удалённый репозиторий с именем `origin`. Клон домашнего репозитория, который
-    # отправляет работу в форк через другое имя, по-прежнему считается домашним.
-    $at = if ($StartDir) { $StartDir } else { $PWD.Path }
+    # репозитория и ему не принадлежит, так что потоку в таком клоне объявляться негде. Причины по
+    # случаям — `Get-CloneStanding`.
+    return [bool](Get-CloneStanding -StartDir $StartDir).Foreign
+}
+
+function Get-StandAsideNotice {
+    param([string]$StartDir)
+    # Одна строка в контекст вкладки на старте, когда сторож фиксации в этом клоне отходит в сторону.
+    # В клоне форка так задумано, и строка это говорит. В домашнем репозитории это ошибка в
+    # `## Home`, которую форма строки поймать не смогла, — `N/A`, `TODO/TBD`, `and/or` читаются как
+    # адреса, с которыми не совпадёт ни один origin, — и без этой строки сторож отходил бы там молча,
+    # неотличимо от «все потоки объявились». Пусто, когда сторож на месте, и при любом сбое: хук
+    # доставки, который её печатает, обязан молчать.
     try {
-        # Профиль, который не читается, — это «не удалось выяснить», то же правило, что выше.
-        $homes = @(Get-ProfileHomeRepos -StartDir $at)
-        if ($homes.Count -eq 0) { return $false }
-        $url = @(& git -C $at remote get-url origin 2>$null)
-        if ($LASTEXITCODE -ne 0 -or $url.Count -eq 0 -or -not $url[0]) { return $true }
-        $origin = ConvertTo-RepoSlug -Address ([string]$url[0])
+        $standing = Get-CloneStanding -StartDir $StartDir
+        if (-not $standing.Foreign -or @($standing.Homes).Count -eq 0) { return '' }
+        $homes = @($standing.Homes) -join ', '
+        $what = if ($standing.Origin) {
+            "origin $($standing.Origin) не входит в домашние репозитории из раздела ``## Home`` профиля ($homes)."
+        } else {
+            "origin не удалось прочитать, и сверить его с домашними репозиториями из раздела ``## Home`` профиля ($homes) нельзя."
+        }
+        return "Сторож фиксации канала в этом клоне отходит в сторону: $what Так задумано для клона чужой копии (форка); если это и есть домашний репозиторий — поправьте раздел, иначе поток здесь фиксирует работу, не объявившись."
     } catch {
-        return $true
+        return ''
     }
-    if (-not $origin) { return $true }
-    return -not ($homes -contains $origin)
 }
 
 function Get-SharedByDesignPattern {
