@@ -18,6 +18,13 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
       - run: pip install pytest
+      - name: The coordination kit is formatted
+        # Projects copy the kit's coordination folder as is and may check it with their own
+        # formatter. Without this step 1.17.0 shipped tests that such a check rewrote, and the
+        # plain update of the kit went red there. The line length comes from ruff.toml.
+        run: |
+          pip install ruff==0.15.13
+          ruff format --check skills/parallel-streams/coordination localization/ru/parallel-streams/coordination
       - name: Unit tests
         run: python -m pytest tests -q
       - name: PowerShell is present (the channel tests skip themselves without it)

@@ -222,7 +222,9 @@ def write_settings(project: Path, data: dict, indent: int = 2) -> None:
 
 def write_profile(project: Path, plans: str = PLANS) -> None:
     """The project profile: a coordination section and a plans section. An empty folder means no path."""
-    where = f"Wave plans: `{plans}`.\n" if plans else "The wave-plan folder has not been picked yet.\n"
+    where = (
+        f"Wave plans: `{plans}`.\n" if plans else "The wave-plan folder has not been picked yet.\n"
+    )
     (project / ".parallel-streams.md").write_text(
         f"# Profile\n\n## Coordination\n\nChannel commands.\n\n## Plans\n\n{where}",
         encoding="utf-8",
@@ -370,7 +372,9 @@ def test_fresh_install_gives_a_working_channel(project: Path) -> None:
     data = settings_of(project)
     for event, stage in (("SessionStart", "-Stage Start"), ("UserPromptSubmit", "-Stage Prompt")):
         wired = [hook["command"] for hook in ours(data, event)]
-        assert len(wired) == 1, f"{event} does not have exactly one delivery entry, but {len(wired)}"
+        assert len(wired) == 1, (
+            f"{event} does not have exactly one delivery entry, but {len(wired)}"
+        )
         assert stage in wired[0], f"on {event} the delivery guard is not run with {stage}"
 
     profile = (project / ".parallel-streams.md").read_text(encoding="utf-8")
@@ -380,7 +384,9 @@ def test_fresh_install_gives_a_working_channel(project: Path) -> None:
     assert "## Plans" in profile
 
     bridge = project / "scripts" / "wave-board.ps1"
-    assert bridge.exists(), "the bridge script was not placed — the launch command in this project would be long"
+    assert bridge.exists(), (
+        "the bridge script was not placed — the launch command in this project would be long"
+    )
     assert pwsh
     done = subprocess.run(
         [pwsh, "-NoProfile", "-File", "scripts/wave-board.ps1", "-Mode", "Show"],
@@ -391,10 +397,14 @@ def test_fresh_install_gives_a_working_channel(project: Path) -> None:
         timeout=120,
     )
     assert done.returncode == 0, f"the bridge script did not run: {done.stderr}"
-    assert "board" in done.stdout.lower(), f"the tool did not answer about the board: {done.stdout!r}"
+    assert "board" in done.stdout.lower(), (
+        f"the tool did not answer about the board: {done.stdout!r}"
+    )
 
     for word in ("connected", "profile", "bridge script"):
-        assert word in out.lower(), f'the report says nothing about "{word}" — the work was done silently'
+        assert word in out.lower(), (
+            f'the report says nothing about "{word}" — the work was done silently'
+        )
 
 
 @needs_pwsh
@@ -418,7 +428,9 @@ def test_second_run_changes_nothing(project: Path) -> None:
     assert len(ours(data, "UserPromptSubmit")) == 1
     assert len(nudge_hooks(data)) == 2, "the nudge guard's entries multiplied"
     assert len(claim_hooks(data)) == 1, "the commit guard's entries multiplied"
-    assert "already connected" in out, "running it again said nothing about everything already being in place"
+    assert "already connected" in out, (
+        "running it again said nothing about everything already being in place"
+    )
 
 
 @needs_pwsh
@@ -459,8 +471,12 @@ def test_moved_skill_repairs_its_own_record(project: Path) -> None:
 
     data = settings_of(project)
     wired = ours(data, "SessionStart")
-    assert len(wired) == 1, f"after the move there are {len(wired)} entries — the old one stayed next to it"
-    assert "old/location" not in wired[0]["command"], "the entry still points at the skill's prior location"
+    assert len(wired) == 1, (
+        f"after the move there are {len(wired)} entries — the old one stayed next to it"
+    )
+    assert "old/location" not in wired[0]["command"], (
+        "the entry still points at the skill's prior location"
+    )
     assert str(COORDINATION_DIR.name) in wired[0]["command"].replace("\\", "/")
     assert any("task.ps1" in hook.get("command", "") for hook in hooks_for(data, "SessionStart")), (
         "the foreign entry disappeared — the installer touched something it does not own"
@@ -557,7 +573,9 @@ def test_a_foreign_path_with_backslashes_is_not_mangled(project: Path) -> None:
     try:
         data = json.loads(raw)
     except json.JSONDecodeError as exc:
-        pytest.fail(f"the settings file stopped parsing — EVERY hook in the project is disconnected: {exc}")
+        pytest.fail(
+            f"the settings file stopped parsing — EVERY hook in the project is disconnected: {exc}"
+        )
     foreign = hooks_for(data, "PostToolUse")[0]
     assert foreign["statusMessage"] == f"path {tricky}", "the foreign value changed"
     assert tricky in foreign["command"], "the foreign path in the command changed"
@@ -578,7 +596,9 @@ def test_the_report_admits_rewriting_the_file_in_one_style(project: Path) -> Non
 
     out = install(project)
 
-    assert "rewritten" in out, "the file was rewritten in one style, and the report said nothing about it"
+    assert "rewritten" in out, (
+        "the file was rewritten in one style, and the report said nothing about it"
+    )
     assert "the other entries and their order left untouched" not in out, (
         "the report promises more than what was actually done"
     )
@@ -606,7 +626,9 @@ def test_a_record_that_is_no_longer_needed_is_taken_away(project: Path) -> None:
     assert nudge_hooks(settings_of(project)) == [], (
         "the nudge guard's prior entry stayed in the settings and points at a dead spot"
     )
-    assert "removed our prior entry" in out, "the entry was removed silently — the report does not match what was done"
+    assert "removed our prior entry" in out, (
+        "the entry was removed silently — the report does not match what was done"
+    )
     assert "the other entries and their order left untouched" in out, (
         "the settings file was already in our style — there is nothing to warn about restyling"
     )
@@ -642,7 +664,9 @@ def test_a_foreign_hook_in_a_folder_with_the_same_name_is_never_touched(project:
         for hook in hooks_for(settings_of(project), "SessionStart")
         if "task-summary" in hook.get("command", "")
     ]
-    assert survived, "uninstalling the channel carried away the foreign hook from a folder with the same name"
+    assert survived, (
+        "uninstalling the channel carried away the foreign hook from a folder with the same name"
+    )
 
 
 @needs_pwsh
@@ -653,8 +677,12 @@ def test_profile_keeps_every_byte_and_gets_only_what_is_missing(project: Path) -
 
     install(project)
     grown = (project / ".parallel-streams.md").read_text(encoding="utf-8")
-    assert grown.startswith(written), "the prior profile text shifted — and it holds a human's own words"
-    assert "## Coordination" in grown and "## Plans" in grown, "the missing sections were not appended"
+    assert grown.startswith(written), (
+        "the prior profile text shifted — and it holds a human's own words"
+    )
+    assert "## Coordination" in grown and "## Plans" in grown, (
+        "the missing sections were not appended"
+    )
     assert grown.count("## Tests") == 1, "the human's own section got duplicated"
 
     # A second pass over the same profile: both sections already present, nothing to append.
@@ -673,8 +701,12 @@ def test_only_the_missing_section_is_added(project: Path) -> None:
     out = install(project)
     grown = (project / ".parallel-streams.md").read_text(encoding="utf-8")
     assert grown.startswith(written), "the existing channel section was rewritten"
-    assert grown.count("## Coordination") == 1, "a second section about the same thing landed beside it"
-    assert grown.count("## Plans") == 1, "the missing section was not appended, or was appended twice"
+    assert grown.count("## Coordination") == 1, (
+        "a second section about the same thing landed beside it"
+    )
+    assert grown.count("## Plans") == 1, (
+        "the missing section was not appended, or was appended twice"
+    )
     assert "added to the profile: `## Plans`" in out, (
         f"the report names something other than what was actually appended: {out!r}"
     )
@@ -701,7 +733,9 @@ def test_a_first_level_heading_ends_the_section(project: Path) -> None:
     assert nudge_hooks(settings_of(project)) == [], (
         "the nudge guard is connected to a folder from an unrelated section of the profile"
     )
-    assert "drafts/" not in out, "a folder from an unrelated section of the profile was named as the plans folder"
+    assert "drafts/" not in out, (
+        "a folder from an unrelated section of the profile was named as the plans folder"
+    )
     assert "not named" in out, "the report does not say the plans folder is not named"
 
 
@@ -777,8 +811,7 @@ def test_the_plans_folder_comes_from_the_profile(project: Path) -> None:
     """
     (project / "waves").mkdir()
     (project / ".parallel-streams.md").write_text(
-        "# Profile\n\n## Coordination\n\nChannel commands.\n\n"
-        "## Plans\n\nWave plans: `waves/`.\n",
+        "# Profile\n\n## Coordination\n\nChannel commands.\n\n## Plans\n\nWave plans: `waves/`.\n",
         encoding="utf-8",
     )
     install(project)
@@ -860,8 +893,12 @@ def test_inside_project_paths_are_written_relative(project_with_skill: Path) -> 
         )
 
     bridge = (project_with_skill / "scripts" / "wave-board.ps1").read_text(encoding="utf-8")
-    assert "$PSScriptRoot" in bridge, "the bridge script inside the project must also count its path from itself"
-    assert str(project_with_skill) not in bridge, "a path specific to this one machine leaked into the bridge script"
+    assert "$PSScriptRoot" in bridge, (
+        "the bridge script inside the project must also count its path from itself"
+    )
+    assert str(project_with_skill) not in bridge, (
+        "a path specific to this one machine leaked into the bridge script"
+    )
 
 
 @needs_pwsh
@@ -873,7 +910,9 @@ def test_the_bridge_of_this_project_is_the_one_the_installer_writes(
     Editing the bridge script by hand would let the launch command drift: in task briefs it is one
     command shared across every project.
     """
-    assert REAL_BRIDGE.exists(), "this repository has the channel installed — its bridge script must be there"
+    assert REAL_BRIDGE.exists(), (
+        "this repository has the channel installed — its bridge script must be there"
+    )
 
     # Byte-for-byte comparison only holds where the skill sits at the consumer path: the bridge
     # script spells out where the skill is, so a repository that keeps the skill elsewhere writes a
@@ -916,7 +955,9 @@ def test_uninstall_gives_the_settings_back(project: Path) -> None:
     )
     data = settings_of(project)
     assert "SessionStart" not in data.get("hooks", {}), "an empty event block was left behind"
-    assert not (project / "scripts" / "wave-board.ps1").exists(), "the bridge script was not removed"
+    assert not (project / "scripts" / "wave-board.ps1").exists(), (
+        "the bridge script was not removed"
+    )
     profile = project / ".parallel-streams.md"
     assert profile.exists() and "## Coordination" in profile.read_text(encoding="utf-8"), (
         "the profile was erased — and it holds a human's own words about their project"
