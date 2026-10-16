@@ -34,7 +34,8 @@ comes earlier, together with the claim mark.
 At session start it also says, in one line, when the commit guard stands aside in this clone — the
 profile names a home repository (`## Home`) and origin is not one of them. In a contributor's fork
 clone that is the design; in the home repository it is a section naming the wrong address, and the
-guard's silence would otherwise be indistinguishable from "every stream announced itself".
+guard's silence would otherwise be indistinguishable from "every stream announced itself". When
+origin itself could not be read, the line points at git instead: the section is not the cause then.
 
 The hook blocks NOTHING, and on any unexpected condition it exits silently with zero: a hook that
 misfires must not get in the way of the work.

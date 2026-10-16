@@ -2586,8 +2586,8 @@ function Get-ProfileHomeRepos {
     # installer never writes an address into it (its scaffold carries only a placeholder).
     #
     # ‼️ Only what reads as an address counts. A line is taken whole, or — when it carries backticks —
-    # only what sits inside them; prose, notes in `<!-- -->` and placeholders in angle brackets are
-    # dropped before that, and fenced code blocks are dropped from the whole profile before the
+    # only what sits inside them; prose and placeholders in angle brackets are dropped before that,
+    # and notes in `<!-- -->` and fenced code blocks are dropped from the whole profile before the
     # heading is even looked for. A placeholder taken for an address would be the worst kind of
     # failure here: the section would count as filled, no clone's origin would ever match it, and
     # the commit guard would stand aside in the home repository too, in silence. What the shape of a
@@ -2600,15 +2600,16 @@ function Get-ProfileHomeRepos {
     if (-not $text) { return @() }
     # A code block is an example, never the section itself: the docs show `## Home` in exactly such a
     # block, and pasted into the profile with its fence it would otherwise switch the guard on with
-    # the example's address. A fence left open runs to the end of the profile, the way Markdown reads
-    # it.
+    # the example's address. A note in `<!-- -->` is no section either: a `## Home` left inside one —
+    # an old version kept for reference, or the whole section switched off — would otherwise be found
+    # first and take the real section's place. Both are cut in ONE pass, so whichever opens first
+    # swallows the other's marks, the way Markdown reads them; one left open runs to the end of the
+    # profile.
     $text = [regex]::Replace($text,
-        '(?ms)^[ ]{0,3}(?<fence>`{3,}(?=[^`\n]*$)|~{3,})[^\n]*(?:\n|\z).*?(?:^[ ]{0,3}\k<fence>[`~]*[ \t]*\r?$|\z)', '')
+        '(?ms)^[ ]{0,3}(?<fence>`{3,}(?=[^`\n]*$)|~{3,})[^\n]*(?:\n|\z).*?(?:^[ ]{0,3}\k<fence>[`~]*[ \t]*\r?$|\z)|<!--.*?(?:-->|\z)', '')
     $section = [regex]::Match($text, '(?msi)^##[ \t]+Home[ \t]*\r?$(.*?)(?=^#{1,2}[ \t]|\z)')
     if (-not $section.Success) { return @() }
-    # A note left open (`<!--` with no `-->`) runs to the end of the section: an example inside it is
-    # still an example.
-    $body = [regex]::Replace($section.Groups[1].Value, '(?s)<!--.*?(?:-->|\z)|<[^<>]*>', '')
+    $body = [regex]::Replace($section.Groups[1].Value, '<[^<>]*>', '')
     $found = [System.Collections.Generic.List[string]]::new()
     foreach ($line in ($body -split "`r?`n")) {
         $line = $line.Trim() -replace '^(?:[-*+]|[0-9]+[.)])[ \t]+', ''
@@ -2621,7 +2622,20 @@ function Get-ProfileHomeRepos {
             # address on the list can only make the guard refuse, never fall silent.
             foreach ($form in @($candidate, (Remove-AddressMarkup -Text $candidate))) {
                 $slug = ConvertTo-RepoSlug -Address $form
-                if ($slug -and -not $found.Contains($slug)) { $found.Add($slug) }
+                if (-not $slug) { continue }
+                # A line with the host in front (`github.com/owner/name`) counts by its path alone as
+                # well: origin reached through an ssh host alias, `ssh.github.com:443` or `www.` names
+                # another host, and the exact host would make home read as somewhere else. A host is
+                # told by a dot in the first part, and only on a line written without a scheme — a
+                # full address has had its host dropped already. Same rule as above: the extra
+                # address can only make the guard refuse.
+                $bare = ''
+                if ($slug -match '^[^/]*\.[^/]*/' -and (Split-RepoAddress -Address $form).Kind -eq 'local') {
+                    $bare = ConvertTo-RepoSlug -Address ($slug -replace '^[^/]*/', '')
+                }
+                foreach ($one in @($slug, $bare)) {
+                    if ($one -and -not $found.Contains($one)) { $found.Add($one) }
+                }
             }
         }
     }
@@ -2668,7 +2682,8 @@ function Get-CloneStanding {
         $resolvedCode = $LASTEXITCODE
         # Exit codes measured on git 2.53: `config --get-all` answers 1 for a key that is not there,
         # `remote get-url` answers 2 for "No such remote". Outside a repository the second one is 128 —
-        # that is not an answer, and it is left to `unknown`.
+        # that is not an answer, and it is left to `unknown`. Before git 2.30 `remote get-url` answered
+        # a missing remote with that same 128, so there "no origin" is left to `unknown` as well.
         if ($writtenCode -eq 1 -and $resolvedCode -eq 2) {
             return [pscustomobject]@{ Foreign = $false; Why = 'no-origin'; Homes = $homes; Origin = '' }
         }
@@ -2717,16 +2732,20 @@ function Get-StandAsideNotice {
     # read as addresses no origin will ever match — and without this line the guard would stand
     # aside there in silence, indistinguishable from "every stream announced itself". Empty when
     # the guard stands guard, and on any failure: the delivery hook that prints it must stay mute.
+    #
+    # When origin could not be read, the line points at git, not at the section: git did not answer,
+    # or the address does not read — and an older git answers "no origin" that way too (see
+    # `Get-CloneStanding`). The section may well be right then, and "fix the section" would send a
+    # person to correct a correct one.
     try {
         $standing = Get-CloneStanding -StartDir $StartDir
         if (-not $standing.Foreign -or @($standing.Homes).Count -eq 0) { return '' }
         $homes = @($standing.Homes) -join ', '
-        $what = if ($standing.Origin) {
-            "origin $($standing.Origin) is not among the home repositories the profile's ``## Home`` names ($homes)."
-        } else {
-            "its origin could not be read, so it cannot be matched with the home repositories the profile's ``## Home`` names ($homes)."
+        $start = "The channel's commit guard stands aside in this clone:"
+        if ($standing.Origin) {
+            return "$start origin $($standing.Origin) is not among the home repositories the profile's ``## Home`` names ($homes). That is meant for a clone of a contributor's own copy (a fork); if this is the home repository itself, fix the section — until then a stream here commits without announcing itself."
         }
-        return "The channel's commit guard stands aside in this clone: $what That is meant for a clone of a contributor's own copy (a fork); if this is the home repository itself, fix the section — until then a stream here commits without announcing itself."
+        return "$start its origin could not be read, so it cannot be matched with the home repositories the profile's ``## Home`` names ($homes). The section is not the cause, and fixing it will not help: check what ``git remote get-url origin`` answers here. Until the guard can read origin, a stream here commits without announcing itself."
     } catch {
         return ''
     }

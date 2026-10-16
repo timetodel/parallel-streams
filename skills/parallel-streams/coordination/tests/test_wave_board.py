@@ -8370,6 +8370,69 @@ def test_a_home_address_with_an_encoded_character_still_counts(tmp_path: Path) -
 
 @needs_pwsh
 @ISOLATED_GIT
+@pytest.mark.parametrize(
+    "origin",
+    [
+        "git@github-work:keeper/project.git",
+        "ssh://git@ssh.github.com:443/keeper/project.git",
+        "https://www.github.com/keeper/project",
+    ],
+    ids=["ssh-host-alias", "ssh-over-443", "www"],
+)
+def test_a_home_address_with_the_host_in_front_still_meets_home_by_another_host(
+    tmp_path: Path, origin: str
+) -> None:
+    """`github.com/keeper/project` in `## Home` is home however the host is spelt in origin.
+
+    Someone with two GitHub accounts reaches home through an ssh host alias; behind a firewall it is
+    `ssh.github.com:443`; a browser hands out `www.`. Compared by the exact host, each of those read
+    as somewhere else, and the guard stood aside in the home repository. The fork beside it is let
+    through, so the refusal at home comes from the section, not from a line nobody read.
+    """
+    board = tmp_path / "board.jsonl"
+    profile = home_profile("- github.com/keeper/project")
+    home = clone_with_origin(tmp_path, "home-clone", origin, profile)
+    fork = clone_with_origin(tmp_path, "fork-clone", origin.replace("keeper/", "someone/"), profile)
+
+    said = refusal(board, home, 'git commit -m "the work"')
+
+    assert said, f"home reached as {origin} committed without announcing — the host in front was compared exactly"
+    assert "-Mode Claim" in said, f"the refusal is not the usual one: {said!r}"
+    assert refusal(board, fork, 'git commit -m "the work"') == "", (
+        f"a clone of a fork reached as {origin.replace('keeper/', 'someone/')} was refused — the line did not count"
+    )
+
+
+@needs_pwsh
+@ISOLATED_GIT
+def test_a_home_section_commented_out_above_the_real_one_does_not_take_its_place(tmp_path: Path) -> None:
+    """An old `## Home` kept inside `<!-- -->` above the real one is no section — the real one counts.
+
+    The first heading found wins. Read inside the note, the old address took the real section's
+    place: home's origin matched nothing on that list, and the guard stood aside in the home
+    repository. The fork beside it is let through, so the real section is the one that was read.
+    """
+    board = tmp_path / "board.jsonl"
+    profile = (
+        "# Profile\n\n"
+        "<!--\n## Home\n\n- keeper/old-name\n-->\n\n"
+        "## Home\n\n- keeper/project\n\n"
+        "## Tests\n\n`pytest`\n"
+    )
+    home = clone_with_origin(tmp_path, "home-clone", HOME_ORIGIN, profile)
+    fork = clone_with_origin(tmp_path, "fork-clone", FORK_ORIGIN, profile)
+
+    said = refusal(board, home, 'git commit -m "the work"')
+
+    assert said, "the home clone committed without announcing — the commented-out section was read instead"
+    assert "-Mode Claim" in said, f"the refusal is not the usual one: {said!r}"
+    assert refusal(board, fork, 'git commit -m "the work"') == "", (
+        "a clone of a fork was refused — the real section below the note was not read"
+    )
+
+
+@needs_pwsh
+@ISOLATED_GIT
 def test_a_clone_with_no_origin_counts_as_home(tmp_path: Path) -> None:
     """No origin at all is a clear answer from git, not a failure to find out — and it means home.
 
@@ -8562,6 +8625,7 @@ def scaffold_profile() -> str:
         "# Profile\n\n## Plans\n\nThe section looks like this:\n\n```markdown\n## Home\n\n- `ex/ample`\n```\n",
         "# Profile\n\n## Plans\n\n~~~\n## Home\n\nex/ample\n~~~\n",
         "# Profile\n\n## Home\n\n- someone/project#main\n- someone/project@v1\n",
+        "# Profile\n\n<!--\n## Home\n\n- keeper/project\n-->\n\n## Tests\n\n`pytest`\n",
         "scaffold",
     ],
     ids=[
@@ -8572,6 +8636,7 @@ def scaffold_profile() -> str:
         "fenced-example",
         "tilde-fenced-example",
         "branch-and-tag-only",
+        "section-commented-out",
         "installer-scaffold",
     ],
 )
@@ -8582,8 +8647,9 @@ def test_without_a_home_address_every_clone_is_guarded_as_before(tmp_path: Path,
     of prose taken for an address would be the worst kind of failure: the section would count as
     filled, no origin would ever match it, and the guard would go silent in the home repository too.
     So would an example: the docs show `## Home` in a code block, and pasted with its fence it is
-    still an example; a note left open runs to the end of the section. The installer's own scaffold
-    is checked as it ships: it is the profile most projects start from.
+    still an example; a note left open runs to the end of the profile. A section switched off by
+    wrapping it whole in `<!-- -->` is switched off. The installer's own scaffold is checked as it
+    ships: it is the profile most projects start from.
     """
     board = tmp_path / "board.jsonl"
     text = scaffold_profile() if profile == "scaffold" else profile
@@ -8647,6 +8713,27 @@ def test_a_home_section_that_names_no_real_address_is_heard_about_at_home(
 
     assert STANDS_ASIDE in told, f"`## Home` holding {entry!r} lifts the guard at home in silence: {told!r}"
     assert "github.com/keeper/project" in told, f"the line does not name the origin: {told!r}"
+
+
+@needs_pwsh
+@ISOLATED_GIT
+def test_session_start_points_at_git_when_the_guard_stands_aside_without_reading_origin(
+    tmp_path: Path,
+) -> None:
+    """origin could not be read — the line sends the person to git, not to a section that is right.
+
+    The section names home correctly here; it is origin that does not read. "Fix the section" would
+    send someone to correct a correct one, and on a git older than 2.30 a home with no origin reads
+    this way too. The line says to check what git answers, and that the section is not the cause.
+    """
+    board = tmp_path / "board.jsonl"
+    home = clone_with_origin(tmp_path, "home-clone", "https://example.com/")
+
+    told = context_text(run_deliver(board, home, "Start", "s-aside-unread"))
+
+    assert STANDS_ASIDE in told, f"the guard stands aside without reading origin, in silence: {told!r}"
+    assert "git remote get-url origin" in told, f"the line does not point at git: {told!r}"
+    assert "fix the section" not in told, f"the line sends the person to fix a correct section: {told!r}"
 
 
 # ─── Tab name: which tab runs a stream ───────────────────────────────────────────────────────────

@@ -30,8 +30,10 @@ refusal.
 A clone of a contributor's own copy (a fork) is not refused at all, once the project's profile names
 its home repository in `## Home`: the guard steps aside wherever `origin` points somewhere else. The
 board belongs to the home repository, and a contributor sending pull requests from a fork has no
-stream on it to announce. Standing aside is never silent: the delivery hook says so in one line at
+stream on it to announce. Standing aside is said out loud: the delivery hook says so in one line at
 session start, so a section that names the wrong address is noticed in the home repository itself.
+The one silent case is a profile that cannot be read at all — the guard stands aside, as for
+anything it cannot find out, and there is no section to name.
 
 On ANY unexpected condition the guard stays out of the way and exits with zero: a broken registry, an
 unreadable claim, git not answering. A kit that installs itself into someone else's project may not

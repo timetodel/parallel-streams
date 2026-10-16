@@ -17,29 +17,34 @@ This project follows [Semantic Versioning](https://semver.org/).
   stays silent in every clone whose `origin` points somewhere else. A clone of the home repository
   is refused exactly as before.
 
-- **Standing aside is said out loud.** Whenever the guard stands aside, the delivery hook says so in
-  one line at session start — which origin, and which home addresses the section names. In a fork
-  clone that is the design; in the home repository it means the section is wrong, and the first
-  session there notices.
+- **Standing aside is said out loud.** When the guard stands aside, the delivery hook says so in one
+  line at session start — which origin, and which home addresses the section names. In a fork clone
+  that is the design; in the home repository it means the section is wrong, and the first session
+  there notices. When origin itself could not be read, the line points at git, not at the section.
+  The one silent case is a profile that cannot be read at all: the guard stands aside, as for
+  anything it cannot find out.
 
 ### Notes
 
 - **Only what reads as an address counts.** One address per line: `owner/name`, a group path, the
   host in front (`github.com/owner/name`) or a full address. Every part of the path is made of
-  letters, digits, `.`, `_`, `~` and `-`; quotes, bold, brackets, a trailing comma or period and a
-  numbered marker (`1.`, `1)`) around it come off first, and anything else on the line — `#main`,
-  `@v1`, prose without backticks — leaves the line out. Prose, `<!-- notes -->` (an unclosed one
-  runs to the end of the section), placeholders in angle brackets and fenced code blocks anywhere
-  in the profile are ignored: a placeholder or an example taken for an address would silently
-  switch the guard off in the home repository too.
+  letters, digits, `.`, `_`, `~`, `-` and percent-encoded characters (`%20`); quotes, bold,
+  brackets, a trailing comma or period and a numbered marker (`1.`, `1)`) around it come off first,
+  and anything else on the line — `#main`, `@v1`, prose without backticks — leaves the line out.
+  Prose and placeholders in angle brackets are ignored; `<!-- notes -->` and fenced code blocks are
+  cut out of the whole profile before the heading is looked for (an unclosed one runs to the end of
+  the profile), so a `## Home` kept inside one is not the section, and a section wrapped whole in
+  `<!-- -->` is switched off. A placeholder or an example taken for an address would silently switch
+  the guard off in the home repository too.
 
 - **How addresses are compared.** Without the scheme, the user, the port, `.git`, the trailing slash
   and letter case, so `https://github.com/Owner/Name.git`, `git@github.com:owner/name` and
   `ssh://git@github.com:22/owner/name` all mean `owner/name`; a line with the host in front is
-  compared with origin's host and path. `origin` is read both as written and as git resolves it
-  (`url.<base>.insteadOf`), and either one matching means home. https and ssh meet on GitHub and
-  GitLab; on Azure DevOps, Bitbucket Server and GitLab under a relative root they give different
-  paths — list every form there.
+  compared with origin's host and path, and by its path alone as well, so an ssh host alias,
+  `ssh.github.com:443` and `www.` still meet home. `origin` is read both as written and as git
+  resolves it (`url.<base>.insteadOf`), and either one matching means home. https and ssh meet on
+  GitHub and GitLab; on Azure DevOps, Bitbucket Server and GitLab under a relative root they give
+  different paths — list every form there.
 
 - **What counts as home.** No `origin` at all counts as home — a clear answer from git, and a fork
   clone always has one; so does an `origin` that is a folder on disk or a `file://` address. Git
@@ -54,7 +59,9 @@ This project follows [Semantic Versioning](https://semver.org/).
   home repository that pushes to a fork through another remote, or through `pushurl`, still counts
   as home; the valve is for that. A line that reads as an address but names nothing real — `N/A`,
   `TODO/TBD`, a typo — makes the guard stand aside in the home repository as well; the session-start
-  line is what gives it away.
+  line is what gives it away. Git's exit codes were measured on git 2.53: before git 2.30 a missing
+  remote answered 128, as any failure does, so there a home clone with no origin reads as "could not
+  find out" — the guard stands aside, and the session-start line says origin could not be read.
 
 - **Otherwise the delivery hook and the plan-edit nudge are unchanged.** Neither refuses anything,
   and in a fork clone, where nobody announces, delivery has nothing to bring. A contributor who

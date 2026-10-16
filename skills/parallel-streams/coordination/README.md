@@ -201,14 +201,19 @@ points somewhere else:
 - **What reads as an address.** `owner/name` (a group path like `group/sub/name` too), the host in
   front (`github.com/owner/name`), or a full address (`https://github.com/owner/name.git`,
   `git@github.com:owner/name`, `ssh://…`). Every part of the path is made of letters, digits, `.`,
-  `_`, `~` and `-`: anything else — `#main`, `@v1`, a space — and the line is not an address at all.
-  Prose, `<!-- notes -->` (one left open runs to the end of the section) and placeholders in angle
-  brackets are ignored, and so is any fenced code block anywhere in the profile: a `## Home` shown
-  inside one is an example, not the section.
+  `_`, `~`, `-` and percent-encoded characters (`%20` — Azure DevOps writes a space in a project
+  name that way): anything else — `#main`, `@v1`, a bare space — and the line is not an address at
+  all. Prose and placeholders in angle brackets are ignored. `<!-- notes -->` and fenced code blocks
+  are cut out of the whole profile before the heading is even looked for (one left open runs to the
+  end of the profile): a `## Home` inside either is an example or an old version, not the section,
+  and a section wrapped whole in `<!-- -->` is switched off.
 - **How addresses are compared.** Both sides without the scheme, the user, the port, `.git`, the
-  trailing slash and letter case; a line with the host in front is compared with origin's host and
-  path. `origin` is read twice — as written in the clone's settings and as git resolves it, with
-  `url.<base>.insteadOf` applied — and either one matching makes the clone home.
+  trailing slash and letter case. A line with the host in front is compared with origin's host and
+  path, and by its path alone as well: origin reached through an ssh host alias, `ssh.github.com:443`
+  or `www.` names another host and is still home. The error falls toward a refusal — the same path
+  on another host counts as home too. `origin` is read twice — as written in the clone's settings
+  and as git resolves it, with `url.<base>.insteadOf` applied — and either one matching makes the
+  clone home.
 - **https and ssh meet on GitHub and GitLab.** There both forms of one repository give the same path.
   On other hosts they do not — Azure DevOps (`org/proj/_git/repo` against `v3/org/proj/repo`),
   Bitbucket Server and Data Center (`scm/proj/repo` against `proj/repo`), GitLab served under a
@@ -223,10 +228,14 @@ points somewhere else:
   answering, or an origin that does not read** (no repository path in it), counts as "not home" —
   the guard's rule for anything it cannot find out. No section, or nothing in it that reads as an
   address — everything as before.
-- **Standing aside is said out loud.** Whenever the guard stands aside in a clone, the delivery hook
+- **Standing aside is said out loud.** When the guard stands aside in a clone, the delivery hook
   says so in one line at session start — never on an ordinary turn: which origin, and which home
   addresses the section names. In a fork clone that is the design. In the home repository it means
-  the section is wrong, and that is how it gets noticed.
+  the section is wrong, and that is how it gets noticed. When origin itself could not be read, the
+  line says so and points at git (`git remote get-url origin`), not at the section, which may well
+  be right. One case stays silent: a profile that cannot be read at all (a locked file, no
+  permission) — the guard stands aside, its rule for anything it cannot find out, and there is no
+  section to name in a line.
 - **Otherwise the delivery hook and the plan-edit nudge are left as they are** in a fork clone:
   neither ever refuses anything. Where nobody announces, delivery has nothing to bring; the nudge
   speaks once per session, and only when a wave plan is edited. A contributor who wants the channel
@@ -248,6 +257,11 @@ Limits:
   the section — whether it copies home or a fork.
 - **The section is read from the clone's own checkout.** A fork that hasn't caught up with the commit
   adding `## Home` keeps the old behaviour until it does.
+- **Git's exit codes were measured on git 2.53.** "No origin" is git answering 2 to
+  `git remote get-url origin`. Git before 2.30 answered a missing remote with 128, as for any
+  failure, so there a home clone with no origin reads as "could not find out": the guard stands
+  aside, and the session-start line says that origin could not be read. Add an `origin` that points
+  home, or update git.
 
 ## One claim per folder, one leading record per address
 

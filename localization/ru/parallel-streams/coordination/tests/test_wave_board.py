@@ -8147,6 +8147,70 @@ def test_a_home_address_with_an_encoded_character_still_counts(tmp_path: Path) -
 
 @needs_pwsh
 @ISOLATED_GIT
+@pytest.mark.parametrize(
+    "origin",
+    [
+        "git@github-work:keeper/project.git",
+        "ssh://git@ssh.github.com:443/keeper/project.git",
+        "https://www.github.com/keeper/project",
+    ],
+    ids=["ssh-host-alias", "ssh-over-443", "www"],
+)
+def test_a_home_address_with_the_host_in_front_still_meets_home_by_another_host(
+    tmp_path: Path, origin: str
+) -> None:
+    """`github.com/keeper/project` в `## Home` — это дом, как бы origin ни называл сервер.
+
+    У кого две учётные записи GitHub, тот ходит домой через псевдоним хоста из настроек ssh; за
+    сетевым экраном это `ssh.github.com:443`; браузер отдаёт адрес с `www.`. При точном сравнении
+    сервера каждый из них читался как другое место, и сторож отходил в сторону в домашнем репозитории.
+    Форк рядом пропускают — значит, отказ дома пришёл от раздела, а не от строки, которую никто не
+    прочитал.
+    """
+    board = tmp_path / "board.jsonl"
+    profile = home_profile("- github.com/keeper/project")
+    home = clone_with_origin(tmp_path, "home-clone", origin, profile)
+    fork = clone_with_origin(tmp_path, "fork-clone", origin.replace("keeper/", "someone/"), profile)
+
+    said = refusal(board, home, 'git commit -m "работа"')
+
+    assert said, f"дом, достигнутый как {origin}, зафиксировал работу без объявления — сервер впереди сравнили точно"
+    assert "-Mode Claim" in said, f"отказ не тот, что обычно: {said!r}"
+    assert refusal(board, fork, 'git commit -m "работа"') == "", (
+        f"клону форка, достигнутого как {origin.replace('keeper/', 'someone/')}, отказали — строка не пошла в зачёт"
+    )
+
+
+@needs_pwsh
+@ISOLATED_GIT
+def test_a_home_section_commented_out_above_the_real_one_does_not_take_its_place(tmp_path: Path) -> None:
+    """Прежний `## Home`, оставленный в `<!-- -->` над настоящим, — не раздел: в зачёт идёт настоящий.
+
+    Побеждает первый найденный заголовок. Прочитанный внутри заметки, прежний адрес занимал место
+    настоящего раздела: origin дома не совпадал ни с чем из этого списка, и сторож отходил в сторону в
+    домашнем репозитории. Форк рядом пропускают — значит, прочитан именно настоящий раздел.
+    """
+    board = tmp_path / "board.jsonl"
+    profile = (
+        "# Профиль\n\n"
+        "<!--\n## Home\n\n- keeper/old-name\n-->\n\n"
+        "## Home\n\n- keeper/project\n\n"
+        "## Tests\n\n`pytest`\n"
+    )
+    home = clone_with_origin(tmp_path, "home-clone", HOME_ORIGIN, profile)
+    fork = clone_with_origin(tmp_path, "fork-clone", FORK_ORIGIN, profile)
+
+    said = refusal(board, home, 'git commit -m "работа"')
+
+    assert said, "клон дома зафиксировал работу без объявления — вместо настоящего раздела прочитан закомментированный"
+    assert "-Mode Claim" in said, f"отказ не тот, что обычно: {said!r}"
+    assert refusal(board, fork, 'git commit -m "работа"') == "", (
+        "клону форка отказали — настоящий раздел под заметкой не прочитан"
+    )
+
+
+@needs_pwsh
+@ISOLATED_GIT
 def test_a_clone_with_no_origin_counts_as_home(tmp_path: Path) -> None:
     """Origin нет вовсе — это однозначный ответ git, а не «не удалось выяснить», и значит он «дом».
 
@@ -8339,6 +8403,7 @@ def scaffold_profile() -> str:
         "# Профиль\n\n## Plans\n\nРаздел выглядит так:\n\n```markdown\n## Home\n\n- `ex/ample`\n```\n",
         "# Профиль\n\n## Plans\n\n~~~\n## Home\n\nex/ample\n~~~\n",
         "# Профиль\n\n## Home\n\n- someone/project#main\n- someone/project@v1\n",
+        "# Профиль\n\n<!--\n## Home\n\n- keeper/project\n-->\n\n## Tests\n\n`pytest`\n",
         "scaffold",
     ],
     ids=[
@@ -8349,6 +8414,7 @@ def scaffold_profile() -> str:
         "fenced-example",
         "tilde-fenced-example",
         "branch-and-tag-only",
+        "section-commented-out",
         "installer-scaffold",
     ],
 )
@@ -8359,8 +8425,9 @@ def test_without_a_home_address_every_clone_is_guarded_as_before(tmp_path: Path,
     принятая за адрес, — худший из сбоев: раздел считался бы заполненным, origin не совпал бы с ним
     никогда, и сторож замолчал бы и в домашнем репозитории. Так же и пример: документация показывает
     `## Home` блоком кода, и вставленный вместе с ограждением он остаётся примером; незакрытая заметка
-    идёт до конца раздела. Заготовку самого установщика проверяем такой, какой она уходит к людям: с
-    неё начинается профиль в большинстве проектов.
+    идёт до конца профиля. Раздел, целиком обёрнутый в `<!-- -->`, выключен. Заготовку самого
+    установщика проверяем такой, какой она уходит к людям: с неё начинается профиль в большинстве
+    проектов.
     """
     board = tmp_path / "board.jsonl"
     text = scaffold_profile() if profile == "scaffold" else profile
@@ -8424,6 +8491,27 @@ def test_a_home_section_that_names_no_real_address_is_heard_about_at_home(
 
     assert STANDS_ASIDE in told, f"`## Home` с {entry!r} молча снимает сторожа дома: {told!r}"
     assert "github.com/keeper/project" in told, f"строка не называет origin: {told!r}"
+
+
+@needs_pwsh
+@ISOLATED_GIT
+def test_session_start_points_at_git_when_the_guard_stands_aside_without_reading_origin(
+    tmp_path: Path,
+) -> None:
+    """Origin не прочитан — строка отправляет к git, а не к разделу, который верен.
+
+    Раздел здесь называет дом правильно; не читается сам origin. «Поправьте раздел» отправило бы
+    человека исправлять правильный, а на git старше 2.30 так же читается и дом без origin. Строка
+    советует проверить, что отвечает git, и говорит, что раздел ни при чём.
+    """
+    board = tmp_path / "board.jsonl"
+    home = clone_with_origin(tmp_path, "home-clone", "https://example.com/")
+
+    told = context_text(run_deliver(board, home, "Start", "s-aside-unread"))
+
+    assert STANDS_ASIDE in told, f"сторож отходит в сторону, не прочитав origin, молча: {told!r}"
+    assert "git remote get-url origin" in told, f"строка не показывает на git: {told!r}"
+    assert "поправьте раздел" not in told, f"строка отправляет поправлять верный раздел: {told!r}"
 
 
 # ─── Название вкладки: какая вкладка ведёт поток ─────────────────────────────────────────────────
