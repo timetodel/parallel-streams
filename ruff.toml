@@ -1,0 +1,5 @@
+# A project ships the coordination kit by copying its folder over its own copy, and may check that
+# copy with its own formatter. 100 is the line length such a project checks it at today; a line its
+# check would rewrite turns a plain update of the kit red there. The CI step that keeps the kit
+# within it is "The coordination kit is formatted" in .github/workflows/tests.yml.
+line-length = 100

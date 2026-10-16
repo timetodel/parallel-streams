@@ -8051,7 +8051,9 @@ def machine_git_settings_ignored(tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ISOLATED_GIT = pytest.mark.usefixtures("machine_git_settings_ignored")
 
 
-def clone_with_origin(root: Path, name: str, origin: str | None, profile: str = HOME_PROFILE) -> Path:
+def clone_with_origin(
+    root: Path, name: str, origin: str | None, profile: str = HOME_PROFILE
+) -> Path:
     """Подставной клон: репозиторий с профилем проекта и заданным origin (или без него)."""
     project = stub_project(root, name, profile)
     if origin is not None:
@@ -8132,7 +8134,12 @@ def test_a_home_address_with_an_encoded_character_still_counts(tmp_path: Path) -
     address = "https://dev.azure.com/keeper/my%20project/_git/repo"
     profile = f"# Profile\n\n## Home\n\n- {address}\n"
     home = clone_with_origin(tmp_path, "home-clone", address, profile=profile)
-    fork = clone_with_origin(tmp_path, "fork-clone", "https://dev.azure.com/someone/my%20project/_git/repo", profile=profile)
+    fork = clone_with_origin(
+        tmp_path,
+        "fork-clone",
+        "https://dev.azure.com/someone/my%20project/_git/repo",
+        profile=profile,
+    )
 
     said = refusal(board, home, 'git commit -m "работа"')
 
@@ -8174,7 +8181,9 @@ def test_a_home_address_with_the_host_in_front_still_meets_home_by_another_host(
 
     said = refusal(board, home, 'git commit -m "работа"')
 
-    assert said, f"дом, достигнутый как {origin}, зафиксировал работу без объявления — сервер впереди сравнили точно"
+    assert said, (
+        f"дом, достигнутый как {origin}, зафиксировал работу без объявления — сервер впереди сравнили точно"
+    )
     assert "-Mode Claim" in said, f"отказ не тот, что обычно: {said!r}"
     assert refusal(board, fork, 'git commit -m "работа"') == "", (
         f"клону форка, достигнутого как {origin.replace('keeper/', 'someone/')}, отказали — строка не пошла в зачёт"
@@ -8183,7 +8192,9 @@ def test_a_home_address_with_the_host_in_front_still_meets_home_by_another_host(
 
 @needs_pwsh
 @ISOLATED_GIT
-def test_a_home_section_commented_out_above_the_real_one_does_not_take_its_place(tmp_path: Path) -> None:
+def test_a_home_section_commented_out_above_the_real_one_does_not_take_its_place(
+    tmp_path: Path,
+) -> None:
     """Прежний `## Home`, оставленный в `<!-- -->` над настоящим, — не раздел: в зачёт идёт настоящий.
 
     Побеждает первый найденный заголовок. Прочитанный внутри заметки, прежний адрес занимал место
@@ -8202,7 +8213,9 @@ def test_a_home_section_commented_out_above_the_real_one_does_not_take_its_place
 
     said = refusal(board, home, 'git commit -m "работа"')
 
-    assert said, "клон дома зафиксировал работу без объявления — вместо настоящего раздела прочитан закомментированный"
+    assert said, (
+        "клон дома зафиксировал работу без объявления — вместо настоящего раздела прочитан закомментированный"
+    )
     assert "-Mode Claim" in said, f"отказ не тот, что обычно: {said!r}"
     assert refusal(board, fork, 'git commit -m "работа"') == "", (
         "клону форка отказали — настоящий раздел под заметкой не прочитан"
@@ -8333,7 +8346,9 @@ HOME_AS_WRITTEN = {
 @needs_pwsh
 @ISOLATED_GIT
 @pytest.mark.parametrize("entry", list(HOME_AS_WRITTEN.values()), ids=list(HOME_AS_WRITTEN))
-def test_the_home_clone_is_refused_however_the_address_is_written(tmp_path: Path, entry: str) -> None:
+def test_the_home_clone_is_refused_however_the_address_is_written(
+    tmp_path: Path, entry: str
+) -> None:
     """Что бы ни стояло вокруг домашнего адреса, в домашнем репозитории сторож на месте.
 
     Либо разметка снимается и адрес совпадает с домом, либо строка не читается как адрес вовсе и
@@ -8346,7 +8361,9 @@ def test_the_home_clone_is_refused_however_the_address_is_written(tmp_path: Path
 
     said = refusal(board, home, 'git commit -m "работа"')
 
-    assert said, f"клон дома зафиксировал работу без объявления, когда `## Home` записан как {entry!r}"
+    assert said, (
+        f"клон дома зафиксировал работу без объявления, когда `## Home` записан как {entry!r}"
+    )
     assert "-Mode Claim" in said, f"отказ не тот, что обычно: {said!r}"
 
 
@@ -8418,7 +8435,9 @@ def scaffold_profile() -> str:
         "installer-scaffold",
     ],
 )
-def test_without_a_home_address_every_clone_is_guarded_as_before(tmp_path: Path, profile: str) -> None:
+def test_without_a_home_address_every_clone_is_guarded_as_before(
+    tmp_path: Path, profile: str
+) -> None:
     """Домашний адрес в профиле не назван — клону форка отказывают ровно как прежде.
 
     Новый раздел снимает отказ только там, где он заполнен. Заготовка, заметка или строка прозы,
@@ -8459,7 +8478,9 @@ def test_session_start_says_where_the_guard_stands_aside(tmp_path: Path) -> None
     clone = clone_with_origin(tmp_path, "clone", HOME_ORIGIN)
 
     at_home = context_text(run_deliver(board, clone, "Start", "s-aside-home"))
-    assert STANDS_ASIDE not in at_home, f"вкладке дома сказали, что сторож отходит в сторону: {at_home!r}"
+    assert STANDS_ASIDE not in at_home, (
+        f"вкладке дома сказали, что сторож отходит в сторону: {at_home!r}"
+    )
 
     git(clone, "remote", "set-url", "origin", FORK_ORIGIN)
     told = context_text(run_deliver(board, clone, "Start", "s-aside-fork"))
@@ -8468,12 +8489,16 @@ def test_session_start_says_where_the_guard_stands_aside(tmp_path: Path) -> None
     assert "keeper/project" in told, f"строка не называет дом, который держит раздел: {told!r}"
 
     turn = context_text(run_deliver(board, clone, "Prompt", "s-aside-fork"))
-    assert STANDS_ASIDE not in turn, f"строка вернулась на обычном ходе — она для старта сессии: {turn!r}"
+    assert STANDS_ASIDE not in turn, (
+        f"строка вернулась на обычном ходе — она для старта сессии: {turn!r}"
+    )
 
 
 @needs_pwsh
 @ISOLATED_GIT
-@pytest.mark.parametrize("entry", ["N/A", "TODO/TBD", "- and/or"], ids=["n-a", "todo-tbd", "and-or"])
+@pytest.mark.parametrize(
+    "entry", ["N/A", "TODO/TBD", "- and/or"], ids=["n-a", "todo-tbd", "and-or"]
+)
 def test_a_home_section_that_names_no_real_address_is_heard_about_at_home(
     tmp_path: Path, entry: str
 ) -> None:

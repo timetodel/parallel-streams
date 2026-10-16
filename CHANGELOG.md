@@ -3,6 +3,18 @@
 All notable changes to this project are documented here.
 This project follows [Semantic Versioning](https://semver.org/).
 
+## [1.17.1] — 2026-10-16
+
+### Fixed
+
+- **The kit's tests are formatted again, and CI now keeps them so.** A project ships the kit by
+  copying its folder over its own copy, and may check that copy with its own formatter. The tests
+  added in 1.17.0 had lines such a check rewrote (at a line length of 100), so a plain update to
+  1.17.0 went red there with nothing wrong in the kit itself. The coordination tests of both trees
+  are now formatted, `ruff.toml` names the line length, and a CI step checks the coordination
+  folders of both trees on every pull request. Only the layout of test code changed: no behaviour,
+  no hook and no test assertion did.
+
 ## [1.17.0] — 2026-10-15
 
 ### Added

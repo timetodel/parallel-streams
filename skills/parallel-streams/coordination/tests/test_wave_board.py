@@ -170,7 +170,7 @@ def test_delivery_guard_is_wired_to_both_events() -> None:
         wired = [cmd for cmd in commands if "wave-board-deliver.ps1" in cmd]
         assert wired, (
             f"the delivery guard isn't wired on {event} — a neighbour's finding won't reach the tab, "
-            "and it will look exactly like \"the neighbour has nothing to say\""
+            'and it will look exactly like "the neighbour has nothing to say"'
         )
         assert any(stage in cmd for cmd in wired), (
             f"on {event} the delivery guard runs without {stage} — the event will be handled by the wrong branch"
@@ -221,7 +221,9 @@ def test_board_lives_in_the_shared_git_directory() -> None:
     )
     assert done.returncode == 0, done.stderr
     path = done.stdout.strip().replace("\\", "/")
-    assert "/.git/wave-board/" in path, f"the board doesn't live in the repository's shared directory: {path}"
+    assert "/.git/wave-board/" in path, (
+        f"the board doesn't live in the repository's shared directory: {path}"
+    )
     assert "/.claude/worktrees/" not in path, (
         f"the board moved inside a worktree ({path}) — neighbouring tabs won't see it"
     )
@@ -422,7 +424,7 @@ def test_broadcast_reaches_everyone_but_its_author(tmp_path: Path) -> None:
 
     add(board, "*", "wave-wide finding", cwd=author)
     assert "wave-wide finding" in run_deliver(board, other, "Start", "s-all"), (
-        "the \"everyone\" finding didn't reach the neighbouring tab"
+        'the "everyone" finding didn\'t reach the neighbouring tab'
     )
     assert run_deliver(board, author, "Start", "s-mine").strip() == "", (
         "the \"everyone\" finding came back to whoever posted it — that's noise in the author's context"
@@ -449,7 +451,7 @@ def test_naming_forms_resolve_to_one_stream(tmp_path: Path, addressed: str, fold
     mine = tmp_path / folder
     mine.mkdir()
     assert "finding under a different name form" in run_deliver(board, mine, "Start", "s-name"), (
-        f"addressee \"{addressed}\" didn't resolve to working folder \"{folder}\""
+        f'addressee "{addressed}" didn\'t resolve to working folder "{folder}"'
     )
 
 
@@ -537,10 +539,18 @@ def test_tool_refuses_an_addressee_without_a_worktree(tmp_path: Path, wave_repo:
     here = here_of(wave_repo)
     for wrong in ("stream 3", "feat/wave7-alfa"):
         done = tool(
-            board, "-Mode", "Add", "-To", wrong, "-Title", "misdirected finding", cwd=here, known=True
+            board,
+            "-Mode",
+            "Add",
+            "-To",
+            wrong,
+            "-Title",
+            "misdirected finding",
+            cwd=here,
+            known=True,
         )
         assert done.returncode != 0, (
-            f"the tool accepted a nonexistent addressee \"{wrong}\" and reported success"
+            f'the tool accepted a nonexistent addressee "{wrong}" and reported success'
         )
         assert "Wave Loose Ends" in done.stderr, (
             "the refusal doesn't say where to put a finding for a closed stream"
@@ -549,7 +559,15 @@ def test_tool_refuses_an_addressee_without_a_worktree(tmp_path: Path, wave_repo:
     assert (
         "wave7-alpha"
         in tool(
-            board, "-Mode", "Add", "-To", "feat/wave7-alfa", "-Title", "off-target", cwd=here, known=True
+            board,
+            "-Mode",
+            "Add",
+            "-To",
+            "feat/wave7-alfa",
+            "-Title",
+            "off-target",
+            cwd=here,
+            known=True,
         ).stderr
     ), "the typo refusal didn't suggest the similar name, even though it's right there"
     assert not board.exists(), "an off-target entry still landed on the board"
@@ -573,22 +591,40 @@ def test_tool_tells_whether_the_neighbour_tab_answered_recently(
     board = tmp_path / "board.jsonl"
     here = here_of(wave_repo)
     alive = run_tool(
-        board, "-Mode", "Add", "-To", "feat/wave7-alpha", "-Title", "for the live one", cwd=here, known=True
+        board,
+        "-Mode",
+        "Add",
+        "-To",
+        "feat/wave7-alpha",
+        "-Title",
+        "for the live one",
+        cwd=here,
+        known=True,
     )
     assert "checked in recently" in alive, (
         "about a tab with a fresh mark the report doesn't say the main thing — that it worked recently"
     )
     assert "most likely" in alive, (
-        "the report promises delivery as a firm fact — but a beacon only means \"worked in the last "
-        "few hours\": the tab could have been closed an hour ago, nothing clears the mark on close"
+        'the report promises delivery as a firm fact — but a beacon only means "worked in the last '
+        'few hours": the tab could have been closed an hour ago, nothing clears the mark on close'
     )
     unknown = run_tool(
-        board, "-Mode", "Add", "-To", "feat/wave7-eta", "-Title", "for the silent one", cwd=here, known=True
+        board,
+        "-Mode",
+        "Add",
+        "-To",
+        "feat/wave7-eta",
+        "-Title",
+        "for the silent one",
+        cwd=here,
+        known=True,
     )
     assert "checked in recently" not in unknown, (
         "the report passes off a long-silent tab as one that just checked in"
     )
-    assert "unknown" in unknown, "the report doesn't admit it knows nothing about the neighbouring tab"
+    assert "unknown" in unknown, (
+        "the report doesn't admit it knows nothing about the neighbouring tab"
+    )
 
 
 @needs_pwsh
@@ -623,7 +659,9 @@ def test_a_broken_line_does_not_swallow_the_next_record(tmp_path: Path) -> None:
 
     add(board, "wave9-clock", "second finding")
     show = run_tool(board, "-Mode", "Show")
-    assert "first finding" in show, "the broken record carried the previous one off the board with it"
+    assert "first finding" in show, (
+        "the broken record carried the previous one off the board with it"
+    )
     assert "second finding" in show, (
         "the new record glued onto the fragment and didn't parse — yet the tool reported success"
     )
@@ -653,7 +691,9 @@ def test_delivery_guard_stays_silent_on_a_wrong_stage(tmp_path: Path) -> None:
         cwd=str(mine),
         timeout=60,
     )
-    assert done.returncode == 0, "the hook returned a nonzero code — the harness will treat it as broken"
+    assert done.returncode == 0, (
+        "the hook returned a nonzero code — the harness will treat it as broken"
+    )
     assert done.stdout.strip() == "", f"the hook dumped extra output: {done.stdout!r}"
 
     # In the SAME environment the correct stage must speak up — only then does the silence above mean
@@ -869,7 +909,9 @@ def test_plan_edit_guard_does_not_bury_a_wave_without_beacons(wave_repo: Path) -
     assert "feat/wave6-lonely" in context, (
         "a wave tree with no mark isn't named at all — the finding will go past a live neighbour"
     )
-    assert "unknown" in context, "nothing is said about a silent tree — that nothing is known about it"
+    assert "unknown" in context, (
+        "nothing is said about a silent tree — that nothing is known about it"
+    )
     assert "must be closed" not in context, (
         "a silent tree is declared a closed stream — that's exactly the claim the mechanism doesn't "
         "know to be true"
@@ -885,7 +927,9 @@ def test_plan_edit_guard_says_when_the_wave_has_no_worktrees(wave_repo: Path) ->
     assert named_streams(context) == [], (
         "for a wave with no trees the reminder still named someone's names"
     )
-    assert "Wave Loose Ends" in context, "doesn't say where to put a finding when there's no one to address"
+    assert "Wave Loose Ends" in context, (
+        "doesn't say where to put a finding when there's no one to address"
+    )
 
 
 def stub_project(root: Path, name: str, profile: str) -> Path:
@@ -928,7 +972,7 @@ def test_the_plans_section_is_found_whatever_the_case(tmp_path: Path) -> None:
     done = run_nudge(project, f"{STUB_PLANS}2026-01-01-wave7-probe.md", "s-lower-case")
     assert done.returncode == 0, done.stderr
     assert done.stdout.strip(), (
-        "the lowercase \"## plans\" heading wasn't found — the guard thinks the project has no plans"
+        'the lowercase "## plans" heading wasn\'t found — the guard thinks the project has no plans'
     )
 
 
@@ -967,7 +1011,9 @@ def test_delivery_guard_marks_its_worktree_alive(tmp_path: Path) -> None:
     assert run_deliver(board, mine, "Prompt", "s-beacon").strip() == ""
 
     mark = mine / BEACON
-    assert mark.exists(), "the beacon wasn't set when there's no board at all — yet there was a turn"
+    assert mark.exists(), (
+        "the beacon wasn't set when there's no board at all — yet there was a turn"
+    )
     assert "s-beacon" in mark.read_text(encoding="utf-8"), "the beacon doesn't show whose tab it is"
 
     stale = time.time() - 5 * 3600
@@ -1052,7 +1098,9 @@ def test_compaction_refuses_when_the_board_cannot_be_read(tmp_path: Path) -> Non
         done = tool(board, "-Mode", "Compact")
         assert done.returncode != 0, "compaction ran blind, unable to read the board"
         assert "was 0 lines" not in done.stdout, "compaction reported an empty board"
-        assert "couldn't read" in done.stderr, f"the refusal didn't name the reason: {done.stderr!r}"
+        assert "couldn't read" in done.stderr, (
+            f"the refusal didn't name the reason: {done.stderr!r}"
+        )
     finally:
         holder.kill()
         holder.wait(timeout=30)
@@ -1083,11 +1131,13 @@ def test_commands_report_a_locked_board_instead_of_calling_it_empty(tmp_path: Pa
         assert "No open entries on the wave board" not in shown.stdout, (
             "a locked board is shown as an empty one — that pushes toward filing a duplicate finding"
         )
-        assert "couldn't read" in shown.stderr, f"the display didn't name the reason: {shown.stderr!r}"
+        assert "couldn't read" in shown.stderr, (
+            f"the display didn't name the reason: {shown.stderr!r}"
+        )
 
         closing = tool(board, "-Mode", "Done", "-Id", mark)
         assert "already closed" not in closing.stdout, (
-            "closing lied about \"already closed\" when the board simply couldn't be read"
+            'closing lied about "already closed" when the board simply couldn\'t be read'
         )
         assert closing.returncode != 0
 
@@ -1140,20 +1190,20 @@ def test_broadcast_closes_only_for_the_stream_that_closed_it(tmp_path: Path) -> 
     mark = add(board, "*", "wave-wide finding", cwd=author)
     assert "wave-wide finding" in run_deliver(board, first, "Start", "s-first")
     closing = run_tool(board, "-Mode", "Done", "-Id", mark, cwd=first)
-    assert "for stream" in closing, (
-        "closing the broadcast entry didn't say that it's personal"
-    )
+    assert "for stream" in closing, "closing the broadcast entry didn't say that it's personal"
 
     assert run_deliver(board, first, "Start", "s-first-again").strip() == "", (
         "the stream that closed it keeps getting the handled finding"
     )
     assert "wave-wide finding" in run_deliver(board, second, "Start", "s-second"), (
-        "the neighbour didn't see the \"everyone\" finding after another stream closed it — and it "
+        'the neighbour didn\'t see the "everyone" finding after another stream closed it — and it '
         "had had no turn at all since it was added"
     )
 
     board_view = run_tool(board, "-Mode", "Show")
-    assert "wave-wide finding" in board_view, "the display hid a finding not everyone has handled yet"
+    assert "wave-wide finding" in board_view, (
+        "the display hid a finding not everyone has handled yet"
+    )
     assert "wave9-clock" in board_view, "the display doesn't say who's already handled it"
 
 
@@ -1171,9 +1221,11 @@ def test_show_for_a_stream_includes_what_is_addressed_to_everyone(tmp_path: Path
 
     view = run_tool(board, "-Mode", "Show", "-To", "wave9-clock")
     assert "wave-wide finding" in view, (
-        "the stream-scoped display hid the \"everyone\" entry, though delivery will bring it to that tab"
+        'the stream-scoped display hid the "everyone" entry, though delivery will bring it to that tab'
     )
-    assert "someone else's finding" not in view, "the stream-scoped display dragged in an unrelated record"
+    assert "someone else's finding" not in view, (
+        "the stream-scoped display dragged in an unrelated record"
+    )
 
 
 @needs_pwsh
@@ -1199,7 +1251,7 @@ def test_compaction_keeps_personal_closings_of_surviving_records(tmp_path: Path)
         "after compaction the handled finding came back to whoever closed it"
     )
     assert "wave-wide finding" in run_deliver(board, second, "Start", "s-other-after-compact"), (
-        "compaction carried off an \"everyone\" entry that not everyone had handled yet"
+        'compaction carried off an "everyone" entry that not everyone had handled yet'
     )
 
 
@@ -1247,7 +1299,9 @@ def test_broadcast_can_be_closed_for_everyone(tmp_path: Path) -> None:
 
     mark = add(board, "*", "exhausted finding", cwd=author)
     closing = run_tool(board, "-Mode", "Done", "-Id", mark, "-ForAll", cwd=first)
-    assert "for every addressee" in closing, "the shared close didn't say it cleared the entry for everyone"
+    assert "for every addressee" in closing, (
+        "the shared close didn't say it cleared the entry for everyone"
+    )
 
     assert run_deliver(board, second, "Start", "s-after-forall").strip() == "", (
         "an entry cleared for everyone keeps arriving for neighbours"
@@ -1281,7 +1335,7 @@ def test_stale_broadcast_stops_travelling(tmp_path: Path) -> None:
     mine.mkdir()
 
     assert run_deliver(board, mine, "Start", "s-stale").strip() == "", (
-        "an expired \"everyone\" finding still reaches tabs"
+        'an expired "everyone" finding still reaches tabs'
     )
     assert "long-past finding" not in run_tool(board, "-Mode", "Show"), (
         "an expired finding is shown as open"
@@ -1298,16 +1352,19 @@ def test_addressed_record_never_goes_stale(tmp_path: Path) -> None:
     board = tmp_path / "board.jsonl"
     board.write_text(
         board_line(
-            id="old00001", at=now_minus(40), to="wave9-clock", title="long-standing addressed finding"
+            id="old00001",
+            at=now_minus(40),
+            to="wave9-clock",
+            title="long-standing addressed finding",
         )
         + "\n",
         encoding="utf-8",
     )
     mine = tmp_path / "wave9-clock"
     mine.mkdir()
-    assert "long-standing addressed finding" in run_deliver(board, mine, "Start", "s-old-addressed"), (
-        "the shelf life silenced an addressed finding — and nobody had closed it"
-    )
+    assert "long-standing addressed finding" in run_deliver(
+        board, mine, "Start", "s-old-addressed"
+    ), "the shelf life silenced an addressed finding — and nobody had closed it"
 
 
 @needs_pwsh
@@ -1369,7 +1426,9 @@ def test_compaction_reports_lines_it_could_not_parse(tmp_path: Path) -> None:
     assert "lines not parsed and dropped: 1" in out.lower(), (
         f"compaction silently dropped the unreadable line: {out!r}"
     )
-    assert "live finding" in board.read_text(encoding="utf-8"), "compaction carried off the healthy record"
+    assert "live finding" in board.read_text(encoding="utf-8"), (
+        "compaction carried off the healthy record"
+    )
 
 
 @needs_pwsh
@@ -1393,7 +1452,9 @@ def test_show_for_a_stream_knows_both_of_its_names(tmp_path: Path, wave_repo: Pa
     assert "finding for the two-named stream" not in view, (
         "the display by folder name didn't recognize the closing recorded by that same tree's branch name"
     )
-    assert "closed for you" in view.lower(), "the display didn't count the record as closed for this stream"
+    assert "closed for you" in view.lower(), (
+        "the display didn't count the record as closed for this stream"
+    )
 
 
 @needs_pwsh
@@ -1441,8 +1502,14 @@ def test_broadcast_with_a_broken_date_is_not_immortal(tmp_path: Path) -> None:
         "\n".join(
             [
                 board_line(id="broke001", at="", title="finding with no date"),
-                board_line(id="broke002", at=1234567890, title="finding with a number instead of a date"),
-                board_line(id="broke003", at="the day before yesterday", title="finding with a garbled date"),
+                board_line(
+                    id="broke002", at=1234567890, title="finding with a number instead of a date"
+                ),
+                board_line(
+                    id="broke003",
+                    at="the day before yesterday",
+                    title="finding with a garbled date",
+                ),
             ]
         )
         + "\n",
@@ -2099,19 +2166,19 @@ def registry_invariants(tmp_path: Path) -> Iterator[RegistryWatch]:
 WAIVED_SCENES: dict[str, str] = {
     # Scenarios: the registry is contradictory on purpose, the mechanism is what's under test.
     "test_show_keeps_one_order_on_the_same_registry": (
-        "the invariant \"one leading record per address\": two records of one address are assembled "
+        'the invariant "one leading record per address": two records of one address are assembled '
         "by hand as the legacy of a defect — the completeness of display's order is checked on them"
     ),
     "test_show_shouts_about_a_doubled_address": (
-        "the invariant \"one leading record per address\": the doubling is assembled by hand — what's "
+        'the invariant "one leading record per address": the doubling is assembled by hand — what\'s '
         "checked is that display shouts about it instead of staying quiet"
     ),
     "test_adding_a_finding_to_a_doubled_address_says_it_may_reach_the_wrong_tab": (
-        "the invariant \"one leading record per address\": the doubling is assembled by hand as the "
+        'the invariant "one leading record per address": the doubling is assembled by hand as the '
         "legacy of a defect — what's checked is that accepting a finding shouts too, not just display"
     ),
     "test_a_reclaim_that_names_only_the_wave_keeps_its_seniority": (
-        "the invariant \"one leading record per address\": the rival for the same number is assembled "
+        'the invariant "one leading record per address": the rival for the same number is assembled '
         "by hand, and what's checked is exactly that the tab does NOT give the address up. The folder "
         "rule deliberately doesn't separate this pair: the number here is INHERITED from the tab's own "
         "previous record, that is, it stays issued, and the folder rule doesn't extend to an issued "
@@ -2137,21 +2204,21 @@ WAIVED_SCENES: dict[str, str] = {
     ),
     # Scenes of an address's lawful end: no leading record is left, and that is the outcome checked.
     "test_a_finding_for_a_released_stream_is_refused_even_after_the_address_moved": (
-        "the invariant \"an address has a leading record\": the stream moved and honestly released in "
+        'the invariant "an address has a leading record": the stream moved and honestly released in '
         "the new folder, while the abandoned record of the previous folder stayed open — what's "
         "checked is that a finding for such an address is refused"
     ),
     "test_a_move_outlives_the_folder_taken_by_the_next_stream": (
-        "the invariant \"an address has a leading record\": the stream moved, released, and the folder "
+        'the invariant "an address has a leading record": the stream moved, released, and the folder '
         "was taken for the next one — what's checked is that the previous folder's ghost doesn't "
         "become the leader"
     ),
     "test_the_answer_names_the_folder_where_the_address_really_went": (
-        "the invariant \"an address has a leading record\": the stream moved along a chain and ended "
+        'the invariant "an address has a leading record": the stream moved along a chain and ended '
         "in the last folder — what's checked is which folder gets named to the victim"
     ),
     "test_a_dead_end_is_never_printed_as_the_way_out": (
-        "the invariant \"an address has a leading record\": the stream moved and ended there — what's "
+        'the invariant "an address has a leading record": the stream moved and ended there — what\'s '
         "checked is that the way out printed to the victim works, instead of advising a key with "
         "nothing left to take"
     ),
@@ -2160,7 +2227,7 @@ WAIVED_SCENES: dict[str, str] = {
         "guard is the subject, and what's checked is by what NAME it calls the scene"
     ),
     "test_the_older_copy_keeps_the_memory_of_past_moves_it_does_not_understand": (
-        "the invariant \"an address has a leading record\": the same scene of an address's lawful end "
+        'the invariant "an address has a leading record": the same scene of an address\'s lawful end '
         "— what's checked is that a move by an older copy of the toolkit doesn't erase the memory"
     ),
 }
@@ -2249,7 +2316,9 @@ def test_registry_invariants_catch_every_broken_shape(
     The scenes are assembled by hand: the tool doesn't make registries like these today — that's the
     point, the guard is set up against a change that starts making them.
     """
-    registry_invariants.waive("the registries are contradictory on purpose — the guard is under test")
+    registry_invariants.waive(
+        "the registries are contradictory on purpose — the guard is under test"
+    )
     scenes: dict[str, dict[str, dict[str, object]]] = {
         "two unclosed claims of one folder": {
             "first": open_claim("d:/tree", stream="3"),
@@ -2280,7 +2349,7 @@ def test_registry_invariants_catch_every_broken_shape(
         for name, fields in claims.items():
             put_claim(registry_dir(board), name, **fields)
         assert registry_faults(registry_dir(board)), (
-            f"the guard stayed quiet on the scene \"{scene}\" — the registry contradicts itself while "
+            f'the guard stayed quiet on the scene "{scene}" — the registry contradicts itself while '
             "the check goes green"
         )
 
@@ -2293,7 +2362,9 @@ def test_registry_invariants_pass_the_registries_the_tool_really_makes(
     A false alarm here costs more than a miss: it would fire in the tail of somebody else's check, and
     whoever wrote that check — and has nothing to do with the registry — would have to sort it out.
     """
-    registry_invariants.waive("the registries are assembled by hand — the guard is under test, not the mechanism")
+    registry_invariants.waive(
+        "the registries are assembled by hand — the guard is under test, not the mechanism"
+    )
     scenes: dict[str, dict[str, dict[str, object]]] = {
         "claims of the current shape, no succession field at all": {
             "one": open_claim("d:/first"),
@@ -2343,7 +2414,7 @@ def test_registry_invariants_pass_the_registries_the_tool_really_makes(
         for name, fields in claims.items():
             put_claim(registry_dir(board), name, **fields)
         faults = registry_faults(registry_dir(board))
-        assert not faults, f"a false alarm on the lawful scene \"{scene}\": {faults}"
+        assert not faults, f'a false alarm on the lawful scene "{scene}": {faults}'
 
 
 def claim_of(board: Path, worktree: Path, *, only_open: bool) -> ClaimRecord:
@@ -2511,7 +2582,9 @@ def test_release_refuses_while_the_inbox_is_not_empty(tmp_path: Path) -> None:
     assert "unread" in refused.stderr, "the refusal didn't name what's left"
 
     run_tool(board, "-Mode", "Done", "-Id", mark, cwd=mine)
-    assert release(board, mine).returncode == 0, "release still didn't go through after the inbox was cleared"
+    assert release(board, mine).returncode == 0, (
+        "release still didn't go through after the inbox was cleared"
+    )
 
 
 @needs_pwsh
@@ -2531,7 +2604,7 @@ def test_release_is_not_blocked_by_a_self_closing_acknowledgement(tmp_path: Path
 
     done = release(board, author)
     assert done.returncode == 0, (
-        f"release was blocked by a self-closing \"acknowledged\" notice: {done.stderr!r}"
+        f'release was blocked by a self-closing "acknowledged" notice: {done.stderr!r}'
     )
 
 
@@ -2551,9 +2624,13 @@ def test_project_wide_broadcast_crosses_waves_and_closes_personally(tmp_path: Pa
     claim(board, same, "wave9", "2")
     claim(board, other, "wave8", "1")
 
-    out = run_tool(board, "-Mode", "Add", "-To", "**", "-Title", "project-wide announcement", cwd=author)
+    out = run_tool(
+        board, "-Mode", "Add", "-To", "**", "-Title", "project-wide announcement", cwd=author
+    )
     mark = out.split("id ")[1].split(")")[0].strip()
-    assert "every session in the project" in out, f"the report didn't say where the record will go: {out!r}"
+    assert "every session in the project" in out, (
+        f"the report didn't say where the record will go: {out!r}"
+    )
 
     assert "project-wide announcement" in run_deliver(board, other, "Start", "s-cross"), (
         "the \"every tab in the project\" record didn't reach a tab of another wave — that's the whole point of it"
@@ -2590,7 +2667,7 @@ def test_project_wide_broadcast_goes_stale_like_the_wave_one(tmp_path: Path) -> 
     tab = tmp_path / "wave9-fresh"
     tab.mkdir()
     assert "ancient announcement" not in run_deliver(board, tab, "Start", "s-wide"), (
-        "an expired \"every tab in the project\" record still travels to tabs"
+        'an expired "every tab in the project" record still travels to tabs'
     )
 
     forced = tmp_path / "wave9-forced"
@@ -2622,16 +2699,16 @@ def test_broadcast_stays_inside_its_own_wave(tmp_path: Path) -> None:
     run_tool(board, "-Mode", "Add", "-To", "*", "-Title", "wave-wide announcement", cwd=author)
 
     assert "wave-wide announcement" in context_text(run_deliver(board, same, "Start", "s-same")), (
-        "the \"everyone\" record didn't reach a neighbouring stream of its own wave"
+        'the "everyone" record didn\'t reach a neighbouring stream of its own wave'
     )
     assert "wave-wide announcement" not in run_deliver(board, other, "Start", "s-other"), (
-        "the \"everyone\" record reached a tab of another wave — it pays for it in context for nothing"
+        'the "everyone" record reached a tab of another wave — it pays for it in context for nothing'
     )
 
 
 @needs_pwsh
 def test_streams_answers_whose_task_it_is(tmp_path: Path) -> None:
-    """"Whose piece of work is this" is a question that today has no answer anywhere.
+    """ "Whose piece of work is this" is a question that today has no answer anywhere.
 
     A tab is tempted to take a neighbouring task, offers it to the owner, and the owner has no way of
     knowing it was planned for another stream, so they confirm it. The registry answers this mechanically.
@@ -2671,7 +2748,9 @@ def test_stream_address_is_not_confused_with_a_branch_name(tmp_path: Path) -> No
     """
     board = tmp_path / "board.jsonl"
     accepted = run_tool(board, "-Mode", "Add", "-To", "wave6/3", "-Title", "for the stream")
-    assert "hasn't announced itself yet" in accepted, "the \"wave/stream\" address wasn't parsed as a stream"
+    assert "hasn't announced itself yet" in accepted, (
+        'the "wave/stream" address wasn\'t parsed as a stream'
+    )
 
     branchy = tool(
         board, "-Mode", "Add", "-To", "feat/never-existed", "-Title", "for the branch", known=True
@@ -2681,9 +2760,11 @@ def test_stream_address_is_not_confused_with_a_branch_name(tmp_path: Path) -> No
     )
 
     claim(board, tmp_path / "wave6-compute", "wave6", "3")
-    foldery = tool(board, "-Mode", "Add", "-To", "wave6-compute/3", "-Title", "for the folder", known=True)
+    foldery = tool(
+        board, "-Mode", "Add", "-To", "wave6-compute/3", "-Title", "for the folder", known=True
+    )
     assert foldery.returncode != 0, (
-        "the folder name \"wave6-compute/3\" was accepted as an address for stream wave6/3 — the "
+        'the folder name "wave6-compute/3" was accepted as an address for stream wave6/3 — the '
         "finding would have gone to a stranger"
     )
 
@@ -2723,7 +2804,9 @@ def test_tab_is_told_that_a_neighbour_edits_the_same_files(tmp_path: Path) -> No
     assert "editing the same files" in first, (
         f"the tab didn't learn about a neighbour editing the same files: {first!r}"
     )
-    assert "wave9/5" in first and "Storefronts" in first, "the warning didn't name whose stream it is"
+    assert "wave9/5" in first and "Storefronts" in first, (
+        "the warning didn't name whose stream it is"
+    )
     assert "packages/core/pipe.py" in first, "the warning didn't name the shared file"
 
     second = run_deliver(board, mine, "Prompt", "s-overlap")
@@ -2821,7 +2904,8 @@ def test_owner_sees_stuck_records_only_in_the_main_folder(tmp_path: Path, wave_r
     """
     board = tmp_path / "board.jsonl"
     board.write_text(
-        board_line(id="lost0001", at=now_minus(3), to="wave9/44", title="no one to receive it") + "\n",
+        board_line(id="lost0001", at=now_minus(3), to="wave9/44", title="no one to receive it")
+        + "\n",
         encoding="utf-8",
     )
 
@@ -2887,9 +2971,8 @@ def test_claim_without_a_wave_opens_one_by_todays_date(tmp_path: Path) -> None:
     assert f"Stream {today}/1 announced for this session" in out, (
         f"announcing with no wave didn't substitute one by date: {out!r}"
     )
-    assert (
-        f"Wave not named — taken from today's date. Address for neighbours: {today}/1."
-        in said(out)
+    assert f"Wave not named — taken from today's date. Address for neighbours: {today}/1." in said(
+        out
     ), f"the line about the substituted wave was rewritten or lost: {out!r}"
     assert "Stream number not named — issued the next free one: 1." in said(out), (
         f"the tab wasn't told its stream number was issued by the tool itself: {out!r}"
@@ -2932,9 +3015,7 @@ def test_a_named_wave_is_never_joined_automatically(tmp_path: Path) -> None:
     claim(board, tmp_path / "wave6-compute", "wave6", "4")
     out = claim_bare(board, tmp_path / "loner")
 
-    assert "wave6" not in out, (
-        f"the tab joined the plan's wave and took a number in it: {out!r}"
-    )
+    assert "wave6" not in out, f"the tab joined the plan's wave and took a number in it: {out!r}"
     assert f"Stream {today_wave()}/1 announced for this session" in out, (
         f"its own date-named wave wasn't set up: {out!r}"
     )
@@ -3012,11 +3093,11 @@ def test_release_without_a_plan_sends_the_result_to_the_owner(tmp_path: Path) ->
     ), f"the line about having no plan was rewritten or lost: {done.stdout!r}"
     assert (
         'The line for your stream in the wave plan\'s "Stream status" section is written and '
-        "committed BEFORE release."
-        not in said(done.stdout)
+        "committed BEFORE release." not in said(done.stdout)
     ), "release with no plan still sent the tab to write a line into the plan"
-    assert "Committing from this folder is no longer possible — the guard sees the stream as released." in said(
-        done.stdout
+    assert (
+        "Committing from this folder is no longer possible — the guard sees the stream as released."
+        in said(done.stdout)
     ), f"release didn't warn that committing from this folder no longer works: {done.stdout!r}"
     assert f"Stream {today_wave()}/1 released. Findings will no longer be accepted for it." in said(
         done.stdout
@@ -3040,16 +3121,17 @@ def test_release_of_a_named_wave_keeps_the_line_in_the_plan(tmp_path: Path) -> N
     assert done.returncode == 0, done.stderr
     assert (
         'The line for your stream in the wave plan\'s "Stream status" section is written and '
-        "committed BEFORE release."
-        in said(done.stdout)
+        "committed BEFORE release." in said(done.stdout)
     ), f"a named wave's stream lost its previous final release line: {done.stdout!r}"
-    assert "Committing from this folder is no longer possible — the guard sees the stream as released." in said(
-        done.stdout
-    ), f"a stream with a plan wasn't warned that committing from this folder no longer works: {done.stdout!r}"
+    assert (
+        "Committing from this folder is no longer possible — the guard sees the stream as released."
+        in said(done.stdout)
+    ), (
+        f"a stream with a plan wasn't warned that committing from this folder no longer works: {done.stdout!r}"
+    )
     assert (
         "Stream wave9/1 released. Findings will no longer be accepted for it — their place is now "
-        "the Wave Loose Ends."
-        in said(done.stdout)
+        "the Wave Loose Ends." in said(done.stdout)
     ), f"a named wave's stream had its release line rewritten: {done.stdout!r}"
 
 
@@ -3076,14 +3158,15 @@ def test_a_wave_taken_from_the_plan_name_is_not_an_invented_one(tmp_path: Path) 
     )
 
     later = claim_bare(board, tmp_path / "loner")
-    assert "wave9" not in later, f"the tab joined the wave taken from the plan's file name: {later!r}"
+    assert "wave9" not in later, (
+        f"the tab joined the wave taken from the plan's file name: {later!r}"
+    )
 
     done = release(board, mine)
     assert done.returncode == 0, done.stderr
     assert (
         'The line for your stream in the wave plan\'s "Stream status" section is written and '
-        "committed BEFORE release."
-        in said(done.stdout)
+        "committed BEFORE release." in said(done.stdout)
     ), f"a stream with a plan lost its previous final release line: {done.stdout!r}"
 
 
@@ -3134,7 +3217,9 @@ def test_stuck_summary_without_a_plan_points_at_the_owner(tmp_path: Path, wave_r
     claim_bare(board, mine)
     assert release(board, mine).returncode == 0, "releasing an empty stream didn't go through"
     board.write_text(
-        board_line(id="lost0002", at=now_minus(3), to=f"{today_wave()}/1", title="no one to receive it")
+        board_line(
+            id="lost0002", at=now_minus(3), to=f"{today_wave()}/1", title="no one to receive it"
+        )
         + "\n",
         encoding="utf-8",
     )
@@ -3144,7 +3229,9 @@ def test_stuck_summary_without_a_plan_points_at_the_owner(tmp_path: Path, wave_r
     assert "There is no wave plan — name the finding in your reply to the owner." in said(owner), (
         f"the summary sent the owner to a plan section that doesn't exist: {owner!r}"
     )
-    assert "Wave Loose Ends" not in owner, "the summary still carried the advice about a plan section"
+    assert "Wave Loose Ends" not in owner, (
+        "the summary still carried the advice about a plan section"
+    )
 
 
 @needs_pwsh
@@ -3157,9 +3244,8 @@ def test_release_without_a_plan_names_the_leftovers_to_the_owner(tmp_path: Path)
 
     refused = release(board, mine)
     assert refused.returncode != 0, "the stream released with a non-empty inbox"
-    assert (
-        "Not your work — name it in your reply to the owner and release with -Force."
-        in said(refused.stderr)
+    assert "Not your work — name it in your reply to the owner and release with -Force." in said(
+        refused.stderr
     ), f"the line about unrelated work with no plan was rewritten or lost: {refused.stderr!r}"
     assert "Wave Loose Ends" not in refused.stderr, (
         "the refusal sent the tab to a plan section this project doesn't have"
@@ -3180,9 +3266,9 @@ def test_a_finding_for_a_released_stream_without_a_plan_goes_to_the_owner(tmp_pa
 
     done = tool(board, "-Mode", "Add", "-To", f"{today_wave()}/1", "-Title", "late finding")
     assert done.returncode != 0, "the tool accepted a finding for a released stream"
-    assert "There is no wave plan — name the finding in your reply to the owner." in said(done.stderr), (
-        f"the line about a finding with no plan was rewritten or lost: {done.stderr!r}"
-    )
+    assert "There is no wave plan — name the finding in your reply to the owner." in said(
+        done.stderr
+    ), f"the line about a finding with no plan was rewritten or lost: {done.stderr!r}"
     assert "Wave Loose Ends" not in done.stderr, (
         "the refusal sent the tab to a plan section this project doesn't have"
     )
@@ -3431,7 +3517,9 @@ def test_two_tabs_are_never_inside_the_claim_at_once(tmp_path: Path) -> None:
         assert not left, f"a process exited without clearing its own mark: {left}"
 
     breached = sorted(path.read_text(encoding="utf-8") for path in marks.glob("violation-*"))
-    assert not breached, f"two processes entered the announcement's critical section at once: {breached}"
+    assert not breached, (
+        f"two processes entered the announcement's critical section at once: {breached}"
+    )
 
 
 @needs_pwsh
@@ -3671,7 +3759,9 @@ def test_an_unreadable_claim_file_refuses_the_claim_instead_of_reusing_the_numbe
         assert done.returncode != 0, (
             f"announcing went through without seeing the neighbour — the addresses collided silently: {done.stdout!r}"
         )
-        assert "couldn't read" in done.stderr, f"the refusal didn't name the reason: {done.stderr!r}"
+        assert "couldn't read" in done.stderr, (
+            f"the refusal didn't name the reason: {done.stderr!r}"
+        )
         assert spent < 15, f"the refusal took {spent:.1f}s — the tab was made to wait for nothing"
         # There's still only one claim in the registry — the first tab's. We don't read its content:
         # the stand is holding its file, and looking inside it is exactly what the check forbids.
@@ -3732,7 +3822,9 @@ def test_a_broken_claim_file_never_makes_its_stream_invisible(tmp_path: Path, po
     assert claimed.returncode != 0, (
         f"the second tab announced right over an invisible neighbour: {claimed.stdout!r}"
     )
-    assert "broken and won't parse" in claimed.stderr, f"the refusal didn't name the reason: {claimed.stderr!r}"
+    assert "broken and won't parse" in claimed.stderr, (
+        f"the refusal didn't name the reason: {claimed.stderr!r}"
+    )
     assert taken not in claimed.stdout, "the neighbour's address was issued a second time"
 
     # The owner of the corrupted claim must not hear "nothing to release": the stream is still theirs.
@@ -3778,7 +3870,7 @@ def test_an_unusual_but_valid_claim_file_is_still_read(tmp_path: Path) -> None:
 
 @needs_pwsh
 def test_the_task_owner_question_never_answers_nobody_when_a_claim_is_busy(tmp_path: Path) -> None:
-    """"Whose piece of work is this" doesn't answer "no one's taken it" while a neighbour's claim can't be read.
+    """ "Whose piece of work is this" doesn't answer "no one's taken it" while a neighbour's claim can't be read.
 
     The project's rules require asking this question BEFORE offering the owner work outside their
     own tasks. An answer of "no one's taken this task" is a direct green light to take someone else's
@@ -3798,7 +3890,9 @@ def test_the_task_owner_question_never_answers_nobody_when_a_claim_is_busy(tmp_p
         assert "isn't claimed by any stream" not in asked.stdout, (
             f"an unrelated task was declared unclaimed — a tab will take it with the owner's blessing: {asked.stdout!r}"
         )
-        assert asked.returncode != 0, f"the answer came out confident even though the registry is incomplete: {asked.stdout!r}"
+        assert asked.returncode != 0, (
+            f"the answer came out confident even though the registry is incomplete: {asked.stdout!r}"
+        )
     finally:
         holder.kill()
         holder.communicate(timeout=60)
@@ -3827,7 +3921,9 @@ def test_a_finding_for_a_released_stream_is_refused_even_when_its_claim_is_busy(
         author = tmp_path / "author"
         author.mkdir()
         done = tool(board, "-Mode", "Add", "-To", "wave6/4", "-Title", "finding", cwd=author)
-        assert done.returncode != 0, f"a finding was accepted for a released stream: {done.stdout!r}"
+        assert done.returncode != 0, (
+            f"a finding was accepted for a released stream: {done.stdout!r}"
+        )
         assert "hasn't announced itself yet" not in done.stdout, (
             f"a released stream was passed off as one never opened — the author would relax, and "
             f"the finding would vanish: {done.stdout!r}"
@@ -3893,11 +3989,15 @@ def test_an_unopenable_lock_refuses_at_once_instead_of_waiting_for_a_neighbour(
     done = tool(board, "-Mode", "Claim", cwd=tab)
     spent = time.monotonic() - started
 
-    assert done.returncode != 0, f"announcing went through right over a lock that can't be set up: {done.stdout!r}"
+    assert done.returncode != 0, (
+        f"announcing went through right over a lock that can't be set up: {done.stdout!r}"
+    )
     assert "couldn't set up the claim registry lock" in done.stderr, (
         f"the refusal didn't name the reason: {done.stderr!r}"
     )
-    assert spent < 15, f"the refusal took {spent:.1f}s — an obstacle was mistaken for a neighbour holding it"
+    assert spent < 15, (
+        f"the refusal took {spent:.1f}s — an obstacle was mistaken for a neighbour holding it"
+    )
 
 
 @needs_pwsh
@@ -3924,9 +4024,13 @@ def test_a_blocked_registry_path_refuses_at_once_instead_of_waiting(tmp_path: Pa
     done = tool(board, "-Mode", "Claim", cwd=tab)
     spent = time.monotonic() - started
 
-    assert done.returncode != 0, f"announcing went through right over a broken registry: {done.stdout!r}"
+    assert done.returncode != 0, (
+        f"announcing went through right over a broken registry: {done.stdout!r}"
+    )
     assert "not a folder" in done.stderr, f"the refusal didn't name the reason: {done.stderr!r}"
-    assert spent < 15, f"the refusal took {spent:.1f}s — an obstacle was mistaken for a neighbour holding it"
+    assert spent < 15, (
+        f"the refusal took {spent:.1f}s — an obstacle was mistaken for a neighbour holding it"
+    )
 
 
 needs_windows_acl = pytest.mark.skipif(
@@ -4027,7 +4131,9 @@ def test_an_unlistable_registry_is_never_taken_for_an_empty_one(tmp_path: Path) 
         assert "hasn't announced itself yet" not in offered.stdout, (
             f"a live stream was passed off as one never opened: {offered.stdout!r}"
         )
-        assert offered.returncode != 0, f"a finding was accepted against an invisible registry: {offered.stdout!r}"
+        assert offered.returncode != 0, (
+            f"a finding was accepted against an invisible registry: {offered.stdout!r}"
+        )
     finally:
         allow_listing(registry)
 
@@ -4066,7 +4172,9 @@ def test_handing_over_a_stream_does_not_pass_on_an_unreadable_registry(tmp_path:
         assert given.returncode != 0, (
             f"a stream released against an invisible registry — the finding stays unclaimed on the board: {given.stdout!r}"
         )
-        assert "released" not in given.stdout, f"the tab was told the stream was released: {given.stdout!r}"
+        assert "released" not in given.stdout, (
+            f"the tab was told the stream was released: {given.stdout!r}"
+        )
     finally:
         allow_listing(registry)
 
@@ -4162,7 +4270,9 @@ def test_a_reused_branch_name_belongs_to_the_one_who_carries_it_now(tmp_path: Pa
     # And it must not be able to close someone else's named finding even knowing the id.
     mark = offered.stdout.split("id ")[1].split(")")[0].strip()
     denied = tool(board, "-Mode", "Done", "-Id", mark, cwd=first)
-    assert denied.returncode != 0, "someone else's named finding was closed — the addressee will never see it"
+    assert denied.returncode != 0, (
+        "someone else's named finding was closed — the addressee will never see it"
+    )
     assert "not you" in denied.stderr, f"the refusal didn't name the reason: {denied.stderr!r}"
 
     # A human can see that the name was taken away from the stream.
@@ -4241,7 +4351,9 @@ def test_a_name_two_streams_remember_is_refused_with_the_real_reason(tmp_path: P
         cwd=tmp_path / "third",
         known=True,
     )
-    assert denied.returncode != 0, f"a finding was accepted by a name that belongs to no one: {denied.stdout!r}"
+    assert denied.returncode != 0, (
+        f"a finding was accepted by a name that belongs to no one: {denied.stdout!r}"
+    )
     assert "is remembered by two streams" in denied.stderr, (
         f"the real reason wasn't named: {denied.stderr!r}"
     )
@@ -4279,7 +4391,9 @@ def test_a_released_stream_neither_gets_findings_nor_kills_them(tmp_path: Path) 
     )
 
     denied = tool(board, "-Mode", "Done", "-Id", mark, cwd=mine)
-    assert denied.returncode != 0, "a released stream closed a finding that no one is left to handle"
+    assert denied.returncode != 0, (
+        "a released stream closed a finding that no one is left to handle"
+    )
 
 
 @needs_pwsh
@@ -4406,9 +4520,18 @@ def test_all_three_sides_know_the_stream_by_the_same_names(tmp_path: Path) -> No
     patch_claim(board, mine, branch="feat/stream-branch")
 
     taken = tool(
-        board, "-Mode", "Add", "-To", "feat/stream-branch", "-Title", "neighbour's finding", cwd=tmp_path
+        board,
+        "-Mode",
+        "Add",
+        "-To",
+        "feat/stream-branch",
+        "-Title",
+        "neighbour's finding",
+        cwd=tmp_path,
     )
-    assert taken.returncode == 0, f"acceptance didn't recognize the stream by its branch name: {taken.stderr!r}"
+    assert taken.returncode == 0, (
+        f"acceptance didn't recognize the stream by its branch name: {taken.stderr!r}"
+    )
 
     brought = run_deliver(board, mine, "Start", "by-branch-name")
     assert "neighbour's finding" in brought, (
@@ -4537,9 +4660,13 @@ def test_a_leftover_lock_file_is_neither_a_barrier_nor_a_claim(tmp_path: Path) -
         "the lock was mistaken for someone else's claim, and the stream number skipped ahead"
     )
 
-    assert lock.exists(), "the lock file was deleted — a second process would take the lock on a new one"
+    assert lock.exists(), (
+        "the lock file was deleted — a second process would take the lock on a new one"
+    )
     streams = run_tool(board, "-Mode", "Streams")
-    assert "Stream claims: 1" in streams, f"the lock file ended up in the claims listing: {streams!r}"
+    assert "Stream claims: 1" in streams, (
+        f"the lock file ended up in the claims listing: {streams!r}"
+    )
 
 
 @needs_pwsh
@@ -4561,7 +4688,9 @@ def test_a_number_taken_by_a_neighbour_is_given_up_after_the_claim_is_written(
     kept = hidden.read_text(encoding="utf-8")
     hidden.unlink()
     claim_bare(board, second)
-    assert address_of(board, second).endswith("/1"), "the check is set up wrong: the numbers didn't collide"
+    assert address_of(board, second).endswith("/1"), (
+        "the check is set up wrong: the numbers didn't collide"
+    )
 
     hidden.write_text(kept, encoding="utf-8")
     patch_claim(board, first, claimed_at="2026-01-01T10:00:00")
@@ -4612,7 +4741,9 @@ def test_a_number_from_the_plan_is_never_moved_and_never_doubled(tmp_path: Path)
     # The way out of the refusal is one, explicit and named: a takeover does happen deliberately (the
     # first tab was closed without releasing), and a human settles that dispute, not the mechanism.
     taken = claim(board, second, "wave9", "3", "-TakeOver")
-    assert address_of(board, second) == "wave9/3", f"the take-over key didn't hand the address over: {taken!r}"
+    assert address_of(board, second) == "wave9/3", (
+        f"the take-over key didn't hand the address over: {taken!r}"
+    )
 
 
 @needs_pwsh
@@ -4660,7 +4791,9 @@ def test_a_finding_for_a_silent_stream_without_a_plan_goes_to_the_owner(tmp_path
     assert "Name the finding in your reply to the owner." in out, (
         f"with no wave plan the finding was sent to a plan section: {out!r}"
     )
-    assert "Loose Ends" not in out, "in a project with no waves the plan-section advice is still there"
+    assert "Loose Ends" not in out, (
+        "in a project with no waves the plan-section advice is still there"
+    )
 
     # Second branch: a wave with a plan keeps the previous text, word for word.
     planned = tmp_path / "wave9-author"
@@ -4704,8 +4837,7 @@ def test_an_old_claim_outside_a_wave_is_told_that_it_has_no_plan(tmp_path: Path)
     assert kept.returncode == 0, kept.stderr
     assert (
         'The line for your stream in the wave plan\'s "Stream status" section is written and '
-        "committed BEFORE release."
-        in said(kept.stdout)
+        "committed BEFORE release." in said(kept.stdout)
     ), f"an old-format claim with a plan's wave lost its previous release line: {kept.stdout!r}"
 
 
@@ -4725,7 +4857,9 @@ def test_a_wave_with_mixed_claims_is_judged_by_its_first_claim(
     claim_bare(board, invented)
     claim(board, named, today_wave(), "2")
     board.write_text(
-        board_line(id="lost0003", at=now_minus(3), to=f"{today_wave()}/9", title="no one to receive it")
+        board_line(
+            id="lost0003", at=now_minus(3), to=f"{today_wave()}/9", title="no one to receive it"
+        )
         + "\n",
         encoding="utf-8",
     )
@@ -5123,7 +5257,9 @@ def test_an_unreadable_marker_refuses_aloud_to_the_strict_and_stays_silent_for_t
     assert "strict refused" in unknown, (
         f"on 'couldn't tell' the strict reader changed the session's identity silently: {unknown!r}"
     )
-    assert "not seeing something is not the same" in unknown and "substituted by the check" in unknown, (
+    assert (
+        "not seeing something is not the same" in unknown and "substituted by the check" in unknown
+    ), (
         "the refusal named neither the substance nor the reason — the human has nothing to go and "
         f"sort it out with: {unknown!r}"
     )
@@ -5677,7 +5813,9 @@ def test_no_key_at_all_lets_a_claim_overwrite_the_stream_that_holds_the_folder(
     assert forced.returncode != 0, (
         f"the release-with-a-non-empty-inbox switch worked as a bypass of the folder rule: {forced.stdout!r}"
     )
-    assert kept.file.read_bytes() == before, "the previous stream's claim was overwritten by a switch"
+    assert kept.file.read_bytes() == before, (
+        "the previous stream's claim was overwritten by a switch"
+    )
     assert tool_switches() == {"AllowUnknownStream", "ForAll", "Force", "TakeOver"}, (
         f"a new switch appeared in the tool: {sorted(tool_switches())} — if it is a bypass of the "
         "folder rule, streams will start vanishing silently again"
@@ -5687,7 +5825,9 @@ def test_no_key_at_all_lets_a_claim_overwrite_the_stream_that_holds_the_folder(
         "switch people hit without looking"
     )
     offered = [line for line in said(forced.stderr) if "-Force" in line]
-    assert not offered, f"the refusal offers a switch instead of three harmless ways out: {offered!r}"
+    assert not offered, (
+        f"the refusal offers a switch instead of three harmless ways out: {offered!r}"
+    )
 
     taken = tool(board, "-Mode", "Claim", "-Wave", "wave9", "-Stream", "3", "-TakeOver", cwd=tab)
 
@@ -5722,7 +5862,9 @@ def test_the_registry_lock_is_free_the_moment_the_folder_rule_refuses(tmp_path: 
     neighbour = tool(board, "-Mode", "Claim", "-Wave", "wave9", "-Stream", "4", cwd=mate)
     elapsed = time.monotonic() - started
 
-    assert neighbour.returncode == 0, f"the neighbouring session did not announce: {neighbour.stderr!r}"
+    assert neighbour.returncode == 0, (
+        f"the neighbouring session did not announce: {neighbour.stderr!r}"
+    )
     assert "Waiting for the claim registry lock" not in neighbour.stdout, (
         f"the neighbour waited on a lock abandoned by the refusal: {neighbour.stdout!r}"
     )
@@ -5845,7 +5987,9 @@ def test_a_claim_of_the_older_version_from_a_subfolder_holds_the_folder_too(tmp_
         f"another stream was written over an older version's claim: {denied.stdout!r}"
     )
     assert orphan.read_bytes() == before, "the older version's claim was overwritten"
-    assert "wave9/4" in denied.stderr, f"the refusal did not name the folder's holder: {denied.stderr!r}"
+    assert "wave9/4" in denied.stderr, (
+        f"the refusal did not name the folder's holder: {denied.stderr!r}"
+    )
 
 
 # ─────────────────────────────────────────────────────────────────────────────────────────────
@@ -5924,8 +6068,7 @@ def test_a_short_reclaim_continues_a_stream_of_a_named_wave(tmp_path: Path) -> N
     assert done.returncode == 0, done.stderr
     assert (
         'The line for your stream in the wave plan\'s "Stream status" section is written and '
-        "committed BEFORE release."
-        in said(done.stdout)
+        "committed BEFORE release." in said(done.stdout)
     ), f"after the reclaim a stream of a planned wave was left with no plan: {done.stdout!r}"
 
 
@@ -5962,8 +6105,7 @@ def test_a_short_reclaim_continues_a_stream_whose_wave_came_from_the_plan_name(
     assert done.returncode == 0, done.stderr
     assert (
         'The line for your stream in the wave plan\'s "Stream status" section is written and '
-        "committed BEFORE release."
-        in said(done.stdout)
+        "committed BEFORE release." in said(done.stdout)
     ), f"after the reclaim the stream lost the plan taken from the file name: {done.stdout!r}"
 
 
@@ -5995,8 +6137,9 @@ def test_a_short_reclaim_continues_a_stream_of_a_wave_the_tool_invented(tmp_path
 
     done = release(board, tab)
     assert done.returncode == 0, done.stderr
-    assert "No wave plan — nowhere to write a stream line; the summary goes in your reply to the owner." in said(
-        done.stdout
+    assert (
+        "No wave plan — nowhere to write a stream line; the summary goes in your reply to the owner."
+        in said(done.stdout)
     ), f"after the reclaim a planless stream acquired a plan: {done.stdout!r}"
 
 
@@ -6020,15 +6163,15 @@ def test_a_short_reclaim_of_an_old_claim_does_not_invent_the_flag_it_never_had(
     claim(board, tab, "sprint-alpha", "1", "-StreamName", "An older version's claim")
     strip_claim_field(board, tab, "wave_auto")
     before = dict(claim_of(board, tab, only_open=True).fields)
-    assert "wave_auto" not in before, "the check is built wrong: the flag was not removed from the claim"
+    assert "wave_auto" not in before, (
+        "the check is built wrong: the flag was not removed from the claim"
+    )
 
     claim_bare(board, tab)
 
     after = dict(claim_of(board, tab, only_open=True).fields)
     reclaimed_the_same_stream(before, after)
-    assert "wave_auto" not in after, (
-        f"the reclaim invented a flag the claim never had: {after!r}"
-    )
+    assert "wave_auto" not in after, f"the reclaim invented a flag the claim never had: {after!r}"
 
     # A check in earnest: the neighbour's right to join this wave must not come into being.
     newcomer = claim_bare(board, tmp_path / "neighbour")
@@ -6126,10 +6269,14 @@ def test_a_new_stream_over_a_released_one_does_not_inherit_its_names(tmp_path: P
         cwd=neighbour,
         known=True,
     )
-    assert offered.returncode == 0, f"the finding by the former name was not accepted: {offered.stderr!r}"
+    assert offered.returncode == 0, (
+        f"the finding by the former name was not accepted: {offered.stderr!r}"
+    )
 
     given = release(board, tab, "-Force")
-    assert given.returncode == 0, f"releasing the stream did not go through: {given.stdout!r} {given.stderr!r}"
+    assert given.returncode == 0, (
+        f"releasing the stream did not go through: {given.stdout!r} {given.stderr!r}"
+    )
 
     claim(board, tab, "wave6", "2", "-StreamName", "Next")
     record = claim_of(board, tab, only_open=True)
@@ -6289,7 +6436,7 @@ def test_a_reclaim_that_names_only_the_wave_keeps_the_rest_of_the_stream(tmp_pat
 
     reclaimed_the_same_stream(before, dict(claim_of(board, tab, only_open=True).fields))
     assert (
-        f"You're continuing stream wave9/3 \"Stream identity\", claimed {claim_stamp(before)}."
+        f'You\'re continuing stream wave9/3 "Stream identity", claimed {claim_stamp(before)}.'
         in said(out)
     ), f"the tab wasn't told it is continuing its own stream, or the line was rewritten: {out!r}"
     assert (
@@ -6315,7 +6462,7 @@ def test_a_reclaim_that_names_only_the_wave_keeps_its_seniority(
     are accepted by somebody else.
     """
     registry_invariants.waive(
-        "the invariant \"one leading record per address\": a rival for the same number is built by "
+        'the invariant "one leading record per address": a rival for the same number is built by '
         "hand here, and what is being checked is precisely that the tab does NOT give the address "
         "up. The address rule deliberately doesn't part this pair: the number here is INHERITED "
         "from the tab's own previous record, that is, it stays issued, and the address rule doesn't "
@@ -6455,7 +6602,7 @@ def test_the_continued_stream_is_named_by_the_address_it_really_had(tmp_path: Pa
     )
     assert (
         "Wave not named — inherited from your previous entry. You're continuing stream "
-        f"{today_wave()}/1 \"Shifted\", claimed {claim_stamp(before)} — the number was yielded to a "
+        f'{today_wave()}/1 "Shifted", claimed {claim_stamp(before)} — the number was yielded to a '
         "neighbour, the new address is named below." in said(out)
     ), f"the line about continuing the stream names a foreign address or was rewritten: {out!r}"
     assert f"You're continuing stream {today_wave()}/2" not in out, (
@@ -6727,7 +6874,9 @@ def test_the_losing_tab_is_disarmed_the_moment_its_address_moves(tmp_path: Path)
         f"the loser silenced the new owner's finding — closing a name-based address is SHARED, and "
         f"they would have seen it neither in delivery nor on the board: {closing.stdout!r}"
     )
-    assert "is addressed to stream" in closing.stderr, f"the wrong guard refused: {closing.stderr!r}"
+    assert "is addressed to stream" in closing.stderr, (
+        f"the wrong guard refused: {closing.stderr!r}"
+    )
     assert any(mark in line for line in bullets(run_deliver(board, tree, "Start", "owner"))), (
         "the new owner's finding was silenced by someone else's hand"
     )
@@ -6821,7 +6970,7 @@ def test_a_finding_for_a_released_stream_is_refused_even_after_the_address_moved
     up no fallback for it — and it reached nobody at all.
     """
     registry_invariants.waive(
-        "the invariant \"an address has a leading record\": the address ends here DELIBERATELY — the "
+        'the invariant "an address has a leading record": the address ends here DELIBERATELY — the '
         "stream moved and in the new folder honestly released itself, while the abandoned record of "
         "the old folder stayed open. That is exactly what is checked: the address has no leading "
         "record, and a finding for it is not accepted"
@@ -6839,7 +6988,7 @@ def test_a_finding_for_a_released_stream_is_refused_even_after_the_address_moved
         f"a finding for a released address was accepted — an abandoned record keeps it alive: "
         f"{denied.stdout!r}"
     )
-    assert "stream \"wave9/3\" was RELEASED" in denied.stderr, (
+    assert 'stream "wave9/3" was RELEASED' in denied.stderr, (
         f"the refusal doesn't speak of a release — so a ghost holds the address: {denied.stderr!r}"
     )
 
@@ -7529,6 +7678,7 @@ def test_the_stand_reads_supersessions_the_way_the_tool_does(tmp_path: Path) -> 
     assert not superseded, "the stand silenced an address-less record — the tool sees no such edge"
     assert not faults, f"the stand found a fault where the tool sees no takeover at all: {faults}"
 
+
 @needs_pwsh
 def test_a_move_outlives_the_folder_taken_by_the_next_stream(
     tmp_path: Path, registry_invariants: RegistryWatch
@@ -8102,7 +8252,9 @@ def refusal(board: Path, cwd: Path, command: str, valve: bool = False) -> str:
     a defect in itself — it is checked here rather than in each caller.
     """
     done = guard_call(board, cwd, command, valve=valve)
-    assert done.returncode == 0, f"the guard exited non-zero — it would break the call: {done.stderr}"
+    assert done.returncode == 0, (
+        f"the guard exited non-zero — it would break the call: {done.stderr}"
+    )
     text = done.stdout.strip()
     if not text:
         return ""
@@ -8126,8 +8278,12 @@ def test_a_commit_from_an_unannounced_stream_is_refused(tmp_path: Path) -> None:
 
     said = refusal(board, silent, 'git commit -m "the work"')
 
-    assert said, "the commit from an unannounced stream went through — nobody outside knows it exists"
-    assert "-Mode Claim" in said, f"the refusal does not hand back the command that fixes it: {said!r}"
+    assert said, (
+        "the commit from an unannounced stream went through — nobody outside knows it exists"
+    )
+    assert "-Mode Claim" in said, (
+        f"the refusal does not hand back the command that fixes it: {said!r}"
+    )
     assert "PARALLEL_STREAMS_ALLOW_UNCLAIMED" in said, (
         f"the refusal does not name the deliberate way past it: {said!r}"
     )
@@ -8274,7 +8430,9 @@ def machine_git_settings_ignored(tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ISOLATED_GIT = pytest.mark.usefixtures("machine_git_settings_ignored")
 
 
-def clone_with_origin(root: Path, name: str, origin: str | None, profile: str = HOME_PROFILE) -> Path:
+def clone_with_origin(
+    root: Path, name: str, origin: str | None, profile: str = HOME_PROFILE
+) -> Path:
     """A clone stand-in: a repository carrying the project's profile, with the given origin (or none)."""
     project = stub_project(root, name, profile)
     if origin is not None:
@@ -8355,7 +8513,12 @@ def test_a_home_address_with_an_encoded_character_still_counts(tmp_path: Path) -
     address = "https://dev.azure.com/keeper/my%20project/_git/repo"
     profile = f"# Profile\n\n## Home\n\n- {address}\n"
     home = clone_with_origin(tmp_path, "home-clone", address, profile=profile)
-    fork = clone_with_origin(tmp_path, "fork-clone", "https://dev.azure.com/someone/my%20project/_git/repo", profile=profile)
+    fork = clone_with_origin(
+        tmp_path,
+        "fork-clone",
+        "https://dev.azure.com/someone/my%20project/_git/repo",
+        profile=profile,
+    )
 
     said = refusal(board, home, 'git commit -m "the work"')
 
@@ -8396,7 +8559,9 @@ def test_a_home_address_with_the_host_in_front_still_meets_home_by_another_host(
 
     said = refusal(board, home, 'git commit -m "the work"')
 
-    assert said, f"home reached as {origin} committed without announcing — the host in front was compared exactly"
+    assert said, (
+        f"home reached as {origin} committed without announcing — the host in front was compared exactly"
+    )
     assert "-Mode Claim" in said, f"the refusal is not the usual one: {said!r}"
     assert refusal(board, fork, 'git commit -m "the work"') == "", (
         f"a clone of a fork reached as {origin.replace('keeper/', 'someone/')} was refused — the line did not count"
@@ -8405,7 +8570,9 @@ def test_a_home_address_with_the_host_in_front_still_meets_home_by_another_host(
 
 @needs_pwsh
 @ISOLATED_GIT
-def test_a_home_section_commented_out_above_the_real_one_does_not_take_its_place(tmp_path: Path) -> None:
+def test_a_home_section_commented_out_above_the_real_one_does_not_take_its_place(
+    tmp_path: Path,
+) -> None:
     """An old `## Home` kept inside `<!-- -->` above the real one is no section — the real one counts.
 
     The first heading found wins. Read inside the note, the old address took the real section's
@@ -8424,7 +8591,9 @@ def test_a_home_section_commented_out_above_the_real_one_does_not_take_its_place
 
     said = refusal(board, home, 'git commit -m "the work"')
 
-    assert said, "the home clone committed without announcing — the commented-out section was read instead"
+    assert said, (
+        "the home clone committed without announcing — the commented-out section was read instead"
+    )
     assert "-Mode Claim" in said, f"the refusal is not the usual one: {said!r}"
     assert refusal(board, fork, 'git commit -m "the work"') == "", (
         "a clone of a fork was refused — the real section below the note was not read"
@@ -8447,7 +8616,9 @@ def test_a_clone_with_no_origin_counts_as_home(tmp_path: Path) -> None:
     git(bare, "remote", "add", "upstream", HOME_ORIGIN)
 
     said = refusal(board, bare, 'git commit -m "the work"')
-    assert said, "a clone with no origin committed without announcing — the guard stood aside at home"
+    assert said, (
+        "a clone with no origin committed without announcing — the guard stood aside at home"
+    )
     assert "-Mode Claim" in said, f"the refusal is not the usual one: {said!r}"
 
     git(bare, "remote", "add", "origin", FORK_ORIGIN)
@@ -8555,7 +8726,9 @@ HOME_AS_WRITTEN = {
 @needs_pwsh
 @ISOLATED_GIT
 @pytest.mark.parametrize("entry", list(HOME_AS_WRITTEN.values()), ids=list(HOME_AS_WRITTEN))
-def test_the_home_clone_is_refused_however_the_address_is_written(tmp_path: Path, entry: str) -> None:
+def test_the_home_clone_is_refused_however_the_address_is_written(
+    tmp_path: Path, entry: str
+) -> None:
     """Whatever is written around the home address, the guard still stands in the home repository.
 
     Either the markup comes off and the address matches home, or the line does not read as an
@@ -8640,7 +8813,9 @@ def scaffold_profile() -> str:
         "installer-scaffold",
     ],
 )
-def test_without_a_home_address_every_clone_is_guarded_as_before(tmp_path: Path, profile: str) -> None:
+def test_without_a_home_address_every_clone_is_guarded_as_before(
+    tmp_path: Path, profile: str
+) -> None:
     """No home address in the profile — a clone of a fork is refused exactly as before.
 
     The new section only ever lifts the refusal where it is filled in. A placeholder, a note or a line
@@ -8681,7 +8856,9 @@ def test_session_start_says_where_the_guard_stands_aside(tmp_path: Path) -> None
     clone = clone_with_origin(tmp_path, "clone", HOME_ORIGIN)
 
     at_home = context_text(run_deliver(board, clone, "Start", "s-aside-home"))
-    assert STANDS_ASIDE not in at_home, f"the session at home was told the guard stands aside: {at_home!r}"
+    assert STANDS_ASIDE not in at_home, (
+        f"the session at home was told the guard stands aside: {at_home!r}"
+    )
 
     git(clone, "remote", "set-url", "origin", FORK_ORIGIN)
     told = context_text(run_deliver(board, clone, "Start", "s-aside-fork"))
@@ -8690,12 +8867,16 @@ def test_session_start_says_where_the_guard_stands_aside(tmp_path: Path) -> None
     assert "keeper/project" in told, f"the line does not name the home the section holds: {told!r}"
 
     turn = context_text(run_deliver(board, clone, "Prompt", "s-aside-fork"))
-    assert STANDS_ASIDE not in turn, f"the line came back on an ordinary turn — it is for session start: {turn!r}"
+    assert STANDS_ASIDE not in turn, (
+        f"the line came back on an ordinary turn — it is for session start: {turn!r}"
+    )
 
 
 @needs_pwsh
 @ISOLATED_GIT
-@pytest.mark.parametrize("entry", ["N/A", "TODO/TBD", "- and/or"], ids=["n-a", "todo-tbd", "and-or"])
+@pytest.mark.parametrize(
+    "entry", ["N/A", "TODO/TBD", "- and/or"], ids=["n-a", "todo-tbd", "and-or"]
+)
 def test_a_home_section_that_names_no_real_address_is_heard_about_at_home(
     tmp_path: Path, entry: str
 ) -> None:
@@ -8711,7 +8892,9 @@ def test_a_home_section_that_names_no_real_address_is_heard_about_at_home(
 
     told = context_text(run_deliver(board, home, "Start", "s-aside-na"))
 
-    assert STANDS_ASIDE in told, f"`## Home` holding {entry!r} lifts the guard at home in silence: {told!r}"
+    assert STANDS_ASIDE in told, (
+        f"`## Home` holding {entry!r} lifts the guard at home in silence: {told!r}"
+    )
     assert "github.com/keeper/project" in told, f"the line does not name the origin: {told!r}"
 
 
@@ -8731,9 +8914,13 @@ def test_session_start_points_at_git_when_the_guard_stands_aside_without_reading
 
     told = context_text(run_deliver(board, home, "Start", "s-aside-unread"))
 
-    assert STANDS_ASIDE in told, f"the guard stands aside without reading origin, in silence: {told!r}"
+    assert STANDS_ASIDE in told, (
+        f"the guard stands aside without reading origin, in silence: {told!r}"
+    )
     assert "git remote get-url origin" in told, f"the line does not point at git: {told!r}"
-    assert "fix the section" not in told, f"the line sends the person to fix a correct section: {told!r}"
+    assert "fix the section" not in told, (
+        f"the line sends the person to fix a correct section: {told!r}"
+    )
 
 
 # ─── Tab name: which tab runs a stream ───────────────────────────────────────────────────────────
@@ -8944,7 +9131,10 @@ def test_the_tab_title_is_not_fooled_by_the_same_words_inside_the_conversation(
             ),
             # A nested object of the same kind — a tool result parsed into a structure.
             json.dumps(
-                {"type": "user", "toolUseResult": json.loads(custom_title("FALSE-nested", "trap-1"))},
+                {
+                    "type": "user",
+                    "toolUseResult": json.loads(custom_title("FALSE-nested", "trap-1")),
+                },
                 ensure_ascii=False,
             ),
             # A name field on a record of another kind — with the record-kind word in quotes next to
@@ -9125,9 +9315,10 @@ def test_the_second_read_takes_only_the_new_tail_and_the_cache_keeps_nothing_but
 
     with journal.open("ab") as handle:
         handle.write((custom_title("O2-1", session) + "\n").encode("utf-8"))
-    assert ask_titles(tmp_path, [session], cache=cache)[session] == {"title": "O2-1", "kind": "custom"}, (
-        "a rename in the new tail didn't come through"
-    )
+    assert ask_titles(tmp_path, [session], cache=cache)[session] == {
+        "title": "O2-1",
+        "kind": "custom",
+    }, "a rename in the new tail didn't come through"
 
     # The cache is five lines: shape mark, transcript path, offset and two names. Nothing from the talk.
     stored = (cache / f"{session}.txt").read_text(encoding="utf-8").split("\n")
@@ -9135,7 +9326,9 @@ def test_the_second_read_takes_only_the_new_tail_and_the_cache_keeps_nothing_but
     mark, path, offset, custom, auto = stored[:5]
     assert mark.startswith("parallel-streams tab title cache"), stored
     assert folder_key(path) == folder_key(journal) and offset.isdigit(), stored
-    assert (custom, auto) == ("O2-1", ""), f"the cache keeps something from the transcript beyond names: {stored}"
+    assert (custom, auto) == ("O2-1", ""), (
+        f"the cache keeps something from the transcript beyond names: {stored}"
+    )
 
 
 @needs_pwsh
@@ -9148,9 +9341,10 @@ def test_a_journal_that_got_shorter_is_read_again(tmp_path: Path, claude_config:
     assert ask_titles(tmp_path, [session], cache=cache)[session]["title"] == "Old"
 
     write_journal(journal, [custom_title("New", session)])
-    assert ask_titles(tmp_path, [session], cache=cache)[session] == {"title": "New", "kind": "custom"}, (
-        "a rewritten transcript wasn't reread — the tab kept its old name"
-    )
+    assert ask_titles(tmp_path, [session], cache=cache)[session] == {
+        "title": "New",
+        "kind": "custom",
+    }, "a rewritten transcript wasn't reread — the tab kept its old name"
 
 
 @needs_pwsh
@@ -9160,7 +9354,12 @@ def test_the_ceiling_gives_up_the_human_name_but_keeps_the_automatic_one(
     """No reading back past the ceiling: no human name found — the automatic one is returned, if there was one."""
     write_journal(
         journal_path(claude_config, "ceil-1"),
-        [custom_title("Past-the-ceiling", "ceil-1"), talk_exact(20_000), ai_title("In-window", "ceil-1"), talk(500)],
+        [
+            custom_title("Past-the-ceiling", "ceil-1"),
+            talk_exact(20_000),
+            ai_title("In-window", "ceil-1"),
+            talk(500),
+        ],
     )
     write_journal(
         journal_path(claude_config, "ceil-2"),
@@ -9229,7 +9428,9 @@ def test_a_claim_without_the_session_variable_works_as_before(tmp_path: Path) ->
     assert "tab" not in announced.splitlines()[0]
     assert "session_id" not in claim_of(board, mine, only_open=True).fields
     assert " tab " not in stream_line_of(run_tool(board, "-Mode", "Streams"), mine)
-    assert not (board.parent / "tabs").exists(), "a tab record about nobody was created without a session"
+    assert not (board.parent / "tabs").exists(), (
+        "a tab record about nobody was created without a session"
+    )
 
 
 @needs_pwsh
@@ -9274,7 +9475,9 @@ def test_a_takeover_carries_the_session_of_the_new_folder(
     monkeypatch.delenv("CLAUDE_CODE_SESSION_ID")
 
     assert claim_of(board, moved, only_open=True).fields.get("session_id") == "sess-moved"
-    answer = [line.strip() for line in run_tool(board, "-Mode", "Who", "-To", "wave9/3").splitlines()]
+    answer = [
+        line.strip() for line in run_tool(board, "-Mode", "Who", "-To", "wave9/3").splitlines()
+    ]
     rows = [line for line in answer if line.startswith("wave9/3")]
     assert len(rows) == 2, answer
     assert "tab Moved" in rows[0] and "was run by" not in rows[0], (
@@ -9355,12 +9558,20 @@ def test_the_delivery_guard_keeps_the_tab_record_and_follows_a_rename(
 
     run_deliver(board, mine, "Start", "sess-rename")
     started = tab_record(board, "sess-rename")
-    assert (started["title"], started["title_kind"], started["prompt_at"]) == ("Auto", "auto", ""), started
+    assert (started["title"], started["title_kind"], started["prompt_at"]) == (
+        "Auto",
+        "auto",
+        "",
+    ), started
     assert folder_key(started["tree"]) == folder_key(mine), started
 
     run_deliver(board, mine, "Prompt", "sess-rename")
-    assert tab_record(board, "sess-rename")["prompt_at"], "a human turn didn't record the message time"
-    assert prompt_mark(board, "sess-rename").exists(), "a human turn didn't create the session marker"
+    assert tab_record(board, "sess-rename")["prompt_at"], (
+        "a human turn didn't record the message time"
+    )
+    assert prompt_mark(board, "sess-rename").exists(), (
+        "a human turn didn't create the session marker"
+    )
 
     with journal.open("ab") as handle:
         handle.write((custom_title("О1-9", "sess-rename") + "\n").encode("utf-8"))
@@ -9394,7 +9605,9 @@ def test_the_start_of_a_session_clears_tab_records_silent_for_a_month(tmp_path: 
 
     run_deliver(board, mine, "Start", "sess-cleaner")
 
-    assert not old.exists() and not old_cache.exists(), "the record of a tab silent for a month stayed"
+    assert not old.exists() and not old_cache.exists(), (
+        "the record of a tab silent for a month stayed"
+    )
     assert recent.exists(), "cleanup removed the record of a tab that wrote recently"
     assert (tabs / "sess-cleaner.json").exists(), "this session's own tab record wasn't created"
 
@@ -9438,7 +9651,8 @@ def test_the_owner_learns_which_tab_ran_a_released_stream(
     assert release(board, gone).returncode == 0
     with board.open("a", encoding="utf-8") as handle:
         handle.write(
-            board_line(id="lost0044", at=now_minus(3), to="wave9/44", title="nobody to receive it") + "\n"
+            board_line(id="lost0044", at=now_minus(3), to="wave9/44", title="nobody to receive it")
+            + "\n"
         )
 
     owner = context_text(run_deliver(board, wave_repo, "Start", "s-owner-tab"))
@@ -9480,7 +9694,9 @@ def test_the_overlap_warning_names_the_neighbours_tab(
 ) -> None:
     """The same-files warning names the neighbour's tab — that's where to go and agree."""
     board = tmp_path / "board.jsonl"
-    write_journal(journal_path(claude_config, "sess-near"), [custom_title("Neighbour", "sess-near")])
+    write_journal(
+        journal_path(claude_config, "sess-near"), [custom_title("Neighbour", "sess-near")]
+    )
     mine = tmp_path / "wave9-mine"
     neighbour = tmp_path / "wave9-neighbour"
     claim(board, mine, "wave9", "1", "-StreamName", "Pipe")
@@ -9501,7 +9717,7 @@ def test_the_overlap_warning_names_the_neighbours_tab(
 def test_who_answers_with_the_tab_the_folder_the_branch_and_the_last_message(
     tmp_path: Path, claude_config: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """"Who runs it" — one line per answer: address, tab, folder, branch, when a person wrote there.
+    """ "Who runs it" — one line per answer: address, tab, folder, branch, when a person wrote there.
 
     It takes the same address forms as a finding: stream number, branch and folder. An unknown tab is
     said in words here — that IS the answer, it can't be left out.
@@ -9523,7 +9739,7 @@ def test_who_answers_with_the_tab_the_folder_the_branch_and_the_last_message(
             for line in run_tool(board, "-Mode", "Who", "-To", asked).splitlines()
             if line.strip().startswith("wave9/")
         ]
-        assert len(rows) == 1, f"not one answer line for \"{asked}\": {rows}"
+        assert len(rows) == 1, f'not one answer line for "{asked}": {rows}'
         row = rows[0]
         assert row.startswith('wave9/3 "Dispatcher" — live, tab О1-3-1, folder '), row
         assert folder_key(tab) in row.lower(), f"the answer didn't name the folder: {row}"
@@ -9580,11 +9796,13 @@ def test_tabs_lists_fresh_tabs_first_moves_silent_ones_to_a_tail_and_marks_twins
 
     def where(piece: str) -> int:
         found = [number for number, line in enumerate(lines) if piece in line]
-        assert len(found) == 1, f"\"{piece}\" isn't exactly one line in the listing: {lines}"
+        assert len(found) == 1, f'"{piece}" isn\'t exactly one line in the listing: {lines}'
         return found[0]
 
-    assert where("folder d:/trees/second") < where("folder d:/trees/third") < where(
-        "folder d:/trees/first"
+    assert (
+        where("folder d:/trees/second")
+        < where("folder d:/trees/third")
+        < where("folder d:/trees/first")
     ), f"the freshest tabs aren't on top: {lines}"
     tail = where("Long silent")
     assert where("folder d:/trees/first") < tail < where("folder d:/trees/fourth"), lines
@@ -9608,7 +9826,9 @@ def put_tab_record(board: Path, session: str, **fields: object) -> Path:
     folder = tabs_dir(board)
     folder.mkdir(parents=True, exist_ok=True)
     path = folder / f"{session}.json"
-    path.write_text(json.dumps({"session_id": session, **fields}, ensure_ascii=False), encoding="utf-8")
+    path.write_text(
+        json.dumps({"session_id": session, **fields}, ensure_ascii=False), encoding="utf-8"
+    )
     return path
 
 
@@ -9669,10 +9889,14 @@ def test_the_cleanup_removes_only_its_own_files_and_the_leftovers_of_killed_writ
     run_deliver(board, mine, "Start", "sess-cleaner-2")
 
     for path in strangers:
-        assert path.exists(), f"cleanup deleted a stranger's file {path.name} — deletion is irreversible"
+        assert path.exists(), (
+            f"cleanup deleted a stranger's file {path.name} — deletion is irreversible"
+        )
     for path in ours:
         assert not path.exists(), f"our own old file {path.name} survived cleanup"
-    assert fresh_leftover.exists(), "cleanup removed a temporary file that may be being written right now"
+    assert fresh_leftover.exists(), (
+        "cleanup removed a temporary file that may be being written right now"
+    )
     assert alive.exists(), "cleanup removed the record of a tab where a person just wrote"
 
 
@@ -9712,8 +9936,12 @@ def test_the_cleanup_never_enters_a_tabs_folder_that_is_a_link(tmp_path: Path) -
     run_deliver(board, mine, "Start", "sess-linked")
     run_deliver(plain_board, mine, "Start", "sess-linked")
 
-    assert behind.exists(), "cleanup went through the link and deleted a file in someone else's folder"
-    assert not plain.exists(), "cleanup didn't work in a plain folder — silence behind the link proves nothing"
+    assert behind.exists(), (
+        "cleanup went through the link and deleted a file in someone else's folder"
+    )
+    assert not plain.exists(), (
+        "cleanup didn't work in a plain folder — silence behind the link proves nothing"
+    )
 
 
 @needs_pwsh
@@ -9736,7 +9964,9 @@ def test_a_title_cut_on_an_emoji_still_reaches_the_cache_and_the_tab_record(
     run_deliver(board, mine, "Start", "sess-emoji")
 
     cut = "Я" * 78 + "…"
-    assert tab_record(board, "sess-emoji")["title"] == cut, "the tab record wasn't created, or the name was cut wrong"
+    assert tab_record(board, "sess-emoji")["title"] == cut, (
+        "the tab record wasn't created, or the name was cut wrong"
+    )
     cached = title_cache(board, "sess-emoji").read_text(encoding="utf-8").split("\n")
     assert cached[3] == cut, f"the name cache wasn't written: {cached}"
     assert ask_titles(tmp_path, ["sess-whole"])["sess-whole"]["title"] == "Я" * 77 + "😀" + "…", (
@@ -9767,21 +9997,29 @@ def test_a_forged_cache_path_is_not_trusted_and_the_start_looks_for_the_journal_
         cache = tmp_path / f"cache-forged-{number}"
         cache.mkdir()
         size = fake.stat().st_size
-        (cache / "sess-c.txt").write_text(f"{mark}\n{fake}\n{size}\nSomeone else's\n\n", encoding="utf-8")
-        assert ask_titles(tmp_path, ["sess-c"], cache=cache)["sess-c"] == {"title": "Own", "kind": "custom"}, (
-            f"a cache with a planted path ({fake}) named the tab after someone else"
+        (cache / "sess-c.txt").write_text(
+            f"{mark}\n{fake}\n{size}\nSomeone else's\n\n", encoding="utf-8"
         )
+        assert ask_titles(tmp_path, ["sess-c"], cache=cache)["sess-c"] == {
+            "title": "Own",
+            "kind": "custom",
+        }, f"a cache with a planted path ({fake}) named the tab after someone else"
 
     cache = tmp_path / "cache-moved"
-    write_journal(journal_path(claude_config, "sess-e", "D--folder-A"), [custom_title("From-A", "sess-e")])
+    write_journal(
+        journal_path(claude_config, "sess-e", "D--folder-A"), [custom_title("From-A", "sess-e")]
+    )
     assert ask_titles(tmp_path, ["sess-e"], cache=cache)["sess-e"]["title"] == "From-A"
     write_journal(
-        journal_path(claude_config, "sess-e", "D--folder-B"), [talk(2_000), custom_title("From-B", "sess-e")]
+        journal_path(claude_config, "sess-e", "D--folder-B"),
+        [talk(2_000), custom_title("From-B", "sess-e")],
     )
     assert ask_titles(tmp_path, ["sess-e"], cache=cache)["sess-e"]["title"] == "From-A", (
         "an ordinary turn looked for the transcript again — on every message that's a walk over all project folders"
     )
-    assert ask_titles(tmp_path, ["sess-e"], cache=cache, fresh=True)["sess-e"]["title"] == "From-B", (
+    assert (
+        ask_titles(tmp_path, ["sess-e"], cache=cache, fresh=True)["sess-e"]["title"] == "From-B"
+    ), (
         "a session start trusted the cached path and didn't find the transcript the session writes to now"
     )
 
@@ -9807,15 +10045,23 @@ def test_a_dense_run_of_lookalike_lines_stops_at_the_budget_and_a_long_line_is_n
     )
     with journal.open("ab") as handle:
         handle.write((custom_title("Fresh", session) + "\n").encode("utf-8"))
-    assert ask_titles(tmp_path, [session], cache=cache)[session] == {"title": "Fresh", "kind": "custom"}, (
-        "after stopping on the budget a new rename wasn't found"
-    )
+    assert ask_titles(tmp_path, [session], cache=cache)[session] == {
+        "title": "Fresh",
+        "kind": "custom",
+    }, "after stopping on the budget a new rename wasn't found"
 
     padded = json.dumps(
-        {"type": "custom-title", "customTitle": "Long-record", "pad": "x" * 9_000, "sessionId": "sess-long"},
+        {
+            "type": "custom-title",
+            "customTitle": "Long-record",
+            "pad": "x" * 9_000,
+            "sessionId": "sess-long",
+        },
         ensure_ascii=False,
     )
-    write_journal(journal_path(claude_config, "sess-long"), [custom_title("Short", "sess-long"), padded])
+    write_journal(
+        journal_path(claude_config, "sess-long"), [custom_title("Short", "sess-long"), padded]
+    )
     assert ask_titles(tmp_path, ["sess-long"])["sess-long"]["title"] == "Short", (
         "a line longer than 8 KB was parsed as a name record"
     )
@@ -9838,13 +10084,17 @@ def test_the_tab_record_is_kept_on_every_way_out_of_the_delivery_guard(
     empty_board = tmp_path / "empty" / "board.jsonl"
     empty_board.parent.mkdir()
     run_deliver(empty_board, mine, "Prompt", "sess-ways")
-    assert tab_record(empty_board, "sess-ways")["title"] == "O1-7", "no tab record on the no-board exit"
+    assert tab_record(empty_board, "sess-ways")["title"] == "O1-7", (
+        "no tab record on the no-board exit"
+    )
 
     board = tmp_path / "board.jsonl"
     add(board, "wave9-ways", "a finding for the tab")
     delivered = context_text(run_deliver(board, mine, "Prompt", "sess-ways"))
     assert "a finding for the tab" in delivered, "delivery broke"
-    assert tab_record(board, "sess-ways")["title"] == "O1-7", "no tab record on the exit with a finding"
+    assert tab_record(board, "sess-ways")["title"] == "O1-7", (
+        "no tab record on the exit with a finding"
+    )
 
 
 @needs_pwsh
@@ -9856,7 +10106,9 @@ def test_everything_printed_from_a_tab_record_is_cleaned_at_print_time(tmp_path:
     indistinguishable from the channel's own lines.
     """
     board = tmp_path / "board.jsonl"
-    put_claim(registry_dir(board), "poisoned", **open_claim("d:/trees/poison", session_id="sess-poison"))
+    put_claim(
+        registry_dir(board), "poisoned", **open_claim("d:/trees/poison", session_id="sess-poison")
+    )
     put_tab_record(
         board,
         "sess-poison",
@@ -9896,7 +10148,9 @@ $raw = 'О1' + [char]0x200B + '-3' + [char]0xFEFF + [char]0x061C + [char]0x00AD 
     answer = ask_lib(tmp_path, "hidden", body)
     assert answer["newline"] is False, "a session id with a trailing newline was accepted"
     assert answer["plain"] is True
-    assert answer["clean"] == "О1 -3 x", f"invisible characters stayed in the name: {answer['clean']!r}"
+    assert answer["clean"] == "О1 -3 x", (
+        f"invisible characters stayed in the name: {answer['clean']!r}"
+    )
 
 
 @needs_pwsh
@@ -9952,7 +10206,7 @@ $answers | ConvertTo-Json -Compress
 
 @needs_pwsh
 def test_who_marks_a_twin_title_and_says_where_the_session_came_from(tmp_path: Path) -> None:
-    """"Who runs it" marks a twin with the start of the session id and says where the board got the session.
+    """ "Who runs it" marks a twin with the start of the session id and says where the board got the session.
 
     The name is a hint, not proof. Two tabs with one name are exactly the case where a person confidently
     goes to the wrong window; and an id written in by the hook is its guess, which has to be said in the
@@ -9961,15 +10215,25 @@ def test_who_marks_a_twin_title_and_says_where_the_session_came_from(tmp_path: P
     board = tmp_path / "board.jsonl"
     put_tab_record(board, "sess-one", title="O1-3", title_kind="custom", tree="d:/trees/one")
     put_tab_record(board, "sess-two", title="o1-3", title_kind="custom", tree="d:/trees/two")
-    put_claim(registry_dir(board), "one", **open_claim("d:/trees/one", stream="3", session_id="sess-one"))
+    put_claim(
+        registry_dir(board), "one", **open_claim("d:/trees/one", stream="3", session_id="sess-one")
+    )
     put_claim(
         registry_dir(board),
         "two",
         **open_claim("d:/trees/two", stream="4", session_id="sess-two", session_adopted=True),
     )
 
-    announced = [line for line in said(run_tool(board, "-Mode", "Who", "-To", "wave9/3")) if line.startswith("wave9/3")]
-    adopted = [line for line in said(run_tool(board, "-Mode", "Who", "-To", "wave9/4")) if line.startswith("wave9/4")]
+    announced = [
+        line
+        for line in said(run_tool(board, "-Mode", "Who", "-To", "wave9/3"))
+        if line.startswith("wave9/3")
+    ]
+    adopted = [
+        line
+        for line in said(run_tool(board, "-Mode", "Who", "-To", "wave9/4"))
+        if line.startswith("wave9/4")
+    ]
 
     assert len(announced) == 1 and "tab O1-3 (session sess-one" in announced[0], announced
     assert "another tab has the same name" in announced[0], announced
@@ -10000,7 +10264,9 @@ def test_the_tab_folder_and_tree_come_from_the_hook_input_and_disagreeing_trees_
     # The hook process is in the worktree with the claim, while the session, by the input, is in another worktree.
     deliver_payload(board, tab, "Prompt", {"session_id": "sess-input", "cwd": str(elsewhere)})
     record = tab_record(board, "sess-input")
-    assert folder_key(record["cwd"]) == folder_key(elsewhere) and folder_key(record["tree"]) == folder_key(elsewhere), (
+    assert folder_key(record["cwd"]) == folder_key(elsewhere) and folder_key(
+        record["tree"]
+    ) == folder_key(elsewhere), (
         f"the tab record took its folder or worktree from somewhere other than the hook's input: {record}"
     )
     assert "session_id" not in claim_of(board, tab, only_open=True).fields, (
@@ -10026,12 +10292,20 @@ def test_the_start_writes_the_starting_tree_and_a_compaction_keeps_it(tmp_path: 
     main = tmp_path / "repo"
     tab = tmp_path / "tab-start"
 
-    deliver_payload(board, main, "Start", {"session_id": "sess-start", "cwd": str(main), "source": "startup"})
+    deliver_payload(
+        board, main, "Start", {"session_id": "sess-start", "cwd": str(main), "source": "startup"}
+    )
     assert folder_key(tab_record(board, "sess-start")["start_tree"]) == folder_key(main)
-    deliver_payload(board, tab, "Start", {"session_id": "sess-start", "cwd": str(tab), "source": "compact"})
+    deliver_payload(
+        board, tab, "Start", {"session_id": "sess-start", "cwd": str(tab), "source": "compact"}
+    )
     after = tab_record(board, "sess-start")
-    assert folder_key(after["start_tree"]) == folder_key(main) and folder_key(after["tree"]) == folder_key(tab), after
-    deliver_payload(board, tab, "Start", {"session_id": "sess-start", "cwd": str(tab), "source": "resume"})
+    assert folder_key(after["start_tree"]) == folder_key(main) and folder_key(
+        after["tree"]
+    ) == folder_key(tab), after
+    deliver_payload(
+        board, tab, "Start", {"session_id": "sess-start", "cwd": str(tab), "source": "resume"}
+    )
     assert folder_key(tab_record(board, "sess-start")["start_tree"]) == folder_key(tab)
 
 
@@ -10065,7 +10339,9 @@ def test_a_claim_without_a_session_is_adopted_only_by_a_tab_that_started_in_its_
     deliver_payload(board, tab, "Start", {"session_id": "sess-owner", "cwd": str(tab)})
     deliver_payload(board, tab, "Prompt", {"session_id": "sess-owner", "cwd": str(tab)})
     fields = claim_of(board, tab, only_open=True).fields
-    assert fields.get("session_id") == "sess-owner" and fields.get("session_adopted") is True, fields
+    assert fields.get("session_id") == "sess-owner" and fields.get("session_adopted") is True, (
+        fields
+    )
 
     monkeypatch.setenv("CLAUDE_CODE_SESSION_ID", "sess-owner")
     claim(board, tab, "wave9", "17")
@@ -10078,7 +10354,9 @@ def test_a_claim_without_a_session_is_adopted_only_by_a_tab_that_started_in_its_
 
 @needs_pwsh
 @needs_git
-def test_adoption_steps_back_for_another_tab_of_the_tree_and_for_a_closed_claim(tmp_path: Path) -> None:
+def test_adoption_steps_back_for_another_tab_of_the_tree_and_for_a_closed_claim(
+    tmp_path: Path,
+) -> None:
     """No adoption if another tab wrote in the worktree today, and none for a released or moved claim.
 
     Two tabs in a worktree are an ambiguity: choosing for the person isn't allowed. A released or moved
@@ -10086,12 +10364,19 @@ def test_adoption_steps_back_for_another_tab_of_the_tree_and_for_a_closed_claim(
     """
     real_worktrees(
         tmp_path,
-        {"tab-rival": "feat/tab-rival", "tab-done": "feat/tab-done", "tab-left": "feat/tab-left", "tab-new": "feat/tab-new"},
+        {
+            "tab-rival": "feat/tab-rival",
+            "tab-done": "feat/tab-done",
+            "tab-left": "feat/tab-left",
+            "tab-new": "feat/tab-new",
+        },
     )
     board = tmp_path / "board.jsonl"
     rival = tmp_path / "tab-rival"
     claim(board, rival, "wave9", "13")
-    put_tab_record(board, "sess-other", title="Other", title_kind="custom", tree=str(rival).replace("\\", "/"))
+    put_tab_record(
+        board, "sess-other", title="Other", title_kind="custom", tree=str(rival).replace("\\", "/")
+    )
     mark = put_prompt_mark(board, "sess-other", seconds_ago=3600)
 
     run_deliver(board, rival, "Prompt", "sess-late")
@@ -10110,13 +10395,17 @@ def test_adoption_steps_back_for_another_tab_of_the_tree_and_for_a_closed_claim(
     claim(board, done, "wave9", "14")
     assert release(board, done).returncode == 0
     run_deliver(board, done, "Prompt", "sess-done")
-    assert "session_id" not in claim_of(board, done, only_open=False).fields, "a released claim got a session"
+    assert "session_id" not in claim_of(board, done, only_open=False).fields, (
+        "a released claim got a session"
+    )
 
     left = tmp_path / "tab-left"
     claim(board, left, "wave9", "15")
     claim(board, tmp_path / "tab-new", "wave9", "15", "-TakeOver")
     run_deliver(board, left, "Prompt", "sess-left")
-    assert "session_id" not in claim_of(board, left, only_open=False).fields, "a moved claim got a session"
+    assert "session_id" not in claim_of(board, left, only_open=False).fields, (
+        "a moved claim got a session"
+    )
 
 
 @needs_pwsh
@@ -10136,13 +10425,17 @@ def test_a_cleared_context_moves_the_claim_to_the_new_number_of_the_same_tab(
     tab = tmp_path / "tab-clear"
     write_journal(journal_path(claude_config, "sess-before"), [custom_title("O1-3", "sess-before")])
     write_journal(journal_path(claude_config, "sess-after"), [custom_title("o1-3", "sess-after")])
-    write_journal(journal_path(claude_config, "sess-stranger"), [custom_title("Other", "sess-stranger")])
+    write_journal(
+        journal_path(claude_config, "sess-stranger"), [custom_title("Other", "sess-stranger")]
+    )
     write_journal(journal_path(claude_config, "sess-auto"), [ai_title("O1-3", "sess-auto")])
     monkeypatch.setenv("CLAUDE_CODE_SESSION_ID", "sess-before")
     claim(board, tab, "wave9", "16")
     monkeypatch.delenv("CLAUDE_CODE_SESSION_ID")
 
-    deliver_payload(board, tab, "Start", {"session_id": "sess-after", "cwd": str(tab), "source": "clear"})
+    deliver_payload(
+        board, tab, "Start", {"session_id": "sess-after", "cwd": str(tab), "source": "clear"}
+    )
     assert claim_of(board, tab, only_open=True).fields.get("session_id") == "sess-after", (
         "after a context clear the claim stayed on the same tab's old id"
     )
@@ -10152,7 +10445,11 @@ def test_a_cleared_context_moves_the_claim_to_the_new_number_of_the_same_tab(
         assert claim_of(board, tab, only_open=True).fields.get("session_id") == "sess-after", (
             f"tab {other}, with another name or none, took the claim"
         )
-    rows = [line for line in said(run_tool(board, "-Mode", "Who", "-To", "wave9/16")) if line.startswith("wave9/16")]
+    rows = [
+        line
+        for line in said(run_tool(board, "-Mode", "Who", "-To", "wave9/16"))
+        if line.startswith("wave9/16")
+    ]
     assert len(rows) == 1 and "session written in by the delivery hook" in rows[0], rows
 
 
@@ -10181,18 +10478,24 @@ def test_the_title_is_reread_at_most_every_two_minutes_and_the_record_is_not_rew
     age(prompt_mark(board, session), 3600)
 
     run_deliver(board, mine, "Prompt", session)
-    assert record_file.stat().st_mtime == aged and record_file.read_text(encoding="utf-8") == before, (
-        "the tab record was rewritten although nothing in it changed"
+    assert (
+        record_file.stat().st_mtime == aged and record_file.read_text(encoding="utf-8") == before
+    ), "the tab record was rewritten although nothing in it changed"
+    assert time.time() - prompt_mark(board, session).stat().st_mtime < 600, (
+        "a human turn didn't touch the marker"
     )
-    assert time.time() - prompt_mark(board, session).stat().st_mtime < 600, "a human turn didn't touch the marker"
 
     with journal.open("ab") as handle:
         handle.write((custom_title("Second", session) + "\n").encode("utf-8"))
     run_deliver(board, mine, "Prompt", session)
-    assert tab_record(board, session)["title"] == "First", "the transcript was re-read before two minutes passed"
+    assert tab_record(board, session)["title"] == "First", (
+        "the transcript was re-read before two minutes passed"
+    )
     age(title_cache(board, session), 180)
     run_deliver(board, mine, "Prompt", session)
-    assert tab_record(board, session)["title"] == "Second", "the rename didn't arrive even after two minutes"
+    assert tab_record(board, session)["title"] == "Second", (
+        "the rename didn't arrive even after two minutes"
+    )
 
     stamp = datetime(2026, 1, 2, 3, 4).timestamp()
     os.utime(prompt_mark(board, session), (stamp, stamp))
@@ -10212,15 +10515,27 @@ def test_a_missing_journal_is_looked_for_again_only_after_a_pause(
     """
     write_journal(journal_path(claude_config, "sess-exists"), [talk(100)])
     cache = tmp_path / "cache-missing"
-    assert ask_titles(tmp_path, ["sess-late-journal"], cache=cache)["sess-late-journal"]["title"] == ""
-    remembered = (cache / "sess-late-journal.txt").read_text(encoding="utf-8").split("\n")
-    assert remembered[1] == "" and remembered[0].startswith("parallel-streams tab title cache"), remembered
-
-    write_journal(journal_path(claude_config, "sess-late-journal"), [custom_title("Found", "sess-late-journal")])
-    assert ask_titles(tmp_path, ["sess-late-journal"], cache=cache)["sess-late-journal"]["title"] == "", (
-        "the miss wasn't remembered — project folders are walked on every turn"
+    assert (
+        ask_titles(tmp_path, ["sess-late-journal"], cache=cache)["sess-late-journal"]["title"] == ""
     )
-    assert ask_titles(tmp_path, ["sess-late-journal"], cache=cache, fresh=True)["sess-late-journal"]["title"] == "Found"
+    remembered = (cache / "sess-late-journal.txt").read_text(encoding="utf-8").split("\n")
+    assert remembered[1] == "" and remembered[0].startswith("parallel-streams tab title cache"), (
+        remembered
+    )
+
+    write_journal(
+        journal_path(claude_config, "sess-late-journal"),
+        [custom_title("Found", "sess-late-journal")],
+    )
+    assert (
+        ask_titles(tmp_path, ["sess-late-journal"], cache=cache)["sess-late-journal"]["title"] == ""
+    ), "the miss wasn't remembered — project folders are walked on every turn"
+    assert (
+        ask_titles(tmp_path, ["sess-late-journal"], cache=cache, fresh=True)["sess-late-journal"][
+            "title"
+        ]
+        == "Found"
+    )
 
     second = tmp_path / "cache-missing-2"
     assert ask_titles(tmp_path, ["sess-later"], cache=second)["sess-later"]["title"] == ""
@@ -10255,7 +10570,10 @@ def test_the_short_path_never_passes_a_last_line_that_is_still_being_written(
 
     with journal.open("ab") as handle:
         handle.write(('more"}}\n' + custom_title("Two", session) + "\n").encode("utf-8"))
-    assert ask_titles(tmp_path, [session], cache=cache)[session] == {"title": "Two", "kind": "custom"}
+    assert ask_titles(tmp_path, [session], cache=cache)[session] == {
+        "title": "Two",
+        "kind": "custom",
+    }
 
 
 # ─── Tab name: finishing touches after the re-review ──────────────────────────────────────────────
@@ -10270,8 +10588,12 @@ def age_adoption_refusal(board: Path, session: str, seconds: float) -> None:
     """Moves the time of an adoption refusal in the tab record back — so a check "lives through" the memory of it."""
     path = tabs_dir(board) / f"{session}.json"
     record = json.loads(path.read_text(encoding="utf-8"))
-    assert record.get("adopt_refused_at"), f"the adoption refusal wasn't remembered in the tab record: {record}"
-    record["adopt_refused_at"] = (datetime.now() - timedelta(seconds=seconds)).isoformat(timespec="seconds")
+    assert record.get("adopt_refused_at"), (
+        f"the adoption refusal wasn't remembered in the tab record: {record}"
+    )
+    record["adopt_refused_at"] = (datetime.now() - timedelta(seconds=seconds)).isoformat(
+        timespec="seconds"
+    )
     path.write_text(json.dumps(record, ensure_ascii=False), encoding="utf-8")
 
 
@@ -10297,11 +10619,17 @@ def test_the_previous_number_of_the_same_tab_is_neither_a_twin_nor_a_second_line
     claim(board, tab, "wave9", "19")
     monkeypatch.delenv("CLAUDE_CODE_SESSION_ID")
     deliver_payload(board, tab, "Prompt", {"session_id": "sess-before", "cwd": str(tab)})
-    deliver_payload(board, tab, "Start", {"session_id": "sess-after", "cwd": str(tab), "source": "clear"})
+    deliver_payload(
+        board, tab, "Start", {"session_id": "sess-after", "cwd": str(tab), "source": "clear"}
+    )
     deliver_payload(board, tab, "Prompt", {"session_id": "sess-after", "cwd": str(tab)})
     assert claim_of(board, tab, only_open=True).fields.get("session_id") == "sess-after"
 
-    rows = [line for line in said(run_tool(board, "-Mode", "Who", "-To", "wave9/19")) if line.startswith("wave9/19")]
+    rows = [
+        line
+        for line in said(run_tool(board, "-Mode", "Who", "-To", "wave9/19"))
+        if line.startswith("wave9/19")
+    ]
     assert len(rows) == 1 and "tab O1-3" in rows[0], rows
     assert "another tab has the same name" not in rows[0], (
         f"the same tab's previous id was called a twin: {rows[0]}"
@@ -10314,14 +10642,28 @@ def test_the_previous_number_of_the_same_tab_is_neither_a_twin_nor_a_second_line
 
     now = datetime.now().isoformat(timespec="seconds")
     put_tab_record(
-        board, "sess-namesake", title="o1-3", title_kind="custom", tree="d:/trees/another", prompt_at=now, seen_at=now
+        board,
+        "sess-namesake",
+        title="o1-3",
+        title_kind="custom",
+        tree="d:/trees/another",
+        prompt_at=now,
+        seen_at=now,
     )
-    rows = [line for line in said(run_tool(board, "-Mode", "Who", "-To", "wave9/19")) if line.startswith("wave9/19")]
+    rows = [
+        line
+        for line in said(run_tool(board, "-Mode", "Who", "-To", "wave9/19"))
+        if line.startswith("wave9/19")
+    ]
     assert len(rows) == 1 and "another tab has the same name" in rows[0], (
         f"a tab with the same name in another worktree isn't marked: {rows}"
     )
-    named = [line for line in said(run_tool(board, "-Mode", "Tabs")) if "O1-3" in line or "o1-3" in line]
-    assert len(named) == 2 and all("‼️ another tab has the same name" in line for line in named), named
+    named = [
+        line for line in said(run_tool(board, "-Mode", "Tabs")) if "O1-3" in line or "o1-3" in line
+    ]
+    assert len(named) == 2 and all("‼️ another tab has the same name" in line for line in named), (
+        named
+    )
 
 
 @needs_pwsh
@@ -10344,7 +10686,9 @@ def test_a_journal_that_appears_after_the_start_moves_the_claim_on_the_very_next
     monkeypatch.setenv("CLAUDE_CODE_SESSION_ID", "sess-old")
     claim(board, late, "wave9", "21")
     monkeypatch.delenv("CLAUDE_CODE_SESSION_ID")
-    deliver_payload(board, late, "Start", {"session_id": "sess-new", "cwd": str(late), "source": "clear"})
+    deliver_payload(
+        board, late, "Start", {"session_id": "sess-new", "cwd": str(late), "source": "clear"}
+    )
     assert claim_of(board, late, only_open=True).fields.get("session_id") == "sess-old"
     write_journal(journal_path(claude_config, "sess-new"), [custom_title("O2-1", "sess-new")])
     deliver_payload(board, late, "Prompt", {"session_id": "sess-new", "cwd": str(late)})
@@ -10357,7 +10701,9 @@ def test_a_journal_that_appears_after_the_start_moves_the_claim_on_the_very_next
     monkeypatch.setenv("CLAUDE_CODE_SESSION_ID", "sess-first")
     claim(board, later, "wave9", "22")
     monkeypatch.delenv("CLAUDE_CODE_SESSION_ID")
-    deliver_payload(board, later, "Start", {"session_id": "sess-second", "cwd": str(later), "source": "clear"})
+    deliver_payload(
+        board, later, "Start", {"session_id": "sess-second", "cwd": str(later), "source": "clear"}
+    )
     deliver_payload(board, later, "Prompt", {"session_id": "sess-second", "cwd": str(later)})
     assert claim_of(board, later, only_open=True).fields.get("session_id") == "sess-first"
     write_journal(journal_path(claude_config, "sess-second"), [custom_title("O2-2", "sess-second")])
@@ -10390,7 +10736,9 @@ def test_the_first_turns_look_past_a_remembered_miss_only_a_few_times(
     early = tmp_path / "cache-soon"
     assert ask_titles(tmp_path, [soon], cache=early)[soon]["title"] == ""
     write_journal(journal_path(claude_config, soon), [custom_title("InTime", soon)])
-    assert ask_titles(tmp_path, [soon], cache=early)[soon]["title"] == "", "the miss wasn't remembered"
+    assert ask_titles(tmp_path, [soon], cache=early)[soon]["title"] == "", (
+        "the miss wasn't remembered"
+    )
     assert ask_titles(tmp_path, [soon], cache=early, retry_miss=True)[soon]["title"] == "InTime", (
         "a session's first turn didn't find a transcript that appeared after the miss"
     )
@@ -10408,21 +10756,30 @@ def test_an_erased_human_name_gives_the_automatic_one_with_or_without_the_cache(
     """
     session = "sess-erased"
     journal = journal_path(claude_config, session)
-    write_journal(journal, [ai_title("Auto-earlier", session), talk(3000), custom_title("Name", session)])
+    write_journal(
+        journal, [ai_title("Auto-earlier", session), talk(3000), custom_title("Name", session)]
+    )
     cache = tmp_path / "cache-erased"
-    assert ask_titles(tmp_path, [session], cache=cache, chunk=1024)[session] == {"title": "Name", "kind": "custom"}
+    assert ask_titles(tmp_path, [session], cache=cache, chunk=1024)[session] == {
+        "title": "Name",
+        "kind": "custom",
+    }
 
     with journal.open("ab") as handle:
         handle.write((custom_title("", session) + "\n").encode("utf-8"))
     warm = ask_titles(tmp_path, [session], cache=cache, chunk=1024)[session]
     cold = ask_titles(tmp_path, [session], cache=tmp_path / "cache-cold", chunk=1024)[session]
     assert cold == {"title": "Auto-earlier", "kind": "auto"}, cold
-    assert warm == cold, f"with a cache the erased name gave something other than without one: {warm} vs {cold}"
+    assert warm == cold, (
+        f"with a cache the erased name gave something other than without one: {warm} vs {cold}"
+    )
 
 
 @needs_pwsh
 @needs_git
-def test_a_refused_adoption_is_remembered_so_the_next_turns_do_not_scan_the_tabs_again(tmp_path: Path) -> None:
+def test_a_refused_adoption_is_remembered_so_the_next_turns_do_not_scan_the_tabs_again(
+    tmp_path: Path,
+) -> None:
     """An adoption that stepped back for another tab of the worktree remembers it for two minutes — the tab registry isn't walked on every turn.
 
     The check walks the whole tab registry (hundreds of records — tenths of a second) and runs before the
@@ -10434,12 +10791,20 @@ def test_a_refused_adoption_is_remembered_so_the_next_turns_do_not_scan_the_tabs
     board = tmp_path / "board.jsonl"
     tab = tmp_path / "tab-memo"
     claim(board, tab, "wave9", "18")
-    put_tab_record(board, "sess-neighbour", title="Neighbour", title_kind="custom", tree=str(tab).replace("\\", "/"))
+    put_tab_record(
+        board,
+        "sess-neighbour",
+        title="Neighbour",
+        title_kind="custom",
+        tree=str(tab).replace("\\", "/"),
+    )
     mark = put_prompt_mark(board, "sess-neighbour", seconds_ago=600)
 
     run_deliver(board, tab, "Prompt", "sess-memo")
     assert "session_id" not in claim_of(board, tab, only_open=True).fields
-    assert tab_record(board, "sess-memo").get("adopt_refused_at"), "the adoption refusal wasn't remembered"
+    assert tab_record(board, "sess-memo").get("adopt_refused_at"), (
+        "the adoption refusal wasn't remembered"
+    )
 
     age(mark, 2 * 24 * 3600)
     run_deliver(board, tab, "Prompt", "sess-memo")
@@ -10468,7 +10833,9 @@ def test_a_nameless_tab_under_a_named_claim_rereads_its_title_at_most_every_two_
     real_worktrees(tmp_path, {"tab-anon": "feat/tab-anon"})
     board = tmp_path / "board.jsonl"
     tab = tmp_path / "tab-anon"
-    write_journal(journal_path(claude_config, "sess-holder"), [custom_title("Holder", "sess-holder")])
+    write_journal(
+        journal_path(claude_config, "sess-holder"), [custom_title("Holder", "sess-holder")]
+    )
     monkeypatch.setenv("CLAUDE_CODE_SESSION_ID", "sess-holder")
     claim(board, tab, "wave9", "23")
     monkeypatch.delenv("CLAUDE_CODE_SESSION_ID")
@@ -10480,18 +10847,24 @@ def test_a_nameless_tab_under_a_named_claim_rereads_its_title_at_most_every_two_
     with journal.open("ab") as handle:
         handle.write((ai_title("MadeUp", "sess-anon") + "\n").encode("utf-8"))
     run_deliver(board, tab, "Prompt", "sess-anon")
-    assert tab_record(board, "sess-anon")["title"] == "", "a nameless tab read its transcript tail before two minutes were up"
+    assert tab_record(board, "sess-anon")["title"] == "", (
+        "a nameless tab read its transcript tail before two minutes were up"
+    )
 
     age(title_cache(board, "sess-anon"), 180)
     run_deliver(board, tab, "Prompt", "sess-anon")
-    assert tab_record(board, "sess-anon")["title"] == "MadeUp", "the name didn't arrive even after two minutes"
+    assert tab_record(board, "sess-anon")["title"] == "MadeUp", (
+        "the name didn't arrive even after two minutes"
+    )
     assert claim_of(board, tab, only_open=True).fields.get("session_id") == "sess-holder"
 
 
 def deny_reading(path: Path) -> None:
     """Forbids reading a file — that's how a tab record looks when it couldn't be read for a moment."""
     if os.name == "nt":
-        subprocess.run(["icacls", str(path), "/deny", "*S-1-1-0:(RD)"], check=True, capture_output=True)
+        subprocess.run(
+            ["icacls", str(path), "/deny", "*S-1-1-0:(RD)"], check=True, capture_output=True
+        )
     else:
         path.chmod(0)
 
@@ -10506,7 +10879,9 @@ def allow_reading(path: Path) -> None:
 
 
 @needs_pwsh
-def test_a_tab_record_that_exists_but_cannot_be_read_is_not_rewritten(tmp_path: Path, claude_config: Path) -> None:
+def test_a_tab_record_that_exists_but_cannot_be_read_is_not_rewritten(
+    tmp_path: Path, claude_config: Path
+) -> None:
     """A tab record exists but couldn't be read — it isn't rewritten on this turn.
 
     A record rewritten blind would lose its starting tree, and an empty starting tree means "a session from
@@ -10517,7 +10892,9 @@ def test_a_tab_record_that_exists_but_cannot_be_read_is_not_rewritten(tmp_path: 
     board = tmp_path / "board.jsonl"
     mine = tmp_path / "wave9-locked"
     mine.mkdir()
-    write_journal(journal_path(claude_config, "sess-locked"), [custom_title("Locked", "sess-locked")])
+    write_journal(
+        journal_path(claude_config, "sess-locked"), [custom_title("Locked", "sess-locked")]
+    )
     run_deliver(board, mine, "Start", "sess-locked")
     record_file = tabs_dir(board) / "sess-locked.json"
     started = tab_record(board, "sess-locked")
@@ -10531,14 +10908,18 @@ def test_a_tab_record_that_exists_but_cannot_be_read_is_not_rewritten(tmp_path: 
         except OSError:
             readable = False
         if readable:
-            pytest.skip("the file couldn't be made unreadable — denying permissions doesn't work here")
+            pytest.skip(
+                "the file couldn't be made unreadable — denying permissions doesn't work here"
+            )
         run_deliver(board, mine, "Prompt", "sess-locked")
     finally:
         allow_reading(record_file)
     assert tab_record(board, "sess-locked")["start_tree"] == started["start_tree"], (
         "an unreadable tab record was rewritten blind — the starting tree is lost"
     )
-    assert not prompt_mark(board, "sess-locked").exists(), "a turn that didn't rewrite the record created the marker"
+    assert not prompt_mark(board, "sess-locked").exists(), (
+        "a turn that didn't rewrite the record created the marker"
+    )
 
     run_deliver(board, mine, "Prompt", "sess-locked")
     after = tab_record(board, "sess-locked")
