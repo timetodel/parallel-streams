@@ -71,3 +71,10 @@ drift. Block to paste there:
 ## Plans
 <!-- The folder where wave plans live, backtick-quoted, e.g. `docs/plans/`.
      The channel's nudge guard watches that folder; without the line it stays disconnected. -->
+
+## Home
+<!-- Only if contributors work from their own copies (forks) and send pull requests from there:
+     the home repository, one per line, e.g. `owner/name`. In a clone whose origin points
+     elsewhere the channel's commit guard stands aside, and the session hears so at its start.
+     Written by hand — the installer never writes an address here, and it never goes into a brief.
+     Nobody works from a fork — leave it out. -->

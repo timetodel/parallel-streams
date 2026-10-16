@@ -31,6 +31,12 @@ for the whole hook. Nor does everything about the name come after delivery: the 
 claim's session (adoption and hand-over — with this tab's own name and a walk of the tab registry)
 comes earlier, together with the claim mark.
 
+At session start it also says, in one line, when the commit guard stands aside in this clone — the
+profile names a home repository (`## Home`) and origin is not one of them. In a contributor's fork
+clone that is the design; in the home repository it is a section naming the wrong address, and the
+guard's silence would otherwise be indistinguishable from "every stream announced itself". When
+origin itself could not be read, the line points at git instead: the section is not the cause then.
+
 The hook blocks NOTHING, and on any unexpected condition it exits silently with zero: a hook that
 misfires must not get in the way of the work.
 #>
@@ -358,6 +364,12 @@ try {
     if ($Stage -eq 'Start') {
         $stuckText = Get-StuckBlock -Board $board -Claims $claims -MyClaim $claim
         if ($stuckText) { $blocks.Add($stuckText) }
+
+        # ‼️ The commit guard stands aside in this clone (`## Home`, origin elsewhere) — said once, at
+        # session start only: in a fork clone that is the design, at home it is a wrong section, and
+        # nothing else would ever show it. One line, never on an ordinary turn.
+        $asideText = Get-StandAsideNotice
+        if ($asideText) { $blocks.Add($asideText) }
     }
 
     if (-not (Test-Path $board)) {

@@ -74,3 +74,9 @@ drift. Block to paste there:
 ## Brief language
 
 English.
+
+## Home
+
+<only if contributors work from their own copies (forks) and send pull requests from there: the
+home repository as owner/name, one per line; in a clone whose origin points elsewhere the commit
+guard stands aside. Nobody works from a fork — delete this section>

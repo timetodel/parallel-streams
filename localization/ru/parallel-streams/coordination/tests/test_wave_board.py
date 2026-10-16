@@ -8013,6 +8013,507 @@ def test_the_guard_stays_out_of_the_way_when_it_cannot_answer(tmp_path: Path) ->
     )
 
 
+# Проект, который принимает работу от участников из их собственных копий (форков), называет в
+# профиле свой домашний репозиторий. Раздел написан так, как его пишет человек: проза вокруг, маркер
+# списка, обратные кавычки, свой регистр букв.
+HOME_PROFILE = (
+    "# Профиль\n\n"
+    "## Home\n\n"
+    "Репозиторий, где живёт проект; участники шлют заявки на слияние из своих копий.\n\n"
+    "- `Keeper/Project`\n\n"
+    "## Tests\n\n"
+    "`pytest`\n"
+)
+HOME_ORIGIN = "https://github.com/keeper/project.git"
+FORK_ORIGIN = "git@github.com:someone/project.git"
+
+
+def home_profile(entry: str) -> str:
+    """Профиль, в чьём `## Home` — одна строка, написанная руками."""
+    return f"# Профиль\n\n## Home\n\n{entry}\n\n## Tests\n\n`pytest`\n"
+
+
+@pytest.fixture
+def machine_git_settings_ignored(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Каждый вызов git в проверке видит только то, что завела сама проверка.
+
+    `git remote get-url` применяет `url.<base>.insteadOf` машины: на машине, где github.com идёт
+    через зеркало, клон домашнего репозитория читался бы как другое место, и проверка падала бы — или
+    проходила — по причине, которой в ней нет. Пустой глобальный файл и отключённый системный убирают
+    машину из уравнения; собственные настройки клона, которые часть проверок задаёт нарочно, остаются.
+    """
+    empty = tmp_path / "gitconfig-empty"
+    empty.write_text("", encoding="utf-8")
+    monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(empty))
+    monkeypatch.setenv("GIT_CONFIG_NOSYSTEM", "1")
+
+
+ISOLATED_GIT = pytest.mark.usefixtures("machine_git_settings_ignored")
+
+
+def clone_with_origin(root: Path, name: str, origin: str | None, profile: str = HOME_PROFILE) -> Path:
+    """Подставной клон: репозиторий с профилем проекта и заданным origin (или без него)."""
+    project = stub_project(root, name, profile)
+    if origin is not None:
+        git(project, "remote", "add", "origin", origin)
+    return project
+
+
+@needs_pwsh
+@ISOLATED_GIT
+@pytest.mark.parametrize(
+    "origin",
+    [
+        "https://github.com/someone/project.git",
+        "git@github.com:someone/project.git",
+        "ssh://git@github.com/someone/project",
+    ],
+)
+def test_the_guard_steps_aside_in_a_clone_of_a_fork(tmp_path: Path, origin: str) -> None:
+    """Клон форка участника фиксирует работу без объявления — доска не его.
+
+    Доска волн живёт в служебных папках домашнего репозитория: в клоне форка её нет и быть не
+    должно. Отказ на каждой фиксации оставляет участнику один ответ — клапан руками, каждую сессию.
+    Молчание двусмысленно, поэтому тот же клон затем направляют домой: там сторож обязан заговорить,
+    иначе молчание выше ничего не доказывает.
+    """
+    board = tmp_path / "board.jsonl"
+    fork = clone_with_origin(tmp_path, "fork-clone", origin)
+
+    for command in ('git commit -m "работа"', "git push -u origin HEAD", "gh pr create --fill"):
+        assert refusal(board, fork, command) == "", (
+            f"клону форка ({origin}) отказали в {command!r} — а доска не его"
+        )
+
+    git(fork, "remote", "set-url", "origin", HOME_ORIGIN)
+    assert refusal(board, fork, 'git commit -m "работа"'), (
+        "сторож молчит и в клоне домашнего репозитория — тогда его молчание выше ничего не доказывает"
+    )
+
+
+@needs_pwsh
+@ISOLATED_GIT
+@pytest.mark.parametrize(
+    "origin",
+    [
+        "https://github.com/Keeper/Project.git",
+        "https://github.com/keeper/project/",
+        "https://contributor@github.com/keeper/project",
+        "git@github.com:keeper/project.git",
+        "ssh://git@github.com:22/Keeper/Project.git",
+    ],
+)
+def test_a_clone_of_the_home_repository_is_still_refused(tmp_path: Path, origin: str) -> None:
+    """Дом остаётся домом, каким путём к нему ни приди, — https или ssh, любой регистр, с `.git` и без.
+
+    Один и тот же репозиторий один человек клонирует по https, другой — по ssh. Проскочи одна форма
+    мимо сравнения — и сторож отошёл бы в сторону ровно в том репозитории, ради которого заведён, а
+    такое молчание неотличимо от «все потоки объявились».
+    """
+    board = tmp_path / "board.jsonl"
+    home = clone_with_origin(tmp_path, "home-clone", origin)
+
+    said = refusal(board, home, 'git commit -m "работа"')
+
+    assert said, f"клон домашнего репозитория ({origin}) зафиксировал работу без объявления"
+    assert "-Mode Claim" in said, f"отказ не тот, что обычно: {said!r}"
+
+
+@needs_pwsh
+@ISOLATED_GIT
+def test_a_home_address_with_an_encoded_character_still_counts(tmp_path: Path) -> None:
+    """Azure DevOps пишет пробел в имени проекта как `%20`; такой дом всё равно дом.
+
+    Не пройди закодированный знак проверку адреса — и раздел не смог бы назвать этот дом вовсе:
+    строка выпала бы, клон сочли бы чужим, и сторож отошёл бы в сторону там, где он нужен, — а
+    вписать в раздел, чтобы его вернуть, было бы нечего.
+    """
+    board = tmp_path / "board.jsonl"
+    address = "https://dev.azure.com/keeper/my%20project/_git/repo"
+    profile = f"# Profile\n\n## Home\n\n- {address}\n"
+    home = clone_with_origin(tmp_path, "home-clone", address, profile=profile)
+    fork = clone_with_origin(tmp_path, "fork-clone", "https://dev.azure.com/someone/my%20project/_git/repo", profile=profile)
+
+    said = refusal(board, home, 'git commit -m "работа"')
+
+    assert said, "дом с закодированным пробелом в адресе зафиксировал работу без объявления"
+    assert "-Mode Claim" in said, f"отказ не тот, что обычно: {said!r}"
+    # Выпавшая строка читается как «раздела нет», и дому тогда тоже откажут; различает эти два
+    # случая только форк — его пропустят, лишь если строка пошла в зачёт.
+    assert refusal(board, fork, 'git commit -m "работа"') == "", (
+        "закодированный адрес выпал из раздела: клону форка отказали так, будто дом не назван"
+    )
+
+
+@needs_pwsh
+@ISOLATED_GIT
+@pytest.mark.parametrize(
+    "origin",
+    [
+        "git@github-work:keeper/project.git",
+        "ssh://git@ssh.github.com:443/keeper/project.git",
+        "https://www.github.com/keeper/project",
+    ],
+    ids=["ssh-host-alias", "ssh-over-443", "www"],
+)
+def test_a_home_address_with_the_host_in_front_still_meets_home_by_another_host(
+    tmp_path: Path, origin: str
+) -> None:
+    """`github.com/keeper/project` в `## Home` — это дом, как бы origin ни называл сервер.
+
+    У кого две учётные записи GitHub, тот ходит домой через псевдоним хоста из настроек ssh; за
+    сетевым экраном это `ssh.github.com:443`; браузер отдаёт адрес с `www.`. При точном сравнении
+    сервера каждый из них читался как другое место, и сторож отходил в сторону в домашнем репозитории.
+    Форк рядом пропускают — значит, отказ дома пришёл от раздела, а не от строки, которую никто не
+    прочитал.
+    """
+    board = tmp_path / "board.jsonl"
+    profile = home_profile("- github.com/keeper/project")
+    home = clone_with_origin(tmp_path, "home-clone", origin, profile)
+    fork = clone_with_origin(tmp_path, "fork-clone", origin.replace("keeper/", "someone/"), profile)
+
+    said = refusal(board, home, 'git commit -m "работа"')
+
+    assert said, f"дом, достигнутый как {origin}, зафиксировал работу без объявления — сервер впереди сравнили точно"
+    assert "-Mode Claim" in said, f"отказ не тот, что обычно: {said!r}"
+    assert refusal(board, fork, 'git commit -m "работа"') == "", (
+        f"клону форка, достигнутого как {origin.replace('keeper/', 'someone/')}, отказали — строка не пошла в зачёт"
+    )
+
+
+@needs_pwsh
+@ISOLATED_GIT
+def test_a_home_section_commented_out_above_the_real_one_does_not_take_its_place(tmp_path: Path) -> None:
+    """Прежний `## Home`, оставленный в `<!-- -->` над настоящим, — не раздел: в зачёт идёт настоящий.
+
+    Побеждает первый найденный заголовок. Прочитанный внутри заметки, прежний адрес занимал место
+    настоящего раздела: origin дома не совпадал ни с чем из этого списка, и сторож отходил в сторону в
+    домашнем репозитории. Форк рядом пропускают — значит, прочитан именно настоящий раздел.
+    """
+    board = tmp_path / "board.jsonl"
+    profile = (
+        "# Профиль\n\n"
+        "<!--\n## Home\n\n- keeper/old-name\n-->\n\n"
+        "## Home\n\n- keeper/project\n\n"
+        "## Tests\n\n`pytest`\n"
+    )
+    home = clone_with_origin(tmp_path, "home-clone", HOME_ORIGIN, profile)
+    fork = clone_with_origin(tmp_path, "fork-clone", FORK_ORIGIN, profile)
+
+    said = refusal(board, home, 'git commit -m "работа"')
+
+    assert said, "клон дома зафиксировал работу без объявления — вместо настоящего раздела прочитан закомментированный"
+    assert "-Mode Claim" in said, f"отказ не тот, что обычно: {said!r}"
+    assert refusal(board, fork, 'git commit -m "работа"') == "", (
+        "клону форка отказали — настоящий раздел под заметкой не прочитан"
+    )
+
+
+@needs_pwsh
+@ISOLATED_GIT
+def test_a_clone_with_no_origin_counts_as_home(tmp_path: Path) -> None:
+    """Origin нет вовсе — это однозначный ответ git, а не «не удалось выяснить», и значит он «дом».
+
+    Форк клонируют из форка, и `gh repo fork --clone` тоже называет его origin: клона форка без origin
+    почти не бывает. А домашний репозиторий без него бывает — главный удалённый назван `upstream` или
+    работа ещё никуда не отправлена, — и молчание там сняло бы сторожа ровно там, ради чего он
+    заведён. Затем добавляют origin, смотрящий в форк, и в той же папке сторож обязан отойти: иначе
+    отказ выше пришёл от раздела, который никто не прочитал.
+    """
+    board = tmp_path / "board.jsonl"
+    bare = clone_with_origin(tmp_path, "no-origin", None)
+    git(bare, "remote", "add", "upstream", HOME_ORIGIN)
+
+    said = refusal(board, bare, 'git commit -m "работа"')
+    assert said, "клон без origin зафиксировал работу без объявления — сторож отошёл в сторону дома"
+    assert "-Mode Claim" in said, f"отказ не тот, что обычно: {said!r}"
+
+    git(bare, "remote", "add", "origin", FORK_ORIGIN)
+    assert refusal(board, bare, 'git commit -m "работа"') == "", (
+        "origin смотрит в форк, а сторож всё равно отказал — отказ выше ничего не доказывает"
+    )
+
+
+@needs_pwsh
+@ISOLATED_GIT
+def test_a_clone_whose_origin_does_not_read_is_left_alone(tmp_path: Path) -> None:
+    """Origin, в котором нет пути к репозиторию, — сторож не может решить и уходит с дороги.
+
+    Таково его правило на всё, чего он не может выяснить, и оно отделено от «origin нет» — то ответ.
+    Затем origin направляют домой, и в той же папке сторож обязан заговорить.
+    """
+    board = tmp_path / "board.jsonl"
+    odd = clone_with_origin(tmp_path, "odd-origin", "https://example.com/")
+
+    assert refusal(board, odd, 'git commit -m "работа"') == "", (
+        "origin без пути к репозиторию приняли за ответ — сторож отказал наугад"
+    )
+
+    git(odd, "remote", "set-url", "origin", HOME_ORIGIN)
+    assert refusal(board, odd, 'git commit -m "работа"'), (
+        "сторож промолчал и после того, как origin направили домой, — его молчание выше ничего не доказывает"
+    )
+
+
+@needs_pwsh
+@ISOLATED_GIT
+def test_a_rewritten_origin_of_the_home_repository_is_still_refused(tmp_path: Path) -> None:
+    """`insteadOf` ведёт дом через зеркало со своим путём — это всё равно дом.
+
+    `git remote get-url` отвечает переписанным адресом, и по нему одному дом читался бы как другое
+    место. Поэтому сравнивается и адрес в том виде, как он записан в настройках клона, и совпадения
+    одного из двух достаточно: ошибка уходит в сторону отказа, а не молчания дома.
+    """
+    board = tmp_path / "board.jsonl"
+    home = clone_with_origin(tmp_path, "mirrored-home", HOME_ORIGIN)
+    git(home, "config", "url.https://mirror.example/github/.insteadOf", "https://github.com/")
+    resolved = subprocess.run(
+        ["git", "remote", "get-url", "origin"],
+        cwd=str(home),
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        timeout=60,
+    )
+    assert "mirror.example/github/keeper/project" in resolved.stdout, (
+        f"git не переписал адрес — этот случай ничего не проверяет: {resolved.stdout!r} {resolved.stderr!r}"
+    )
+
+    said = refusal(board, home, 'git commit -m "работа"')
+
+    assert said, "клон дома за переписыванием на зеркало зафиксировал работу без объявления"
+    assert "-Mode Claim" in said, f"отказ не тот, что обычно: {said!r}"
+
+
+@needs_pwsh
+@ISOLATED_GIT
+@pytest.mark.parametrize("form", ["native-path", "posix-path", "file-url", "relative-path"])
+def test_a_clone_of_a_folder_on_disk_counts_as_home(tmp_path: Path, form: str) -> None:
+    """Origin — папка на этом диске (`git clone <папка>`): сторож — как до появления раздела.
+
+    Путь не называет репозиторий на хостинге, с ним не совпадёт ничто из `## Home`, и отход в
+    сторону снял бы сторожа в локальной копии домашнего репозитория.
+    """
+    board = tmp_path / "board.jsonl"
+    main_copy = tmp_path / "home-main"
+    origin = {
+        "native-path": str(main_copy),
+        "posix-path": main_copy.as_posix(),
+        "file-url": main_copy.as_uri(),
+        "relative-path": "../home-main",
+    }[form]
+    local = clone_with_origin(tmp_path, "local-clone", origin)
+
+    said = refusal(board, local, 'git commit -m "работа"')
+
+    assert said, f"клон, чей origin — папка на диске ({origin}), зафиксировал работу без объявления"
+    assert "-Mode Claim" in said, f"отказ не тот, что обычно: {said!r}"
+
+
+# Домашний адрес, записанный так, как люди пишут руками. Каждая из этих записей прежде читалась как
+# адрес, с которым не совпадёт ни один origin, и сторож отходил в сторону в домашнем репозитории:
+# кавычки, жирный, скобки, хвостовая запятая, сервер впереди, ветка или метка после имени.
+HOME_AS_WRITTEN = {
+    "double-quotes": '- "keeper/project"',
+    "single-quotes": "- 'keeper/project'",
+    "bold": "- **keeper/project**",
+    "italic-stars": "- *keeper/project*",
+    "italic-underscores": "- _keeper/project_",
+    "square-brackets": "- [keeper/project]",
+    "parentheses": "- (keeper/project)",
+    "trailing-comma": "- keeper/project,",
+    "trailing-period": "- keeper/project.",
+    "trailing-semicolon": "- keeper/project;",
+    "host-in-front": "- github.com/keeper/project",
+    "branch-after": "- keeper/project#main",
+    "tag-after": "- keeper/project@v1",
+}
+
+
+@needs_pwsh
+@ISOLATED_GIT
+@pytest.mark.parametrize("entry", list(HOME_AS_WRITTEN.values()), ids=list(HOME_AS_WRITTEN))
+def test_the_home_clone_is_refused_however_the_address_is_written(tmp_path: Path, entry: str) -> None:
+    """Что бы ни стояло вокруг домашнего адреса, в домашнем репозитории сторож на месте.
+
+    Либо разметка снимается и адрес совпадает с домом, либо строка не читается как адрес вовсе и
+    раздел остаётся пустым — то и другое кончается обычным отказом. Не должно повториться прежнее:
+    разметка остаётся частью «адреса», с которым не совпадёт ни один origin, и сторож молча отходит в
+    сторону дома.
+    """
+    board = tmp_path / "board.jsonl"
+    home = clone_with_origin(tmp_path, "home-clone", HOME_ORIGIN, home_profile(entry))
+
+    said = refusal(board, home, 'git commit -m "работа"')
+
+    assert said, f"клон дома зафиксировал работу без объявления, когда `## Home` записан как {entry!r}"
+    assert "-Mode Claim" in said, f"отказ не тот, что обычно: {said!r}"
+
+
+# Строки, адрес в которых должен читаться сквозь разметку, — нумерованные пункты тоже.
+HOME_READ_THROUGH = {
+    "double-quotes": '- "keeper/project"',
+    "bold": "- **keeper/project**",
+    "parentheses": "- (keeper/project)",
+    "trailing-comma": "- keeper/project,",
+    "host-in-front": "- github.com/keeper/project",
+    "numbered-period": "1. keeper/project",
+    "numbered-parenthesis": "2) keeper/project",
+    "quotes-inside-backticks": '- `"keeper/project"` — домашний репозиторий',
+}
+
+
+@needs_pwsh
+@ISOLATED_GIT
+@pytest.mark.parametrize("entry", list(HOME_READ_THROUGH.values()), ids=list(HOME_READ_THROUGH))
+def test_the_address_is_read_through_the_markup_around_it(tmp_path: Path, entry: str) -> None:
+    """Адрес под разметкой читается — иначе раздел молча не делал бы ничего.
+
+    Принятая за не-адрес, строка оставила бы раздел пустым: сторож и дальше отказывал бы в форке, и
+    участник не понял бы почему. Поэтому форк фиксирует работу свободно, а тот же клон, направленный
+    домой, получает отказ — молчание само по себе ничего не доказывает.
+    """
+    board = tmp_path / "board.jsonl"
+    fork = clone_with_origin(tmp_path, "fork-clone", FORK_ORIGIN, home_profile(entry))
+
+    assert refusal(board, fork, 'git commit -m "работа"') == "", (
+        f"`## Home`, записанный как {entry!r}, не прочитан как адрес — форку по-прежнему отказывают"
+    )
+
+    git(fork, "remote", "set-url", "origin", HOME_ORIGIN)
+    assert refusal(board, fork, 'git commit -m "работа"'), (
+        f"при `## Home`, записанном как {entry!r}, сторож молчит и дома — его молчание ничего не доказывает"
+    )
+
+
+def scaffold_profile() -> str:
+    """Заготовка профиля, которую установщик кладёт в новый проект, — `## Home` в ней лишь заготовка."""
+    return (COORDINATION_DIR / "templates" / "profile.md").read_text(encoding="utf-8")
+
+
+@needs_pwsh
+@ISOLATED_GIT
+@pytest.mark.parametrize(
+    "profile",
+    [
+        "# Профиль\n\n## Tests\n\n`pytest`\n",
+        "# Профиль\n\n## Home\n\nАдрес ещё не выбран — `## Home` пока пуст.\n",
+        "# Профиль\n\n## Home\n\n<!-- например, `owner/name` -->\n<owner/name>\n",
+        "# Профиль\n\n## Home\n\n<!-- например, `example/repo`\n     или `other/repo`\n",
+        "# Профиль\n\n## Plans\n\nРаздел выглядит так:\n\n```markdown\n## Home\n\n- `ex/ample`\n```\n",
+        "# Профиль\n\n## Plans\n\n~~~\n## Home\n\nex/ample\n~~~\n",
+        "# Профиль\n\n## Home\n\n- someone/project#main\n- someone/project@v1\n",
+        "# Профиль\n\n<!--\n## Home\n\n- keeper/project\n-->\n\n## Tests\n\n`pytest`\n",
+        "scaffold",
+    ],
+    ids=[
+        "no-section",
+        "prose-only",
+        "placeholders-only",
+        "unclosed-note",
+        "fenced-example",
+        "tilde-fenced-example",
+        "branch-and-tag-only",
+        "section-commented-out",
+        "installer-scaffold",
+    ],
+)
+def test_without_a_home_address_every_clone_is_guarded_as_before(tmp_path: Path, profile: str) -> None:
+    """Домашний адрес в профиле не назван — клону форка отказывают ровно как прежде.
+
+    Новый раздел снимает отказ только там, где он заполнен. Заготовка, заметка или строка прозы,
+    принятая за адрес, — худший из сбоев: раздел считался бы заполненным, origin не совпал бы с ним
+    никогда, и сторож замолчал бы и в домашнем репозитории. Так же и пример: документация показывает
+    `## Home` блоком кода, и вставленный вместе с ограждением он остаётся примером; незакрытая заметка
+    идёт до конца профиля. Раздел, целиком обёрнутый в `<!-- -->`, выключен. Заготовку самого
+    установщика проверяем такой, какой она уходит к людям: с неё начинается профиль в большинстве
+    проектов.
+    """
+    board = tmp_path / "board.jsonl"
+    text = scaffold_profile() if profile == "scaffold" else profile
+    if profile == "scaffold":
+        assert re.search(r"(?mi)^## Home\s*$", text), (
+            "в заготовке больше нет раздела `## Home` — этот случай ничего не проверяет"
+        )
+    fork = clone_with_origin(tmp_path, "fork-clone", FORK_ORIGIN, text)
+
+    assert refusal(board, fork, 'git commit -m "работа"'), (
+        "домашний адрес не назван, а клон форка остался без сторожа — раздел включился сам собой"
+    )
+
+
+# Слова, по которым узнаётся строка на старте сессии.
+STANDS_ASIDE = "в этом клоне отходит в сторону"
+
+
+@needs_pwsh
+@ISOLATED_GIT
+def test_session_start_says_where_the_guard_stands_aside(tmp_path: Path) -> None:
+    """В клоне форка вкладка слышит на старте, что сторож фиксации отходит в сторону, — один раз.
+
+    Сам сторож отходит молча, а молчание двусмысленно. Одна строка на старте сессии делает отход
+    видимым, и никогда — на обычном ходе: контекст переотправляется на каждом. Сначала проверяем там,
+    где сторож на месте, — тот же клон, направленный домой, — чтобы строка не печаталась всегда.
+    """
+    board = tmp_path / "board.jsonl"
+    clone = clone_with_origin(tmp_path, "clone", HOME_ORIGIN)
+
+    at_home = context_text(run_deliver(board, clone, "Start", "s-aside-home"))
+    assert STANDS_ASIDE not in at_home, f"вкладке дома сказали, что сторож отходит в сторону: {at_home!r}"
+
+    git(clone, "remote", "set-url", "origin", FORK_ORIGIN)
+    told = context_text(run_deliver(board, clone, "Start", "s-aside-fork"))
+    assert STANDS_ASIDE in told, f"сторож отходит в сторону в клоне форка молча: {told!r}"
+    assert "github.com/someone/project" in told, f"строка не называет origin: {told!r}"
+    assert "keeper/project" in told, f"строка не называет дом, который держит раздел: {told!r}"
+
+    turn = context_text(run_deliver(board, clone, "Prompt", "s-aside-fork"))
+    assert STANDS_ASIDE not in turn, f"строка вернулась на обычном ходе — она для старта сессии: {turn!r}"
+
+
+@needs_pwsh
+@ISOLATED_GIT
+@pytest.mark.parametrize("entry", ["N/A", "TODO/TBD", "- and/or"], ids=["n-a", "todo-tbd", "and-or"])
+def test_a_home_section_that_names_no_real_address_is_heard_about_at_home(
+    tmp_path: Path, entry: str
+) -> None:
+    """`N/A` в `## Home` по форме читается как адрес — поэтому отход в сторону дома делается видимым.
+
+    По самой строке её не отличить от настоящего `owner/name`, и с ней не совпадёт ни один origin:
+    сторож отходит в сторону и в домашнем репозитории. Это известный предел; недопустимо другое —
+    чтобы его не заметили. Первой же вкладке, открытой дома, об этом говорят и называют origin, и
+    раздел поправят.
+    """
+    board = tmp_path / "board.jsonl"
+    home = clone_with_origin(tmp_path, "home-clone", HOME_ORIGIN, home_profile(entry))
+
+    told = context_text(run_deliver(board, home, "Start", "s-aside-na"))
+
+    assert STANDS_ASIDE in told, f"`## Home` с {entry!r} молча снимает сторожа дома: {told!r}"
+    assert "github.com/keeper/project" in told, f"строка не называет origin: {told!r}"
+
+
+@needs_pwsh
+@ISOLATED_GIT
+def test_session_start_points_at_git_when_the_guard_stands_aside_without_reading_origin(
+    tmp_path: Path,
+) -> None:
+    """Origin не прочитан — строка отправляет к git, а не к разделу, который верен.
+
+    Раздел здесь называет дом правильно; не читается сам origin. «Поправьте раздел» отправило бы
+    человека исправлять правильный, а на git старше 2.30 так же читается и дом без origin. Строка
+    советует проверить, что отвечает git, и говорит, что раздел ни при чём.
+    """
+    board = tmp_path / "board.jsonl"
+    home = clone_with_origin(tmp_path, "home-clone", "https://example.com/")
+
+    told = context_text(run_deliver(board, home, "Start", "s-aside-unread"))
+
+    assert STANDS_ASIDE in told, f"сторож отходит в сторону, не прочитав origin, молча: {told!r}"
+    assert "git remote get-url origin" in told, f"строка не показывает на git: {told!r}"
+    assert "поправьте раздел" not in told, f"строка отправляет поправлять верный раздел: {told!r}"
+
+
 # ─── Название вкладки: какая вкладка ведёт поток ─────────────────────────────────────────────────
 #
 # Владелец держит десятки вкладок и называет их сам. Доска знала поток только по папке и ветке, и на
