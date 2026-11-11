@@ -3,7 +3,7 @@ name: parallel-streams
 description: Split an approved plan into parallel work streams that different agent sessions can run at the same time without merge conflicts or duplicated work. Produces a dependency map (table plus diagram) and one self-contained brief per stream, ready to paste into a fresh session. Use when asked to "split the plan into streams", "parallelize this plan", "what can I run in parallel", "hand this plan to several agents", or "show me the stream map".
 ---
 
-<!-- parallel-streams 1.17.1 — https://github.com/timetodel/parallel-streams
+<!-- parallel-streams 1.18.0 — https://github.com/timetodel/parallel-streams
      Shipped as a skill: this directory is the whole thing. Update by copying a newer
      copy of it over this one; changes are listed in the repository's CHANGELOG.md.
      Project rules come from the profile `.parallel-streams.md` in the repository root.
@@ -216,7 +216,7 @@ the exact shape is in *Output format* below. Fixed block order, nothing skipped,
    asked got done, not a hunt for logic bugs, which is the gate's job — once per task, not once per round of
    fixes, or once at the end of the whole stream when the stream is two or three small tasks of the
    same kind — and a fresh subagent per task rather than an earlier one woken again, at the model tiers
-   from the profile; the session handles branch, commits, pull request, and merge on its own, and
+   from the profile, the model named in every launch; the session handles branch, commits, pull request, and merge on its own, and
    only asks about the decisions in block 8. When the channel exists, this block also carries: how a finding reaches a live
    neighbour, that arriving records must be closed, and — before proposing any work outside this
    stream's own tasks — how to ask who owns that task. The person approving cannot know a task was

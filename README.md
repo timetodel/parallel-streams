@@ -5,7 +5,7 @@
 [![tests](https://github.com/timetodel/parallel-streams/actions/workflows/tests.yml/badge.svg)](https://github.com/timetodel/parallel-streams/actions/workflows/tests.yml)
 [![license](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![skill](https://img.shields.io/badge/Claude%20Code-skill-orange.svg)](https://code.claude.com/docs/en/skills)
-[![version](https://img.shields.io/badge/version-1.17.1-brightgreen.svg)](CHANGELOG.md)
+[![version](https://img.shields.io/badge/version-1.18.0-brightgreen.svg)](CHANGELOG.md)
 
 You open six agent sessions on one repository because the plan is big and the model is fast. An hour
 later two of them have rewritten the same file, a third built a helper the fourth had already
@@ -139,7 +139,8 @@ Delegate the reading — sweeps, prior art, broad searches go to a subagent, so 
 back instead of a dozen files parked in this session's context. Delegate the writing too: a fresh
 implementation subagent per task, one reviewing subagent per finished task — reading it against
 this brief, not hunting for logic bugs — its findings back in a single round of fixes. Research, mechanical work and review lists on the cheap fast tier; new logic
-on the session's own; review never below the session's tier. Every brief you write for a subagent
+on the session's own, capped at the project's workhorse model; review never below the session's
+tier; the model named in every subagent launch. Every brief you write for a subagent
 names two addresses: the detailed report to a file, five to ten lines in plain language back — that
 answer is shown to me directly.
 
@@ -247,7 +248,8 @@ One git worktree per stream, branched from a fresh origin/main.
 
 ## Delegation
 Research and mechanical tasks go to a subagent on the cheap fast tier; new logic on the session's
-own tier; review never below the session's tier.
+own tier, capped at the workhorse model named here; review never below the session's tier. The
+model is named in every subagent launch.
 
 ## Escalation
 "Deep mode". A session asks for it in a message of its own and waits; when the flagged steps are
@@ -376,7 +378,10 @@ happens to implementation, and naming only the reading half made it worse: one w
 research subagent and ran no implementers at all, hand-writing hundreds of lines that then scrolled
 past the person the stream reports to. So the brief names both halves, and names them as permission:
 no session should have to ask whether it may look something up or hand a task to an implementer. It
-also fixes the model tier per kind of work, so neighbouring sessions don't each pick by taste.
+also fixes the model tier per kind of work, so neighbouring sessions don't each pick by taste — and
+caps the implementer at the project's workhorse model, with the model named in every launch: an
+unnamed one is inherited, and a session moved to a costlier model would otherwise run every scout
+and implementer at its own price.
 
 **Why does the brief make the session tell its subagents where to put the detail?**
 Because a subagent's last answer is shown to you directly: it arrives in the session as its own
