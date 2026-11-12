@@ -40,10 +40,12 @@ of settled security decisions.
 ## Delegation
 Anything that ends in a summary rather than an edit goes to a subagent: sweeps, prior art, consumer
 lists, broad searches. A stream runs for hours, and files read inline sit in its context for all of
-them. Tiers are fixed, not chosen per case: research and summarising on the cheap fast model;
-implementation delegated against an existing pattern on whatever the session itself runs; review,
-audit, and diagnosing a failure never below the model that wrote the code. A session that wants to
-deviate asks the owner.
+them. Tiers are fixed, not chosen per case: research, summarising and mechanical tasks against an
+existing pattern on the cheap fast model; a task with new logic on whatever the session itself
+runs, capped at the project's workhorse model — a session on a costlier one puts its implementers
+on the workhorse; review, audit, and diagnosing a failure never below the session's own model. The
+model is named in every subagent launch: an unnamed one is inherited from the session. A session
+that wants to deviate asks the owner.
 
 ## Escalation
 The project calls it "deep mode", and it is a session-level switch the owner turns on. A brief that

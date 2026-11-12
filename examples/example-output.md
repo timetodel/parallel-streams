@@ -65,7 +65,8 @@ a dozen files parked in this session's context.
 Delegate the writing too. Each task below goes to a fresh implementation subagent; one reviewing
 subagent then reads the finished task and returns everything it found as one list, which goes back
 in a single round of fixes. Research, mechanical work and working through a review list run on the
-cheap fast tier; new logic on this session's tier; review never below this session's tier.
+cheap fast tier; new logic on this session's tier, capped at the project's workhorse model; review
+never below this session's tier. Name the model in every subagent launch.
 
 Every brief you write for a subagent names two addresses: the detailed report goes to a file — you
 name the path — and five to ten lines in plain language come back as the answer. That answer is
@@ -127,7 +128,8 @@ a dozen files parked in this session's context.
 Delegate the writing too. Each task below goes to a fresh implementation subagent; one reviewing
 subagent then reads the finished task and returns everything it found as one list, which goes back
 in a single round of fixes. Research, mechanical work and working through a review list run on the
-cheap fast tier; new logic on this session's tier; review never below this session's tier.
+cheap fast tier; new logic on this session's tier, capped at the project's workhorse model; review
+never below this session's tier. Name the model in every subagent launch.
 
 Every brief you write for a subagent names two addresses: the detailed report goes to a file — you
 name the path — and five to ten lines in plain language come back as the answer. That answer is
@@ -199,7 +201,8 @@ a dozen files parked in this session's context.
 Delegate the writing too. Each task below goes to a fresh implementation subagent; one reviewing
 subagent then reads the finished task and returns everything it found as one list, which goes back
 in a single round of fixes. Research, mechanical work and working through a review list run on the
-cheap fast tier; new logic on this session's tier; review never below this session's tier.
+cheap fast tier; new logic on this session's tier, capped at the project's workhorse model; review
+never below this session's tier. Name the model in every subagent launch.
 
 Every brief you write for a subagent names two addresses: the detailed report goes to a file — you
 name the path — and five to ten lines in plain language come back as the answer. That answer is

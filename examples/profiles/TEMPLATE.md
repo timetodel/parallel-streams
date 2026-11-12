@@ -29,9 +29,12 @@ apply — every line here is repeated into every brief, so keep it short.
 
 ## Delegation
 <!-- What a session hands to a subagent instead of reading itself, and the model tier per kind of
-     work. Example: research and sweeps go to a subagent on the cheap fast tier; delegated
-     implementation runs on the session's own tier; review never below the tier that wrote the
-     code. Fix the tiers here so neighbouring sessions don't each pick by taste. -->
+     work. Example: research, sweeps and mechanical tasks go to a subagent on the cheap fast tier;
+     a task with new logic runs on the session's own tier, capped at the workhorse model you name
+     here — a session on a costlier one puts the implementer on the workhorse; review never below
+     the session's tier; the model is named in every subagent launch, because an unnamed one is
+     inherited from the session. Fix the tiers here so neighbouring sessions don't each pick by
+     taste. -->
 
 ## Escalation
 <!-- What this project calls the deeper, more expensive mode, and how a session asks for it — and

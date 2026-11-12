@@ -3,6 +3,41 @@
 All notable changes to this project are documented here.
 This project follows [Semantic Versioning](https://semver.org/).
 
+## [1.18.0] — 2026-11-12
+
+### Changed
+
+- **A session on a costlier model no longer hands its tier down to the implementer.** The tiers
+  said "a task with new logic — the tier the session runs on", which was written when a session ran
+  on the project's usual model. Move one session to a model above it — to get a stronger conductor
+  and a stronger reviewer — and every implementer in the stream moved with it, at that model's
+  price on every step, though implementers are the most numerous subagents a stream runs. The tier
+  for new logic is now the session's own, capped at the project's workhorse model: the one the
+  project normally runs its sessions and writes code on, named in the profile's `## Delegation`.
+  Review stays where it was — never below the session's tier — and that is what makes the cap safe:
+  the implementer on the workhorse is checked by the session's own model, exactly as the cheap
+  implementer always was. A profile that names no workhorse has no cap, so nothing changes for a
+  project until it writes the name down.
+
+- **The model is named in every subagent launch.** An unnamed one is inherited from the session.
+  On a session running the usual model that was harmless; on a costlier one it sends the scout and
+  the implementer to the session's tier in silence, with the written table still looking obeyed.
+  The line every brief carries now says so, and so do the reference, the profile scaffold and both
+  example profiles.
+
+- **"When unsure, take the session tier" became "take the tier of a task with new logic".** With
+  the cap in place the two are no longer the same thing, and the old wording would have sent every
+  doubtful task back to the costlier model.
+
+### Notes
+
+- Text only: no script, hook or test changed. Updating is the usual copy of the folder; the
+  installer has nothing new to connect.
+- An existing project profile keeps its own `## Delegation` — the installer never rewrites a
+  hand-written section. To get the cap, name the workhorse model there.
+- The English example profile in `configuration.md` no longer asks for "the strongest model
+  available" on review: the rule is "never below the session's tier", as the Russian source says.
+
 ## [1.17.1] — 2026-10-16
 
 ### Fixed

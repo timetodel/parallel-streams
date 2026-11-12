@@ -17,7 +17,7 @@ comes from a profile file, so the skill itself stays portable.
 | `## Gates` | Lint, types, formatting, and where heavy checks run | the project's documented checks |
 | `## Review` | Review gate before the pull request, its depths, and whether a stream may answer `none` | a review pass before merge, `none` only for a diff that cannot change behaviour |
 | `## Security review` | Extra pass, and what triggers it | money, access control, secrets, network boundaries |
-| `## Delegation` | What a session hands to a subagent, and the model tier per kind of work | research and each task's implementation to subagents, implementation reviewed by another; cheap tier for research and mechanical tasks, session tier for new logic, never below the session tier for review |
+| `## Delegation` | What a session hands to a subagent, and the model tier per kind of work | research and each task's implementation to subagents, implementation reviewed by another; cheap tier for research and mechanical tasks; session tier for new logic, capped at the workhorse model when the profile names one; never below the session tier for review; the model named in every launch |
 | `## Escalation` | What this project calls the deeper mode, how a session asks for it — and how it asks for it to be turned off once the flagged steps are done | described generically in the brief; both ends of the span are asked for |
 | `## Merge` | Who merges, squash or rebase, whether CI must be green first | the session merges its own pull request once checks pass |
 | `## Conventions` | Branch naming, commit message language and prefixes | the repository's existing style |
@@ -64,8 +64,10 @@ Reading and research go to a subagent, not into the session's own context. So do
 implementation of each task: one subagent writes it, another reviews it against the task, and the
 session accepts the result. Tiers: research — the cheap fast model; a mechanical task, where a
 worked example sits next to it and the job is "do the same for this case" — the cheap fast model
-too; a task with new logic — whatever the session runs on; review and audit — the strongest model
-available, never below the tier the session runs on.
+too; a task with new logic — whatever the session runs on, capped at the project's workhorse model
+(name it here): a session on a costlier one puts the implementer on the workhorse; review and
+audit — never below the tier the session runs on. The model is named in every subagent launch: an
+unnamed one is inherited from the session.
 
 ## Escalation
 This project calls it "deep mode". The session asks for it in a separate message and waits for a

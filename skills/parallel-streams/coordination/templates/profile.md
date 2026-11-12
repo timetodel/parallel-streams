@@ -41,7 +41,10 @@ One PR under 400 lines of diff, or a short chain of small PRs inside one branch.
 Reading and researching other code goes to a subagent, not done by hand. Writing code also goes to a
 subagent: one writes, another reviews against the task brief, the session accepts the result. Models:
 research and mechanical work from an existing pattern — cheap and fast; a task with new logic — the
-same tier as the session; review and analysis — no weaker than the session's own model.
+same tier as the session, capped at the project's workhorse model (<name it>): a session on a
+costlier one puts the implementer on the workhorse; review and analysis — no weaker than the
+session's own model. The model is named in every subagent launch: an unnamed one is inherited from
+the session.
 
 ## Escalation
 

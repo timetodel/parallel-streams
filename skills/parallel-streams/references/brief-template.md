@@ -61,9 +61,11 @@ a change small enough that briefing a subagent would cost more than the edit.
 Model tier: research and summarising — the cheap fast one; a mechanical task, where a worked
 example sits next to it and the job is "do the same for this case" — the cheap fast one too;
 working through a review list against code that already exists — the cheap fast one as well, unless
-a finding reopens a design choice; a task with new logic — the tier this session runs on; review,
-audit, or diagnosing a failure — no weaker than the tier this session runs on, even when the cheap
-tier wrote the code.
+a finding reopens a design choice; a task with new logic — the tier this session runs on, capped at
+the project's workhorse model: when this session runs on a costlier one, the implementer runs on
+the workhorse; review, audit, or diagnosing a failure — no weaker than the tier this session runs
+on, even when a cheaper tier wrote the code. Name the model in every subagent launch: an unnamed
+one is inherited from this session.
 
 What a subagent hands back is raw material for you, not text for me. Ask your subagents for maximum
 precision — paths, names, line numbers, exact strings, the more the better — and keep all of it
@@ -173,16 +175,27 @@ Model tiers, unless the profile says otherwise:
 |---|---|
 | Research, reading, sweeps, summarising | the cheap fast one |
 | Mechanical task: a worked example sits next to it, the job is "do the same for this case" | the cheap fast one |
-| Task with new logic: no example to copy, a choice between options, or money, permissions, or schema involved | the tier this session runs on |
-| Review, audit, diagnosing someone else's failure | no weaker than the tier this session runs on, even when the cheap tier wrote the code |
+| Task with new logic: no example to copy, a choice between options, or money, permissions, or schema involved | the tier this session runs on, capped at the project's workhorse model |
+| Review, audit, diagnosing someone else's failure | no weaker than the tier this session runs on, even when a cheaper tier wrote the code |
 
 Fix the tiers in writing rather than asking per case. Asking costs an interruption every time,
 including for two-minute research, and letting each session pick by taste is exactly how neighbours
 end up running the same class of work at three different tiers.
 
-When unsure whether a task is mechanical, take the session tier: quality outranks the saving.
-Never review on the cheap tier — a cheap implementer is safe precisely because a stronger model
-checks the work.
+When unsure whether a task is mechanical, take the tier of a task with new logic: quality outranks
+the saving. Never review on the cheap tier — a cheap implementer is safe precisely because a
+stronger model checks the work.
+
+**A session on a model costlier than the workhorse does not hand its tier down to the
+implementer.** The workhorse is the model the project normally runs its sessions and writes code
+on; the profile names it. A costlier model costs noticeably more on every step, and implementers
+are the most numerous subagents in a stream. An implementer on the workhorse is safe for the same
+reason the cheap one is: the session's own model reviews the work. When the profile names no
+workhorse there is no cap — the implementer runs on the session's tier.
+
+**Name the model in every subagent launch.** An unnamed one is inherited from the session, so on a
+costly session the scout and the implementer silently run at its tier: the table is kept on paper,
+and the bill reads as if it did not exist.
 
 **Delegation has a shape, and the wrong shape costs more than the work it replaces.** Observed
 2026-08-26: a wave spent most of its budget on machinery rather than on code. The reviewer was
