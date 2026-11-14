@@ -3,6 +3,36 @@
 All notable changes to this project are documented here.
 This project follows [Semantic Versioning](https://semver.org/).
 
+## [1.18.1] — 2026-11-14
+
+### Fixed
+
+- **Reading the claim registry no longer costs claims times worktrees.** The
+  delivery hook reads the whole registry on every turn and at session start, the commit guard on
+  every commit and push, and so does every run of the board tool. The reader walked every worktree
+  for every claim — twice, because the remembered names asked for the carried ones again — and
+  every claim for every takeover, normalizing the same paths each time. The registry keeps every
+  released claim for good, so the cost only grew: with hundreds of claims beside dozens of
+  worktrees one read ate most of a hook's time limit, and on a loaded machine the hooks ran past it.
+  A hook cut off at its limit does nothing at all — no delivery, no liveness mark, no guard — and
+  looks exactly like "the neighbour has nothing to say". The worktrees' names are now indexed once
+  per run and the takeover pass looks its victims up by folder, so the cost per claim no longer
+  depends on the registry's size or the number of worktrees. On a real registry of that size the
+  first read of a run became about twice as fast, and the number of worktrees no longer multiplies
+  it. What remains grows with the number of claims; the worktrees add only their one listing per
+  run.
+
+### Notes
+
+- Behaviour is unchanged: on that real registry the whole result of a read — every record's state,
+  names, takeover links and order — was compared between the old and the new code, for both
+  trees, and came out identical. Released claims are still kept and still read; how long to keep
+  them is a separate question this fix doesn't touch.
+- A new test counts the path normalizations a read performs and fails if their number per claim
+  grows with the registry, and fails too if a claim's carried names are computed more than once.
+  It counts work rather than measuring time, so it doesn't flake on a loaded machine.
+- Updating is the usual copy of the folder; the installer has nothing new to connect.
+
 ## [1.18.0] — 2026-11-12
 
 ### Changed

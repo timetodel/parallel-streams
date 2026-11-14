@@ -1304,6 +1304,55 @@ function Get-ClaimState {
     return 'silent'
 }
 
+function New-FolderKeyMap {
+    # A dictionary keyed by `Get-FolderKey`, matching keys EXACTLY as the shell's `-eq` matches two
+    # folder keys: case-blind and by the invariant culture. ‼️ Not ordinal: the comparisons this
+    # dictionary replaces are `-eq`/`-ne`, and those call two strings equal that an ordinal
+    # comparison keeps apart (an invisible joiner inside a name, an accent typed as a separate
+    # mark). Let the two disagree and a lookup would miss a folder the old walk matched — the
+    # stream silently loses a name, and nothing about it shows.
+    return [System.Collections.Generic.Dictionary[string, object]]::new(
+        [System.StringComparer]::Create([cultureinfo]::InvariantCulture, $true))
+}
+
+function Get-WorktreeNameIndex {
+    # The worktrees' names, keyed by worktree folder: for every folder, the stream keys of the trees
+    # on it — branch first, then folder — in the order git lists the trees.
+    #
+    # ‼️ Built ONCE per run and looked up per claim. Before, every claim walked the whole worktree
+    # list and normalized every tree's path again: claims times worktrees. The registry keeps every
+    # released claim, so that product only grows — with hundreds of claims beside dozens of trees,
+    # one read ate most of a hook's time limit, and on a loaded machine the hooks ran past it. A
+    # hook that times out does nothing at all.
+    #
+    # The index remembers which cached worktree list it was built from, and is rebuilt if that cache
+    # is ever a different one: it can't outlive the list `Get-Worktrees` keeps and answer from a
+    # stale one. ‼️ The check looks at the cache itself, not at what `Get-Worktrees` returns: a
+    # function's output is collected into a NEW array for every caller, so it never is the same
+    # object twice — and asking for it on every claim would copy the whole list per claim, the very
+    # product this removes. A stand that replaces `Get-Worktrees` leaves that cache unset, so there
+    # the check always passes and the stand gets one index per run, even if its list changes in
+    # between.
+    if ($null -ne $script:WaveBoardWorktreeNames -and
+        [object]::ReferenceEquals($script:WaveBoardWorktreeNamesOf, $script:WaveBoardWorktrees)) {
+        return $script:WaveBoardWorktreeNames
+    }
+    $index = New-FolderKeyMap
+    foreach ($tree in (Get-Worktrees)) {
+        $key = Get-FolderKey -Path $tree.path
+        $names = $null
+        if (-not $index.TryGetValue($key, [ref]$names)) {
+            $names = [System.Collections.Generic.List[string]]::new()
+            $index[$key] = $names
+        }
+        if ($tree.branch) { $names.Add((Get-StreamKey -Raw $tree.branch)) }
+        $names.Add((Get-StreamKey -Raw $tree.path))
+    }
+    $script:WaveBoardWorktreeNames = $index
+    $script:WaveBoardWorktreeNamesOf = $script:WaveBoardWorktrees
+    return $index
+}
+
 function Get-ClaimCurrentNames {
     param($Claim)
     # The names a stream carries RIGHT NOW. Three sources: what was recorded in the claim when it
@@ -1315,10 +1364,10 @@ function Get-ClaimCurrentNames {
         $names.Add((Get-StreamKey -Raw $raw))
     }
     $here = Get-FolderKey -Path $Claim.worktree
-    foreach ($tree in (Get-Worktrees)) {
-        if ((Get-FolderKey -Path $tree.path) -ne $here) { continue }
-        if ($tree.branch) { $names.Add((Get-StreamKey -Raw $tree.branch)) }
-        $names.Add((Get-StreamKey -Raw $tree.path))
+    # The worktree's current names come from the index, not from a walk of every worktree.
+    $tree = $null
+    if ((Get-WorktreeNameIndex).TryGetValue($here, [ref]$tree)) {
+        foreach ($name in $tree) { $names.Add($name) }
     }
     # Whether this is our own claim we check against the tree ROOT: a claim records that, not
     # whatever folder the session happened to be launched from.
@@ -1329,15 +1378,22 @@ function Get-ClaimCurrentNames {
 }
 
 function Get-ClaimRememberedNames {
-    param($Claim)
+    param($Claim, $Current)
     # Names a stream only REMEMBERS: the branch got renamed, and the session announced again, which
     # rewrote the claim wholesale. Without this memory, a finding ALREADY ACCEPTED under the old name
     # wouldn't arrive and wouldn't hold up release — it would just vanish silently.
     #
     # ‼️ Remembering isn't the same as carrying: these names have different rights — see
     # `Resolve-ClaimNames`.
+    #
+    # `-Current` is the claim's carried names when the caller already has them: the registry loader
+    # computes them for the record anyway, and asking a second time doubled its cost.
     if (-not $Claim) { return @() }
-    $current = @(Get-ClaimCurrentNames -Claim $Claim)
+    $current = if ($PSBoundParameters.ContainsKey('Current')) {
+        @($Current)
+    } else {
+        @(Get-ClaimCurrentNames -Claim $Claim)
+    }
     $names = foreach ($raw in @($Claim.former_branches)) {
         $key = Get-StreamKey -Raw ([string]$raw)
         if ($key -and $key -notin $current) { $key }
@@ -1603,6 +1659,21 @@ function Set-ClaimSupersessions {
         }
         $moves[$i] = @($mine)
     }
+    # Every record's folder, normalized ONCE, and the records grouped by folder in registry order. A
+    # takeover names the folder it took from, so its victims are looked up by that folder instead of
+    # walking the whole registry for every takeover: takeovers times records, with every released
+    # claim kept forever, only grows.
+    $folders = [string[]]::new($count)
+    $byFolder = New-FolderKeyMap
+    for ($i = 0; $i -lt $count; $i++) {
+        $folders[$i] = Get-FolderKey -Path $records[$i].Record.worktree
+        $same = $null
+        if (-not $byFolder.TryGetValue($folders[$i], [ref]$same)) {
+            $same = [System.Collections.Generic.List[int]]::new()
+            $byFolder[$folders[$i]] = $same
+        }
+        $same.Add($i)
+    }
     for ($i = 0; $i -lt $count; $i++) {
         # ‼️ A RELEASED claim still holds its takeover. The temptation to skip it is strong ("the session
         # is gone, so there's nobody to take from"), but that's exactly the costliest consequence of
@@ -1616,10 +1687,11 @@ function Set-ClaimSupersessions {
         # and each past one. Each edge's address comes from THE TAKEOVER ITSELF: a past one's is
         # different, and the claim's current address has nothing to do with it.
         foreach ($move in $moves[$i]) {
-            for ($j = 0; $j -lt $count; $j++) {
+            $same = $null
+            if (-not $byFolder.TryGetValue([string]$move.From, [ref]$same)) { continue }
+            foreach ($j in $same) {
                 if ($i -eq $j) { continue }
                 $loser = $records[$j]
-                if ((Get-FolderKey -Path $loser.Record.worktree) -ne $move.From) { continue }
                 # The address must match in full: the field names a folder, not a stream, and the
                 # NEXT stream may have announced in that same folder since — we have no right to
                 # silence that one.
@@ -1649,9 +1721,9 @@ function Set-ClaimSupersessions {
         $known = $takenBy[$edge.Loser]
         # There may be several takers: then the leader is the last one — the address is with them.
         if ($null -ne $known -and (Compare-ClaimTakeover -LeftAt $known.At `
-                    -LeftPath (Get-FolderKey -Path $records[$known.Taker].Record.worktree) `
+                    -LeftPath $folders[$known.Taker] `
                     -RightAt $edge.At `
-                    -RightPath (Get-FolderKey -Path $records[$edge.Taker].Record.worktree)) -ge 0) {
+                    -RightPath $folders[$edge.Taker]) -ge 0) {
             continue
         }
         $takenBy[$edge.Loser] = $edge
@@ -1704,9 +1776,9 @@ function Set-ClaimSupersessions {
             $known = $passedTo[$key]
             # Several took from one folder — we take the last: the address is with them.
             if ($null -ne $known -and (Compare-ClaimTakeover -LeftAt $known.At `
-                        -LeftPath (Get-FolderKey -Path $records[$known.Index].Record.worktree) `
+                        -LeftPath $folders[$known.Index] `
                         -RightAt $move.At `
-                        -RightPath (Get-FolderKey -Path $records[$i].Record.worktree)) -ge 0) {
+                        -RightPath $folders[$i]) -ge 0) {
                 continue
             }
             $passedTo[$key] = [pscustomobject]@{ Index = $i; At = $move.At }
@@ -1903,13 +1975,16 @@ function Get-Claims {
         $record = $read.Record
         if (-not $record) { continue }
         $state = Get-ClaimState -Claim $record
+        # The carried names are computed once and handed to the remembered ones: asking for them a
+        # second time there doubled the cost of every record.
+        $current = @(Get-ClaimCurrentNames -Claim $record)
         $claims.Add([pscustomobject]@{
                 File         = $file
                 Record       = $record
                 WaveKey      = Get-WaveKey -Raw ([string]$record.wave)
                 StreamKey    = Get-StreamNumberKey -Raw ([string]$record.stream)
-                Current      = @(Get-ClaimCurrentNames -Claim $record)
-                Remembered   = @(Get-ClaimRememberedNames -Claim $record)
+                Current      = $current
+                Remembered   = @(Get-ClaimRememberedNames -Claim $record -Current $current)
                 Keys         = @()
                 Silenced     = @()
                 State        = $state

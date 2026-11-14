@@ -1255,6 +1255,56 @@ function Get-ClaimState {
     return 'молчит'
 }
 
+function New-FolderKeyMap {
+    # Словарь с ключом `Get-FolderKey`, который сверяет ключи РОВНО так, как оболочка сверяет два
+    # ключа папок через `-eq`: без учёта регистра и по инвариантной культуре. ‼️ Не побайтово:
+    # словарь заменяет сравнения `-eq`/`-ne`, а те называют равными строки, которые побайтовое
+    # сравнение различает (невидимая связка внутри имени, ударение, набранное отдельным знаком).
+    # Разойдись они — и поиск не нашёл бы папку, которую прежний обход находил: поток молча
+    # потерял бы имя, и ничто бы этого не выдало.
+    return [System.Collections.Generic.Dictionary[string, object]]::new(
+        [System.StringComparer]::Create([cultureinfo]::InvariantCulture, $true))
+}
+
+function Get-WorktreeNameIndex {
+    # Имена рабочих деревьев с ключом по папке дерева: для каждой папки — ключи потока у деревьев
+    # на ней, сперва ветка, потом папка, в том порядке, в каком git перечисляет деревья.
+    #
+    # ‼️ Строится ОДИН раз за запуск, а по заявке в нём только ищут. Прежде каждая заявка обходила
+    # весь список деревьев и заново приводила путь каждого: заявки на деревья. Реестр хранит каждую
+    # сданную заявку, так что это произведение только растёт — на сотнях заявок рядом с десятками
+    # деревьев одно чтение съедало большую часть предела времени сторожа, а на загруженной машине
+    # сторожа выходили за него. Сторож, оборванный по времени, не делает вовсе ничего.
+    #
+    # Указатель помнит, по какому запомненному списку деревьев он построен, и строится заново, если
+    # этот запомненный список когда-нибудь окажется другим: пережить список, который хранит
+    # `Get-Worktrees`, и отвечать по устаревшему он не может. ‼️ Сверка смотрит на сам запомненный
+    # список, а не на то, что вернула `Get-Worktrees`: вывод функции собирается в НОВЫЙ массив у
+    # каждого вызывающего, одним и тем же объектом он не бывает никогда — а спрашивать его на каждой
+    # заявке значило бы копировать весь список на заявку, то самое произведение, которое здесь
+    # убирается. Стенд, который подменяет `Get-Worktrees`, запомненного списка не заводит, поэтому
+    # сверка у него проходит всегда и указатель на весь запуск один, даже если список стенда тем
+    # временем меняется.
+    if ($null -ne $script:WaveBoardWorktreeNames -and
+        [object]::ReferenceEquals($script:WaveBoardWorktreeNamesOf, $script:WaveBoardWorktrees)) {
+        return $script:WaveBoardWorktreeNames
+    }
+    $index = New-FolderKeyMap
+    foreach ($tree in (Get-Worktrees)) {
+        $key = Get-FolderKey -Path $tree.path
+        $names = $null
+        if (-not $index.TryGetValue($key, [ref]$names)) {
+            $names = [System.Collections.Generic.List[string]]::new()
+            $index[$key] = $names
+        }
+        if ($tree.branch) { $names.Add((Get-StreamKey -Raw $tree.branch)) }
+        $names.Add((Get-StreamKey -Raw $tree.path))
+    }
+    $script:WaveBoardWorktreeNames = $index
+    $script:WaveBoardWorktreeNamesOf = $script:WaveBoardWorktrees
+    return $index
+}
+
 function Get-ClaimCurrentNames {
     param($Claim)
     # Имена, которые поток носит СЕЙЧАС. Их три источника: записанные в заявке при объявлении
@@ -1266,10 +1316,10 @@ function Get-ClaimCurrentNames {
         $names.Add((Get-StreamKey -Raw $raw))
     }
     $here = Get-FolderKey -Path $Claim.worktree
-    foreach ($tree in (Get-Worktrees)) {
-        if ((Get-FolderKey -Path $tree.path) -ne $here) { continue }
-        if ($tree.branch) { $names.Add((Get-StreamKey -Raw $tree.branch)) }
-        $names.Add((Get-StreamKey -Raw $tree.path))
+    # Нынешние имена рабочего дерева берём из указателя, а не обходом всех деревьев.
+    $tree = $null
+    if ((Get-WorktreeNameIndex).TryGetValue($here, [ref]$tree)) {
+        foreach ($name in $tree) { $names.Add($name) }
     }
     # Своя ли это заявка — сверяем с КОРНЕМ дерева: заявка записывает его, а не ту папку, из которой
     # вкладку случилось запустить.
@@ -1280,14 +1330,21 @@ function Get-ClaimCurrentNames {
 }
 
 function Get-ClaimRememberedNames {
-    param($Claim)
+    param($Claim, $Current)
     # Имена, которые поток лишь ПОМНИТ: ветку переименовали, а вкладка объявилась заново, и
     # объявление переписало заявку целиком. Без памяти находка, УЖЕ ПРИНЯТАЯ по старому имени, не
     # дошла бы и сдачу не задержала — исчезла бы молча.
     #
     # ‼️ Помнить — не то же самое, что носить: права у этих имён разные, см. `Resolve-ClaimNames`.
+    #
+    # `-Current` — носимые имена заявки, если они у вызывающего уже есть: загрузчик реестра всё
+    # равно считает их для записи, и второй запрос удваивал его цену.
     if (-not $Claim) { return @() }
-    $current = @(Get-ClaimCurrentNames -Claim $Claim)
+    $current = if ($PSBoundParameters.ContainsKey('Current')) {
+        @($Current)
+    } else {
+        @(Get-ClaimCurrentNames -Claim $Claim)
+    }
     $names = foreach ($raw in @($Claim.former_branches)) {
         $key = Get-StreamKey -Raw ([string]$raw)
         if ($key -and $key -notin $current) { $key }
@@ -1534,6 +1591,21 @@ function Set-ClaimSupersessions {
         }
         $moves[$i] = @($mine)
     }
+    # Папка каждой записи, приведённая ОДИН раз, и записи, разложенные по папкам в порядке реестра.
+    # Переезд называет папку, из которой забрал адрес, поэтому потерпевших ищем по этой папке, а не
+    # обходом всего реестра на каждый переезд: переезды на записи, при том что каждая сданная заявка
+    # хранится навсегда, только растут.
+    $folders = [string[]]::new($count)
+    $byFolder = New-FolderKeyMap
+    for ($i = 0; $i -lt $count; $i++) {
+        $folders[$i] = Get-FolderKey -Path $records[$i].Record.worktree
+        $same = $null
+        if (-not $byFolder.TryGetValue($folders[$i], [ref]$same)) {
+            $same = [System.Collections.Generic.List[int]]::new()
+            $byFolder[$folders[$i]] = $same
+        }
+        $same.Add($i)
+    }
     for ($i = 0; $i -lt $count; $i++) {
         # ‼️ СДАННАЯ заявка перенос всё равно держит. Соблазн пропустить её велик («вкладки нет,
         # значит и забирать некому»), но это ровно то самое дорогое следствие дефекта: поток
@@ -1546,10 +1618,11 @@ function Set-ClaimSupersessions {
         # каждому прошлому. Адрес каждого ребра берётся у САМОГО ПЕРЕЕЗДА: у прошлого он другой,
         # а нынешний адрес заявки к нему отношения не имеет.
         foreach ($move in $moves[$i]) {
-            for ($j = 0; $j -lt $count; $j++) {
+            $same = $null
+            if (-not $byFolder.TryGetValue([string]$move.From, [ref]$same)) { continue }
+            foreach ($j in $same) {
                 if ($i -eq $j) { continue }
                 $loser = $records[$j]
-                if ((Get-FolderKey -Path $loser.Record.worktree) -ne $move.From) { continue }
                 # Адрес обязан совпасть целиком: поле называет папку, а не поток, и в той же папке
                 # мог с тех пор объявиться СЛЕДУЮЩИЙ поток — гасить его мы не вправе.
                 if ($loser.WaveKey -ne $move.Wave -or $loser.StreamKey -ne $move.Stream) { continue }
@@ -1577,9 +1650,9 @@ function Set-ClaimSupersessions {
         $known = $takenBy[$edge.Loser]
         # Забравших может оказаться несколько: тогда ведущим называем последнего — адрес у него.
         if ($null -ne $known -and (Compare-ClaimTakeover -LeftAt $known.At `
-                    -LeftPath (Get-FolderKey -Path $records[$known.Taker].Record.worktree) `
+                    -LeftPath $folders[$known.Taker] `
                     -RightAt $edge.At `
-                    -RightPath (Get-FolderKey -Path $records[$edge.Taker].Record.worktree)) -ge 0) {
+                    -RightPath $folders[$edge.Taker]) -ge 0) {
             continue
         }
         $takenBy[$edge.Loser] = $edge
@@ -1631,9 +1704,9 @@ function Set-ClaimSupersessions {
             $known = $passedTo[$key]
             # Забиравших из одной папки несколько — берём последнего: адрес у него.
             if ($null -ne $known -and (Compare-ClaimTakeover -LeftAt $known.At `
-                        -LeftPath (Get-FolderKey -Path $records[$known.Index].Record.worktree) `
+                        -LeftPath $folders[$known.Index] `
                         -RightAt $move.At `
-                        -RightPath (Get-FolderKey -Path $records[$i].Record.worktree)) -ge 0) {
+                        -RightPath $folders[$i]) -ge 0) {
                 continue
             }
             $passedTo[$key] = [pscustomobject]@{ Index = $i; At = $move.At }
@@ -1823,13 +1896,16 @@ function Get-Claims {
         $record = $read.Record
         if (-not $record) { continue }
         $state = Get-ClaimState -Claim $record
+        # Носимые имена считаем один раз и отдаём запомненным: второй их запрос там удваивал цену
+        # каждой записи.
+        $current = @(Get-ClaimCurrentNames -Claim $record)
         $claims.Add([pscustomobject]@{
                 File         = $file
                 Record       = $record
                 WaveKey      = Get-WaveKey -Raw ([string]$record.wave)
                 StreamKey    = Get-StreamNumberKey -Raw ([string]$record.stream)
-                Current      = @(Get-ClaimCurrentNames -Claim $record)
-                Remembered   = @(Get-ClaimRememberedNames -Claim $record)
+                Current      = $current
+                Remembered   = @(Get-ClaimRememberedNames -Claim $record -Current $current)
                 Keys         = @()
                 Silenced     = @()
                 State        = $state
