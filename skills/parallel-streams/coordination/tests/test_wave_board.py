@@ -10925,3 +10925,145 @@ def test_a_tab_record_that_exists_but_cannot_be_read_is_not_rewritten(
     after = tab_record(board, "sess-locked")
     assert after["start_tree"] == started["start_tree"] and after["prompt_at"], after
     assert prompt_mark(board, "sess-locked").exists()
+
+
+# Reads a registry with the library and counts every path normalization on the way: all of them go
+# through one function, and the stand wraps it with a counter; a second one counts the computations
+# of a claim's carried names, which must be one per claim. The worktree list comes from the stand,
+# not from git — the count is what is under test, and dozens of real worktrees would cost a minute.
+REGISTRY_COST_STAND = r"""param([string]$Lib, [string]$Dir, [int]$Trees)
+$ErrorActionPreference = 'Stop'
+. $Lib
+$script:StandTrees = @(1..$Trees | ForEach-Object {
+        [pscustomobject]@{ path = "C:/stand/trees/t$_"; branch = "feat/t$_"; live = $false }
+    })
+function Get-Worktrees { return $script:StandTrees }
+$script:FolderKeys = 0
+$script:RealFolderKey = ${function:Get-FolderKey}
+function Get-FolderKey {
+    param([string]$Path)
+    $script:FolderKeys++
+    return (& $script:RealFolderKey -Path $Path)
+}
+$script:CarriedNames = 0
+$script:RealCarriedNames = ${function:Get-ClaimCurrentNames}
+function Get-ClaimCurrentNames {
+    param($Claim)
+    $script:CarriedNames++
+    return (& $script:RealCarriedNames -Claim $Claim)
+}
+$claims = @(Get-Claims -Dir $Dir)
+"claims=$($claims.Count)"
+"superseded=$(@($claims | Where-Object { $_.Superseded }).Count)"
+"folder_keys=$($script:FolderKeys)"
+"carried_names=$($script:CarriedNames)"
+"""
+
+
+def registry_cost(tmp_path: Path, name: str, claims: int, trees: int) -> dict[str, int]:
+    """Reads a registry of `claims` claims beside `trees` worktrees; returns what the stand counted.
+
+    The claims come in pairs on one address, the second taking it over from the first: the second
+    pass of the reader then has an edge to draw for every pair, and half the registry ends up
+    superseded. The folders of the first `trees` claims are worktrees too, so names are looked up both
+    for a folder that has a worktree and for one that doesn't.
+    """
+    assert pwsh
+    folder = tmp_path / name / "streams"
+    for pair in range(claims // 2):
+        first = f"C:/stand/trees/t{2 * pair + 1}"
+        second = f"C:/stand/trees/t{2 * pair + 2}"
+        put_claim(
+            folder,
+            f"first-{pair}",
+            **open_claim(
+                first,
+                stream=str(pair + 1),
+                branch=f"feat/t{2 * pair + 1}",
+                claimed_at="2026-01-01T10:00:00",
+            ),
+        )
+        put_claim(
+            folder,
+            f"second-{pair}",
+            **open_claim(
+                second,
+                stream=str(pair + 1),
+                branch=f"feat/t{2 * pair + 2}",
+                claimed_at="2026-01-01T11:00:00",
+                **{TAKEN_FROM_FIELD: first, TAKEN_AT_FIELD: "2026-01-01T11:00:00"},
+            ),
+        )
+    stand = tmp_path / name / "registry-cost-stand.ps1"
+    stand.write_text(REGISTRY_COST_STAND, encoding="utf-8")
+    done = subprocess.run(
+        [
+            pwsh,
+            "-NoProfile",
+            "-File",
+            str(stand),
+            "-Lib",
+            str(COORDINATION_DIR / "lib" / "wave-board-lib.ps1"),
+            "-Dir",
+            str(folder),
+            "-Trees",
+            str(trees),
+        ],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        cwd=str(tmp_path),
+        timeout=300,
+    )
+    assert done.returncode == 0, done.stderr
+    counted = dict(line.split("=", 1) for line in done.stdout.split() if "=" in line)
+    return {key: int(value) for key, value in counted.items()}
+
+
+@needs_pwsh
+def test_reading_the_registry_costs_the_same_per_claim_however_big_it_grows(
+    tmp_path: Path,
+) -> None:
+    """Reading the registry costs a fixed amount of work PER CLAIM, whatever the registry's size.
+
+    The registry only grows — every released claim stays in it for good — and the delivery hook reads
+    all of it on every turn, the commit guard on every commit, under time limits of 15-20 seconds. A
+    hook cut off at its limit does nothing at all: no delivery, no liveness mark, no guard, and that
+    looks exactly like "the neighbour has nothing to say". The reader used to walk every worktree for
+    every claim and every claim for every takeover, normalizing the same paths again each time; with
+    hundreds of claims beside dozens of worktrees one read ate most of the hooks' time limit, and
+    under load they timed out.
+
+    Work is counted, not timed: the machines this runs on are often fully loaded, and a timing bound
+    either fails at random or is too loose to catch anything. A registry four times bigger, beside
+    eight times more worktrees, must not cost more normalizations per claim. Nor may a claim's
+    carried names be computed more than once: the remembered names used to ask for them again, and
+    every record paid for them twice — a constant per claim that a bound on growth can't see, so it
+    is counted on its own.
+    """
+    small = registry_cost(tmp_path, "small", claims=20, trees=5)
+    large = registry_cost(tmp_path, "large", claims=80, trees=40)
+
+    assert (small["claims"], large["claims"]) == (20, 80), (
+        f"the stand's registry wasn't read whole: {small}, {large}"
+    )
+    assert (small["superseded"], large["superseded"]) == (10, 40), (
+        "the stand's takeovers didn't take — the reader's second pass went unexercised, and the "
+        f"count says nothing about it: {small}, {large}"
+    )
+    per_small = small["folder_keys"] / small["claims"]
+    per_large = large["folder_keys"] / large["claims"]
+    assert per_large <= per_small + 1, (
+        "reading the registry costs more per claim as the registry and the worktree list grow — "
+        f"{per_small:.1f} path normalizations per claim at 20 claims and 5 worktrees, "
+        f"{per_large:.1f} at 80 claims and 40 worktrees. Every released claim stays in the registry "
+        "for good, so this cost only grows, until the hooks reading it run past their time limits "
+        "and silently do nothing"
+    )
+    carried = (small["carried_names"], large["carried_names"])
+    assert carried == (small["claims"], large["claims"]), (
+        "a claim's carried names are computed more than once per claim — "
+        f"{carried[0]} times for 20 claims, {carried[1]} for 80. The loader computes them for the "
+        "record anyway and must hand them to the remembered names; let those ask again and every "
+        "record pays for its carried names twice"
+    )

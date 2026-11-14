@@ -10513,3 +10513,145 @@ def test_a_tab_record_that_exists_but_cannot_be_read_is_not_rewritten(
     after = tab_record(board, "sess-locked")
     assert after["start_tree"] == started["start_tree"] and after["prompt_at"], after
     assert prompt_mark(board, "sess-locked").exists()
+
+
+# Читает реестр библиотекой и считает по пути каждое приведение пути: все они идут через одну
+# функцию, и стенд оборачивает её счётчиком. Второй счётчик так же считает вычисления носимых имён
+# заявки: чтение обязано вычислять их один раз на заявку. Список рабочих деревьев даёт стенд, а не
+# git — под проверкой счёт, а десятки настоящих деревьев стоили бы минуту.
+REGISTRY_COST_STAND = r"""param([string]$Lib, [string]$Dir, [int]$Trees)
+$ErrorActionPreference = 'Stop'
+. $Lib
+$script:StandTrees = @(1..$Trees | ForEach-Object {
+        [pscustomobject]@{ path = "C:/stand/trees/t$_"; branch = "feat/t$_"; live = $false }
+    })
+function Get-Worktrees { return $script:StandTrees }
+$script:FolderKeys = 0
+$script:RealFolderKey = ${function:Get-FolderKey}
+function Get-FolderKey {
+    param([string]$Path)
+    $script:FolderKeys++
+    return (& $script:RealFolderKey -Path $Path)
+}
+$script:CarriedNames = 0
+$script:RealCarriedNames = ${function:Get-ClaimCurrentNames}
+function Get-ClaimCurrentNames {
+    param($Claim)
+    $script:CarriedNames++
+    return (& $script:RealCarriedNames -Claim $Claim)
+}
+$claims = @(Get-Claims -Dir $Dir)
+"claims=$($claims.Count)"
+"superseded=$(@($claims | Where-Object { $_.Superseded }).Count)"
+"folder_keys=$($script:FolderKeys)"
+"carried_names=$($script:CarriedNames)"
+"""
+
+
+def registry_cost(tmp_path: Path, name: str, claims: int, trees: int) -> dict[str, int]:
+    """Читает реестр из `claims` заявок рядом с `trees` деревьями; возвращает то, что насчитал стенд.
+
+    Заявки идут парами на один адрес, вторая забирает его у первой: у второго прохода чтения тогда
+    есть ребро на каждую пару, и половина реестра оказывается перенесённой. Папки первых `trees`
+    заявок — это ещё и рабочие деревья, так что имена ищутся и для папки с деревом, и для папки без
+    него.
+    """
+    assert pwsh
+    folder = tmp_path / name / "streams"
+    for pair in range(claims // 2):
+        first = f"C:/stand/trees/t{2 * pair + 1}"
+        second = f"C:/stand/trees/t{2 * pair + 2}"
+        put_claim(
+            folder,
+            f"first-{pair}",
+            **open_claim(
+                first,
+                stream=str(pair + 1),
+                branch=f"feat/t{2 * pair + 1}",
+                claimed_at="2026-01-01T10:00:00",
+            ),
+        )
+        put_claim(
+            folder,
+            f"second-{pair}",
+            **open_claim(
+                second,
+                stream=str(pair + 1),
+                branch=f"feat/t{2 * pair + 2}",
+                claimed_at="2026-01-01T11:00:00",
+                **{TAKEN_FROM_FIELD: first, TAKEN_AT_FIELD: "2026-01-01T11:00:00"},
+            ),
+        )
+    stand = tmp_path / name / "registry-cost-stand.ps1"
+    stand.write_text(REGISTRY_COST_STAND, encoding="utf-8")
+    done = subprocess.run(
+        [
+            pwsh,
+            "-NoProfile",
+            "-File",
+            str(stand),
+            "-Lib",
+            str(COORDINATION_DIR / "lib" / "wave-board-lib.ps1"),
+            "-Dir",
+            str(folder),
+            "-Trees",
+            str(trees),
+        ],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        cwd=str(tmp_path),
+        timeout=300,
+    )
+    assert done.returncode == 0, done.stderr
+    counted = dict(line.split("=", 1) for line in done.stdout.split() if "=" in line)
+    return {key: int(value) for key, value in counted.items()}
+
+
+@needs_pwsh
+def test_reading_the_registry_costs_the_same_per_claim_however_big_it_grows(
+    tmp_path: Path,
+) -> None:
+    """Чтение реестра стоит неизменной работы НА ЗАЯВКУ, каким бы большим реестр ни стал.
+
+    Реестр только растёт — каждая сданная заявка остаётся в нём навсегда, — а сторож доставки читает
+    его целиком на каждом ходу, сторож коммита — на каждом коммите, при пределах времени 15–20
+    секунд. Сторож, оборванный по пределу, не делает вовсе ничего: ни доставки, ни отметки живости,
+    ни заслона, и выглядит это ровно как «соседу нечего сказать». Прежде чтение обходило все рабочие
+    деревья на каждую заявку и все заявки на каждый переезд, заново приводя одни и те же пути; на
+    сотнях заявок рядом с десятками деревьев одно чтение съедало большую часть предела времени
+    сторожей, и под нагрузкой они обрывались.
+
+    Считаем работу, а не время: машины, где это идёт, часто загружены до предела, и предел по
+    времени либо срывается наугад, либо так широк, что не ловит ничего. Реестр вчетверо больше,
+    рядом с ввосьмеро большим числом деревьев, не должен стоить больше приведений пути на заявку. И
+    носимые имена заявки нельзя вычислять больше одного раза: запомненные имена прежде спрашивали
+    их заново, и каждая запись платила за них дважды — это постоянная добавка на заявку, которую
+    предел на рост не видит, поэтому она считается отдельно.
+    """
+    small = registry_cost(tmp_path, "small", claims=20, trees=5)
+    large = registry_cost(tmp_path, "large", claims=80, trees=40)
+
+    assert (small["claims"], large["claims"]) == (20, 80), (
+        f"реестр стенда прочитан не целиком: {small}, {large}"
+    )
+    assert (small["superseded"], large["superseded"]) == (10, 40), (
+        "переезды стенда не сработали — второй проход чтения не задействован, и счёт о нём ничего "
+        f"не говорит: {small}, {large}"
+    )
+    per_small = small["folder_keys"] / small["claims"]
+    per_large = large["folder_keys"] / large["claims"]
+    assert per_large <= per_small + 1, (
+        "чтение реестра дорожает в пересчёте на заявку по мере роста реестра и списка деревьев — "
+        f"{per_small:.1f} приведений пути на заявку при 20 заявках и 5 деревьях, "
+        f"{per_large:.1f} при 80 заявках и 40 деревьях. Каждая сданная заявка остаётся в реестре "
+        "навсегда, так что эта цена только растёт, пока читающие его сторожа не выйдут за свои "
+        "пределы времени и молча не перестанут работать"
+    )
+    carried = (small["carried_names"], large["carried_names"])
+    assert carried == (small["claims"], large["claims"]), (
+        "носимые имена заявки вычисляются больше одного раза на заявку — "
+        f"{carried[0]} раз на 20 заявок, {carried[1]} на 80. Загрузчик всё равно вычисляет их для "
+        "записи и обязан отдать их запомненным именам; дай тем спросить заново — и каждая запись "
+        "платит за свои носимые имена дважды"
+    )
