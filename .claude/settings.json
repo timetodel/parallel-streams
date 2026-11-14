@@ -7,7 +7,7 @@
           {
             "type": "command",
             "shell": "powershell",
-            "command": "& \"$PWD/skills/parallel-streams/coordination/hooks/wave-board-deliver.ps1\" -Stage Start",
+            "command": "& \"$(if (Test-Path -LiteralPath \"$PWD/skills/parallel-streams/coordination/hooks/deliver-wave-board.ps1\") { \"$PWD\" } else { $env:CLAUDE_PROJECT_DIR })/skills/parallel-streams/coordination/hooks/deliver-wave-board.ps1\" -Stage Start",
             "timeout": 20,
             "statusMessage": "Checking the wave board"
           }
@@ -20,7 +20,7 @@
           {
             "type": "command",
             "shell": "powershell",
-            "command": "& \"$PWD/skills/parallel-streams/coordination/hooks/wave-board-deliver.ps1\" -Stage Prompt",
+            "command": "& \"$(if (Test-Path -LiteralPath \"$PWD/skills/parallel-streams/coordination/hooks/deliver-wave-board.ps1\") { \"$PWD\" } else { $env:CLAUDE_PROJECT_DIR })/skills/parallel-streams/coordination/hooks/deliver-wave-board.ps1\" -Stage Prompt",
             "timeout": 15
           }
         ]
@@ -33,15 +33,15 @@
           {
             "type": "command",
             "shell": "powershell",
-            "command": "& \"$PWD/skills/parallel-streams/coordination/hooks/pretooluse-wave-board-nudge.ps1\"",
-            "if": "Edit(docs/plans/**)",
+            "command": "& \"$(if (Test-Path -LiteralPath \"$PWD/skills/parallel-streams/coordination/hooks/nudge-wave-plan-edit.ps1\") { \"$PWD\" } else { $env:CLAUDE_PROJECT_DIR })/skills/parallel-streams/coordination/hooks/nudge-wave-plan-edit.ps1\"",
+            "if": "Edit(//**/docs/plans/**)",
             "timeout": 20
           },
           {
             "type": "command",
             "shell": "powershell",
-            "command": "& \"$PWD/skills/parallel-streams/coordination/hooks/pretooluse-wave-board-nudge.ps1\"",
-            "if": "Write(docs/plans/**)",
+            "command": "& \"$(if (Test-Path -LiteralPath \"$PWD/skills/parallel-streams/coordination/hooks/nudge-wave-plan-edit.ps1\") { \"$PWD\" } else { $env:CLAUDE_PROJECT_DIR })/skills/parallel-streams/coordination/hooks/nudge-wave-plan-edit.ps1\"",
+            "if": "Write(//**/docs/plans/**)",
             "timeout": 20
           }
         ]

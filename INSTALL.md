@@ -67,14 +67,20 @@ coordination/wave-board.ps1
 coordination/lib/wave-board-lib.ps1
 coordination/lib/git-env-clean.ps1
 coordination/lib/hook-io.ps1
+coordination/hooks/deliver-wave-board.ps1
+coordination/hooks/nudge-wave-plan-edit.ps1
+coordination/hooks/guard-claim-before-publish.ps1
 coordination/hooks/wave-board-deliver.ps1
 coordination/hooks/pretooluse-wave-board-nudge.ps1
+coordination/hooks/pretooluse-claim-before-publish.ps1
 coordination/templates/profile.md
 coordination/templates/profile-coordination.md
 ```
 
 The `coordination/` files are only needed if the user wants the channel (step 3a). The skill itself
-works without them.
+works without them. Of the six hook files, the first three are the hooks the installer wires; the
+last three are their names before 1.19.0, kept as forwarders to them — a fresh install does not need
+them, an update over an older copy does.
 
 ## Step 3 — verify before reporting success
 
@@ -101,10 +107,11 @@ once:
 pwsh .claude/skills/parallel-streams/coordination/install.ps1
 ```
 
-It needs PowerShell 7 and a git repository. It reports every change it makes: two hooks in the
-project's settings, the coordination sections in `.parallel-streams.md`, and a short bridge script
-at `scripts/wave-board.ps1`. Check with `-Mode Check`, remove with `-Mode Uninstall`. If PowerShell
-7 is missing, say so plainly — the skill still works, only without the channel.
+It needs PowerShell 7 and a git repository. It reports every change it makes: three hooks in the
+project's settings (delivery, the plan-edit nudge, the commit guard), the coordination sections in
+`.parallel-streams.md`, and a short bridge script at `scripts/wave-board.ps1`. Check with
+`-Mode Check`, remove with `-Mode Uninstall`. If PowerShell 7 is missing, say so plainly — the skill
+still works, only without the channel.
 
 ## Step 3b — the persistent rules file
 
@@ -145,9 +152,11 @@ Report exactly this, adapted to where you installed it:
 
 ## Updating later
 
-Repeat step 2 over the existing directory, then re-run the checks in step 3. There is no package
+Repeat step 2 over the existing directory, then re-run the checks in step 3. If the coordination
+channel is installed, run its installer again too (step 3a): when a version writes its hook entries
+differently, that run rewrites them in place, and it changes nothing else. There is no package
 manager involved and nothing to unregister — the skill is a directory, and a newer copy of that
-directory is the whole update.
+directory plus that one run is the whole update.
 
 ## Uninstall
 

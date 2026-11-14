@@ -15,6 +15,12 @@
   • отчёт совпадает с делом: переписал файл единым стилем — сказал об этом;
   • ставшая ненужной НАША запись снимается, а не остаётся указывать в мёртвое место;
   • чужой хук из папки с таким же именем нашим не считается — ни при установке, ни при снятии;
+  • подключённые установщиком сторожа находятся из ЛЮБОЙ папки, где стоит вкладка, — из подпапки,
+    простой папки, чужого репозитория, — первой идёт копия дерева, где стоит вкладка; вне проекта,
+    которому они служат, они ничего не говорят и ничего после себя не оставляют;
+  • запись прежней формы переписывается на месте, а снятие убирает любую форму;
+  • файлы сторожей в 1.19.0 переименованы, поэтому команда никогда не запускает копию старше — а
+    настройки, записанные до неё, доходят до переименованных сторожей через файлы под старыми именами;
   • в профиль дописывается только недостающее, ни один прежний байт не двигается;
   • без папки планов сторож-подсказка не подключается вовсе: подключённый, он молчал бы всегда, и
     это выглядело бы как «напоминать не о чем»;
@@ -30,8 +36,11 @@
 from __future__ import annotations
 
 import json
+import os
+import re
 import shutil
 import subprocess
+from datetime import datetime
 from pathlib import Path
 
 import pytest
@@ -62,22 +71,50 @@ def _find_repo_root(start: Path) -> Path:
 
 REPO_ROOT = _find_repo_root(Path(__file__).resolve())
 INSTALLER = COORDINATION_DIR / "install.ps1"
-NUDGE = COORDINATION_DIR / "hooks" / "pretooluse-wave-board-nudge.ps1"
+NUDGE = COORDINATION_DIR / "hooks" / "nudge-wave-plan-edit.ps1"
 REAL_SETTINGS = REPO_ROOT / ".claude" / "settings.json"
 REAL_BRIDGE = REPO_ROOT / "scripts" / "wave-board.ps1"
 
 SKILL_INSIDE = Path(".claude") / "skills" / "parallel-streams" / "coordination"
 
+
+def wired(script: str) -> str:
+    """Команда, которую установщик пишет для сторожа скилла ВНУТРИ проекта, — без аргументов.
+
+    Копия ищется дважды: в папке, где стоит вкладка, иначе в проекте, где началась сессия
+    (`CLAUDE_PROJECT_DIR`, его среда задаёт каждому хуку). Прежняя форма — голый `$PWD/...`: хук
+    запускается в ТЕКУЩЕЙ папке вкладки, и из подпапки она не находила ничего.
+    """
+    rel = f"{SKILL_INSIDE.as_posix()}/hooks/{script}"
+    return (
+        f'& "$(if (Test-Path -LiteralPath "$PWD/{rel}") {{ "$PWD" }} '
+        f'else {{ $env:CLAUDE_PROJECT_DIR }})/{rel}"'
+    )
+
+
 # Папка планов подставного проекта — НАРОЧНО не такая, как в этом репозитории: канал обязан браться
 # из профиля проекта, а не из того, как заведено здесь.
 PLANS = "планы-волн/"
 
-# Файлы сторожей канала. По ним узнаётся «наша» запись — и в установщике, и здесь.
-OUR_HOOK_FILES = (
-    "wave-board-deliver.ps1",
-    "pretooluse-wave-board-nudge.ps1",
-    "pretooluse-claim-before-publish.ps1",
+# Файлы сторожей канала — имена, которые пишет установщик.
+HOOK_FILES = (
+    "deliver-wave-board.ps1",
+    "nudge-wave-plan-edit.ps1",
+    "guard-claim-before-publish.ps1",
 )
+
+# Имена, которые те же файлы носили до 1.19.0, по нынешнему имени. Сменены, чтобы команда, которая
+# падает в проект, где началась сессия, никогда не запустила там СТАРУЮ копию — ту, что не знает,
+# где кончается её проект. Записи под старыми именами всё равно наши: установщик переписывает их на
+# новые имена, а снятие убирает.
+FORMER_NAME = {
+    "deliver-wave-board.ps1": "wave-board-deliver.ps1",
+    "nudge-wave-plan-edit.ps1": "pretooluse-wave-board-nudge.ps1",
+    "guard-claim-before-publish.ps1": "pretooluse-claim-before-publish.ps1",
+}
+
+# По любому из этих имён узнаётся «наша» запись — и в установщике, и здесь.
+OUR_HOOK_FILES = HOOK_FILES + tuple(FORMER_NAME.values())
 
 pwsh = shutil.which("pwsh")
 needs_pwsh = pytest.mark.skipif(not pwsh, reason="pwsh не найден — запускать скрипты нечем")
@@ -179,7 +216,7 @@ def nudge_hooks(data: dict) -> list[dict]:
     return [
         hook
         for hook in ours(data, "PreToolUse")
-        if "pretooluse-wave-board-nudge.ps1" in hook.get("command", "")
+        if "nudge-wave-plan-edit.ps1" in hook.get("command", "")
     ]
 
 
@@ -187,7 +224,7 @@ def claim_hooks(data: dict) -> list[dict]:
     return [
         hook
         for hook in ours(data, "PreToolUse")
-        if "pretooluse-claim-before-publish.ps1" in hook.get("command", "")
+        if "guard-claim-before-publish.ps1" in hook.get("command", "")
     ]
 
 
@@ -341,6 +378,64 @@ def project_with_skill(tmp_path: Path) -> Path:
 
 def installer_in(project: Path) -> Path:
     return project / SKILL_INSIDE / "install.ps1"
+
+
+def hook_env(session_project: Path, scratch: Path) -> dict[str, str]:
+    """Окружение, которое среда даёт хуку, — и ничего от того, кто гоняет набор.
+
+    `CLAUDE_PROJECT_DIR` называет папку, где началась сессия. Свой номер сессии среды, её папка
+    настроек и клапан сторожа фиксации убраны: любой из них, оставленный на месте, заставил бы
+    проверку пройти или упасть по причине, которой в ней нет.
+    """
+    env = dict(os.environ)
+    env["CLAUDE_PROJECT_DIR"] = str(session_project)
+    env["CLAUDE_CONFIG_DIR"] = str(scratch / "claude-config")
+    env.pop("CLAUDE_CODE_SESSION_ID", None)
+    env.pop("PARALLEL_STREAMS_ALLOW_UNCLAIMED", None)
+    return env
+
+
+def run_wired(
+    command: str, cwd: Path, call: dict[str, object], env: dict[str, str]
+) -> subprocess.CompletedProcess[str]:
+    """Команда из настроек — так, как среда запускает хук с `shell: powershell`.
+
+    PowerShell 7 в ТЕКУЩЕЙ папке вкладки, вызов — JSON на стандартный ввод. Скрипт, которого команда
+    не нашла, виден как ненулевой код и ошибка в потоке ошибок — тот самый сбой, что раньше сходил за
+    «сторожу нечего сказать».
+    """
+    assert pwsh
+    return subprocess.run(
+        [pwsh, "-NoProfile", "-Command", command],
+        input=json.dumps(call),
+        cwd=str(cwd),
+        env=env,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        timeout=180,
+    )
+
+
+def wired_commands(project: Path) -> dict[str, str]:
+    """Подключённые команды сторожей — по тому, что каждая делает."""
+    data = settings_of(project)
+    found: dict[str, str] = {}
+    for event, what in (("SessionStart", "deliver Start"), ("UserPromptSubmit", "deliver Prompt")):
+        hooks = ours(data, event)
+        assert len(hooks) == 1, f"на {event} не ровно одна запись доставки: {hooks}"
+        found[what] = hooks[0]["command"]
+    found["claim"] = claim_hooks(data)[0]["command"]
+    found["nudge"] = nudge_hooks(data)[0]["command"]
+    return found
+
+
+def every_entry(root: Path) -> dict[str, bytes | None]:
+    """Всё внутри папки, её служебный каталог git тоже: файл — со своими байтами, папка — None."""
+    return {
+        path.relative_to(root).as_posix(): (path.read_bytes() if path.is_file() else None)
+        for path in sorted(root.rglob("*"))
+    }
 
 
 @needs_pwsh
@@ -696,7 +791,7 @@ def test_the_section_heading_is_read_regardless_of_case(project: Path) -> None:
     out = install(project)
 
     filters = sorted(hook.get("if", "") for hook in nudge_hooks(settings_of(project)))
-    assert filters == [f"Edit({PLANS}**)", f"Write({PLANS}**)"], (
+    assert filters == [f"Edit(//**/{PLANS}**)", f"Write(//**/{PLANS}**)"], (
         f"раздел планов, написанный другим регистром, не прочитан: {filters}"
     )
     assert "уже описывает канал" in out, (
@@ -743,6 +838,9 @@ def test_the_plans_folder_comes_from_the_profile(project: Path) -> None:
 
     Проверяются обе стороны: условие в настройках и сам сторож. Разъедься они — сторож окажется
     подключённым к папке, которую сам не считает папкой планов, и промолчит.
+
+    Условие привязано к корню файловой системы и ловит папку на любой глубине: без ведущей косой
+    черты среда сверяет его с ТЕКУЩЕЙ папкой вкладки, и из подпапки оно не срабатывало вовсе.
     """
     (project / "waves").mkdir()
     (project / ".parallel-streams.md").write_text(
@@ -753,7 +851,7 @@ def test_the_plans_folder_comes_from_the_profile(project: Path) -> None:
     install(project)
 
     filters = sorted(hook.get("if", "") for hook in nudge_hooks(settings_of(project)))
-    assert filters == ["Edit(waves/**)", "Write(waves/**)"], (
+    assert filters == ["Edit(//**/waves/**)", "Write(//**/waves/**)"], (
         f"условия сторожа-подсказки не про папку из профиля: {filters}"
     )
 
@@ -761,10 +859,13 @@ def test_the_plans_folder_comes_from_the_profile(project: Path) -> None:
     call = json.dumps(
         {"session_id": "s-plans", "tool_input": {"file_path": "waves/wave7-проба.md"}}
     )
+    # Запускаемый здесь сторож лежит вне подставного проекта — это набор, поставленный снаружи, и
+    # свой проект он знает по папке, где началась сессия.
     done = subprocess.run(
         [pwsh, "-NoProfile", "-File", str(NUDGE)],
         input=call,
         cwd=str(project),
+        env=hook_env(project, project.parent),
         capture_output=True,
         text=True,
         encoding="utf-8",
@@ -798,7 +899,7 @@ def test_the_commit_guard_watches_the_shell_with_no_condition(project: Path) -> 
         entry.get("matcher", "")
         for entry in settings_of(project)["hooks"]["PreToolUse"]
         for hook in entry.get("hooks", [])
-        if "pretooluse-claim-before-publish.ps1" in hook.get("command", "")
+        if "guard-claim-before-publish.ps1" in hook.get("command", "")
     ]
     assert matchers and "Bash" in matchers[0], (
         f"сторож фиксации не подключён к инструменту оболочки: {matchers}"
@@ -807,30 +908,514 @@ def test_the_commit_guard_watches_the_shell_with_no_condition(project: Path) -> 
 
 @needs_pwsh
 def test_inside_project_paths_are_written_relative(project_with_skill: Path) -> None:
-    """Скилл лежит внутри проекта — путь пишется от рабочей папки, а не полным.
+    """Скилл лежит внутри проекта — путь пишется от проекта, а не полным.
 
     Полный путь привязал бы настройки к одной машине и к одному месту папки проекта: в рабочем
-    дереве соседней вкладки такой сторож ведёт в чужую копию скилла.
+    дереве соседней вкладки такой сторож ведёт в чужую копию скилла. А копия ищется сначала в папке
+    вкладки, потом в проекте, где началась сессия, — голый `$PWD/...` не находил ничего, стоило
+    вкладке шагнуть в подпапку.
     """
     install_in(project_with_skill)
 
     data = settings_of(project_with_skill)
-    wired = (
-        ours(data, "SessionStart")
-        + ours(data, "UserPromptSubmit")
-        + nudge_hooks(data)
-        + claim_hooks(data)
-    )
-    assert len(wired) == 5, f"подключено не то число записей: {len(wired)}"
-    for hook in wired:
-        command = hook["command"]
-        assert command.startswith('& "$PWD/.claude/skills/parallel-streams/coordination/hooks/'), (
-            f"путь записан не от рабочей папки проекта: {command}"
+    commands = sorted(
+        hook["command"]
+        for hook in (
+            ours(data, "SessionStart")
+            + ours(data, "UserPromptSubmit")
+            + nudge_hooks(data)
+            + claim_hooks(data)
         )
+    )
+    expected = sorted(
+        [
+            wired("deliver-wave-board.ps1") + " -Stage Start",
+            wired("deliver-wave-board.ps1") + " -Stage Prompt",
+            wired("nudge-wave-plan-edit.ps1"),
+            wired("nudge-wave-plan-edit.ps1"),
+            wired("guard-claim-before-publish.ps1"),
+        ]
+    )
+    assert commands == expected, (
+        f"сторожа записаны не в той форме, что находит их из любой папки: {commands}"
+    )
+    machine = (str(project_with_skill), project_with_skill.as_posix())
+    assert not any(path in command for path in machine for command in commands), (
+        "в настройки попал путь этой конкретной машины"
+    )
 
     bridge = (project_with_skill / "scripts" / "wave-board.ps1").read_text(encoding="utf-8")
     assert "$PSScriptRoot" in bridge, "переходник внутри проекта тоже обязан считать путь от себя"
     assert str(project_with_skill) not in bridge, "в переходник попал путь этой конкретной машины"
+
+
+@needs_pwsh
+def test_the_wired_guards_work_from_a_subfolder_of_the_project(
+    project_with_skill: Path, tmp_path: Path
+) -> None:
+    """Сессия, шагнувшая в подпапку, сохраняет всех своих сторожей.
+
+    Команда писалась от голой рабочей папки, а хук запускается в ТЕКУЩЕЙ папке вкладки: из подпапки
+    скрипт не находился, хук падал с неблокирующей ошибкой, и фиксация, которую он должен был
+    остановить, проходила — и отличить это от «сказать нечего» было нечем. Поэтому каждый сторож
+    проверяется по тому, что он оттуда делает, а не по тому, что запустился.
+    """
+    install_in(project_with_skill)
+    commands = wired_commands(project_with_skill)
+    deep = project_with_skill / "src" / "deep"
+    deep.mkdir(parents=True)
+    env = hook_env(project_with_skill, tmp_path)
+
+    commit = {
+        "session_id": "s-deep",
+        "cwd": str(deep),
+        "tool_input": {"command": 'git commit -m "работа"'},
+    }
+    refused = run_wired(commands["claim"], deep, commit, env)
+    assert refused.returncode == 0 and not refused.stderr.strip(), (
+        f"сторож фиксации не нашёлся из подпапки: {refused.stderr}"
+    )
+    assert "этот поток не объявлялся" in refused.stdout, (
+        f"из подпапки фиксация необъявленного потока прошла: {refused.stdout!r}"
+    )
+
+    for stage in ("Start", "Prompt"):
+        call = {"session_id": f"s-deep-{stage.lower()}", "cwd": str(deep)}
+        delivered = run_wired(commands[f"deliver {stage}"], deep, call, env)
+        assert delivered.returncode == 0 and not delivered.stderr.strip(), (
+            f"сторож доставки ({stage}) не нашёлся из подпапки: {delivered.stderr}"
+        )
+    beacon = project_with_skill / ".claude" / ".cache" / "wave-board-alive.txt"
+    assert beacon.exists() and "s-deep-prompt" in beacon.read_text(encoding="utf-8"), (
+        "сторож доставки не отметил своё дерево живым из подпапки — соседи примут живую вкладку за "
+        "брошенную"
+    )
+    assert not (deep / ".claude").exists(), "сторожа оставили папку состояния в подпапке"
+
+    plan = project_with_skill / PLANS / "2026-01-01-wave3-черновик.md"
+    edit = {"session_id": "s-deep-plan", "tool_input": {"file_path": str(plan)}}
+    nudged = run_wired(commands["nudge"], deep, edit, env)
+    assert nudged.returncode == 0 and not nudged.stderr.strip(), nudged.stderr
+    assert "Правится план волны" in nudged.stdout, (
+        f"подсказка промолчала при правке плана из подпапки: {nudged.stdout!r}"
+    )
+
+
+@needs_pwsh
+@pytest.mark.parametrize("place", ["простая папка", "соседний репозиторий"])
+def test_outside_the_project_the_wired_guards_are_found_and_say_nothing(
+    project_with_skill: Path, tmp_path: Path, place: str
+) -> None:
+    """Вкладка вышла из проекта: сторожа находятся — и ничего там не делают.
+
+    Находятся, потому что команда отступает к проекту, где началась сессия. Молчат, потому что
+    снаружи — чужое: принести его доску, отказать его фиксациям или оставить в нём папку состояния
+    значило бы, что набор хозяйничает в проекте, куда его не ставили. Молчание двусмысленно, поэтому
+    подсказку из той же папки спрашивают о плане самого проекта — и она обязана заговорить.
+    """
+    install_in(project_with_skill)
+    commands = wired_commands(project_with_skill)
+    if place == "простая папка":
+        outside = tmp_path / "простая-папка"
+        outside.mkdir()
+    else:
+        outside = new_repo(tmp_path, "сосед")
+    env = hook_env(project_with_skill, tmp_path)
+    before = every_entry(outside)
+
+    calls: dict[str, dict[str, object]] = {
+        "deliver Start": {"session_id": "s-out-start", "cwd": str(outside)},
+        "deliver Prompt": {"session_id": "s-out-prompt", "cwd": str(outside)},
+        "claim": {
+            "session_id": "s-out-claim",
+            "cwd": str(outside),
+            "tool_input": {"command": 'git commit -m "их работа"'},
+        },
+    }
+    for what, call in calls.items():
+        done = run_wired(commands[what], outside, call, env)
+        assert done.returncode == 0 and not done.stderr.strip(), (
+            f"{what}: сторож не нашёлся, место — {place}: {done.stderr}"
+        )
+        assert done.stdout.strip() == "", (
+            f"{what}: сторож заговорил, место — {place}: {done.stdout!r}"
+        )
+
+    plan = project_with_skill / PLANS / "2026-01-01-wave3-черновик.md"
+    edit = {"session_id": "s-out-plan", "tool_input": {"file_path": str(plan)}}
+    nudged = run_wired(commands["nudge"], outside, edit, env)
+    assert nudged.returncode == 0 and not nudged.stderr.strip(), nudged.stderr
+    assert "Правится план волны" in nudged.stdout, (
+        f"место — {place}: подсказка промолчала о плане своего же проекта: {nudged.stdout!r}"
+    )
+
+    assert every_entry(outside) == before, (
+        f"сторожа записали что-то в папку ({place}), которая не принадлежит их проекту"
+    )
+
+
+@needs_pwsh
+def test_the_tree_the_tab_stands_in_runs_its_own_copy(
+    project_with_skill: Path, tmp_path: Path
+) -> None:
+    """Вкладка в корне дерева со своей копией запускает ЕЁ, а не копию проекта сессии.
+
+    Рабочие деревья одного проекта несут свои копии набора, и версии их расходятся, пока не обновлены
+    все деревья: сторожа дерева обязаны быть версии этого дерева. Только если в папке вкладки копии
+    нет, команда отступает к проекту, где началась сессия.
+    """
+    install_in(project_with_skill)
+    commands = wired_commands(project_with_skill)
+    tree = tmp_path / "другое-дерево"
+    copy = tree / SKILL_INSIDE / "hooks"
+    copy.mkdir(parents=True)
+    for name in HOOK_FILES:
+        (copy / name).write_text(
+            "[Console]::OutputEncoding = [System.Text.Encoding]::UTF8\n"
+            '"копия другого дерева, вызвана с [$args]"\n',
+            encoding="utf-8",
+        )
+    env = hook_env(project_with_skill, tmp_path)
+
+    for what, command in commands.items():
+        done = run_wired(command, tree, {"session_id": "s-tree"}, env)
+        assert done.returncode == 0, done.stderr
+        assert "копия другого дерева" in done.stdout, (
+            f"{what}: из корня дерева со своей копией запустилась чужая: {done.stdout!r}"
+        )
+    started = run_wired(commands["deliver Start"], tree, {"session_id": "s-tree"}, env)
+    assert "вызвана с [-Stage Start]" in started.stdout, (
+        f"своя копия дерева не получила аргументов сторожа: {started.stdout!r}"
+    )
+
+
+# Формы нашей команды, которые писали прежние версии набора, — каждая под именами сторожей до
+# 1.19.0: от рабочей папки (до 1.18.1), полным путём (скилл, поставленный вне проекта) и форма, ищущая
+# в двух местах, в том виде, в каком она стояла до переименования файлов.
+OLDER_FORMS = ("от рабочей папки", "полный путь", "ищет в двух местах")
+
+
+def older_form(command: str, form: str, former: Path) -> str:
+    """Наша команда так, как её писала прежняя версия набора, — под именем сторожа до 1.19.0."""
+    found = re.match(r'.*/hooks/([\w.-]+\.ps1)"(.*)$', command)
+    assert found, f"это не команда нашего сторожа: {command}"
+    name, tail = found.groups()
+    old = FORMER_NAME[name]
+    if form == "ищет в двух местах":
+        return wired(old) + tail
+    base = f"$PWD/{SKILL_INSIDE.as_posix()}" if form == "от рабочей папки" else former.as_posix()
+    return f'& "{base}/hooks/{old}"{tail}'
+
+
+@needs_pwsh
+@pytest.mark.parametrize("form", OLDER_FORMS)
+def test_an_entry_of_an_older_form_is_rewritten_in_place(
+    project_with_skill: Path, tmp_path: Path, form: str
+) -> None:
+    """Наши записи прежней формы переписываются там, где стоят, — и больше ни байт не двигается.
+
+    Каждый проект, куда ставили набор, несёт прежнюю форму, пока установщик не прогонят снова: от
+    рабочей папки (та, что из подпапки не находила ничего), полным путём (скилл когда-то стоял вне
+    проекта) или форму, ищущую в двух местах, под старыми именами файлов. Не узнай установщик любую
+    из них своей — рядом легла бы вторая запись, и сторож заговорил бы дважды. Прежний файл делается
+    из нынешнего заменой только наших команд и условий, так что каждый чужой байт в нём — байт
+    нынешнего файла, и прогон обязан вернуть ровно нынешний, под новыми именами.
+    """
+    write_settings(project_with_skill, FOREIGN_SETTINGS)
+    install_in(project_with_skill)
+    current = settings_path(project_with_skill).read_bytes()
+
+    older = current.decode("utf-8")
+    data = json.loads(older)
+    former = tmp_path / "прежнее-место" / "coordination"
+    ours_now = [
+        hook
+        for event in ("SessionStart", "UserPromptSubmit", "PreToolUse")
+        for hook in ours(data, event)
+    ]
+    assert len(ours_now) == 5, f"установка подключила не все пять записей: {ours_now}"
+    # У двух записей подсказки одна команда: каждое значение заменяется один раз, везде, где стоит.
+    replaced: dict[str, str] = {}
+    # Форма в двух местах писалась с условиями, привязанными к корню; более ранние — без этого.
+    anchored = form == "ищет в двух местах"
+    for hook in ours_now:
+        replaced[hook["command"]] = older_form(hook["command"], form, former)
+        if hook.get("if") and not anchored:
+            replaced[hook["if"]] = hook["if"].replace("//**/", "")
+    for new, old in replaced.items():
+        new_text = json.dumps(new, ensure_ascii=False)
+        assert new_text in older, f"нашего значения нет там, где его ждёт проверка: {new_text}"
+        older = older.replace(new_text, json.dumps(old, ensure_ascii=False))
+    assert not any(name in older for name in HOOK_FILES), (
+        "прежний файл всё ещё называет сторожа нынешним именем — этот случай ничего не проверяет"
+    )
+    assert anchored or ("CLAUDE_PROJECT_DIR" not in older and "//**/" not in older), (
+        "в прежнем файле осталась нынешняя форма — этот случай ничего не проверяет"
+    )
+    settings_path(project_with_skill).write_bytes(older.encode("utf-8"))
+
+    out = install_in(project_with_skill)
+
+    assert settings_path(project_with_skill).read_bytes() == current, (
+        "прогон вернул не ровно то, что пишет свежая установка: наши записи не переписаны на месте "
+        "(рядом со старой легла вторая или старая осталась), либо сдвинулся чужой байт"
+    )
+    assert "поправлена запись" in out, "переписка наших записей на месте прошла молча"
+
+
+@needs_pwsh
+def test_uninstall_takes_away_our_entries_in_every_form(
+    project_with_skill: Path, tmp_path: Path
+) -> None:
+    """Снятие убирает наши записи, в какой бы форме они ни были написаны, — и только их.
+
+    Файл настроек, переживший несколько версий набора, может нести одного и того же сторожа в
+    нескольких формах, под любым из двух его имён. Оставленная, прежняя форма продолжала бы падать
+    из каждой подпапки ещё долго после того, как человеку сказали, что канала больше нет.
+    """
+    write_settings(project_with_skill, FOREIGN_HOOK)
+    before = settings_path(project_with_skill).read_bytes()
+    install_in(project_with_skill)
+
+    data = settings_of(project_with_skill)
+    former = tmp_path / "прежнее-место" / "coordination"
+    for event in ("SessionStart", "UserPromptSubmit", "PreToolUse"):
+        for entry in data["hooks"][event]:
+            older = [
+                {**hook, "command": older_form(hook["command"], form, former)}
+                for hook in entry["hooks"]
+                if is_ours(hook)
+                for form in OLDER_FORMS
+            ]
+            for hook in older:
+                if hook.get("if") and "CLAUDE_PROJECT_DIR" not in hook["command"]:
+                    hook["if"] = hook["if"].replace("//**/", "")
+            entry["hooks"].extend(older)
+    write_settings(project_with_skill, data)
+    assert len(ours(settings_of(project_with_skill), "SessionStart")) == 1 + len(OLDER_FORMS)
+
+    install_in(project_with_skill, "-Mode", "Uninstall")
+
+    assert settings_path(project_with_skill).read_bytes() == before, (
+        "после снятия настройки отличаются от исходных — наша запись в какой-то форме осталась, "
+        "или переписалось чужое"
+    )
+
+
+def place_older_copy(folder: Path) -> None:
+    """Копия набора до 1.19.0 на месте потребителя в `folder`: только старые имена.
+
+    Подставные скрипты, а не старые: запущенный печатает метку и оставляет файл там, где запущен, так
+    что незаметно не запустится. У копии 1.18.1 и старше файлов под новыми именами нет.
+    """
+    hooks = folder / SKILL_INSIDE / "hooks"
+    hooks.mkdir(parents=True)
+    for name in FORMER_NAME.values():
+        (hooks / name).write_text(
+            "[Console]::OutputEncoding = [System.Text.Encoding]::UTF8\n"
+            "Set-Content -LiteralPath (Join-Path $PWD.Path 'older-copy-ran.txt') -Value 'ran'\n"
+            '"запустилась старая копия"\n',
+            encoding="utf-8",
+        )
+
+
+def calls_from(folder: Path, session: str, plan: Path) -> dict[str, dict[str, object]]:
+    """По вызову на каждую подключённую команду, из `folder`: сторожу фиксации дают фиксацию."""
+    return {
+        "deliver Start": {"session_id": f"{session}-start", "cwd": str(folder)},
+        "deliver Prompt": {"session_id": f"{session}-prompt", "cwd": str(folder)},
+        "claim": {
+            "session_id": f"{session}-claim",
+            "cwd": str(folder),
+            "tool_input": {"command": 'git commit -m "работа"'},
+        },
+        "nudge": {"session_id": f"{session}-plan", "tool_input": {"file_path": str(plan)}},
+    }
+
+
+@needs_pwsh
+@pytest.mark.parametrize("place", ["соседний репозиторий", "простая папка"])
+def test_the_command_never_starts_an_older_copy_in_the_session_project(
+    project_with_skill: Path, tmp_path: Path, place: str
+) -> None:
+    """В проекте, где началась сессия, всё ещё копия до 1.19.0: ничего из неё не запускается.
+
+    Команда отступает к этому проекту, когда в папке вкладки копии нет. Под старыми именами файлов
+    она нашла бы там СТАРУЮ копию и запускала бы её из любой папки — а старая копия не знает, что
+    такое «не наш проект»: в чужом репозитории она доставляла его доску, оставляла там своё
+    состояние и отказывала в его фиксациях. Под новыми именами команда не находит ничего, и хук не
+    запускается — ровно как прежняя команда из такой папки.
+    """
+    install_in(project_with_skill)
+    commands = wired_commands(project_with_skill)
+    still_old = new_repo(tmp_path, "всё-ещё-старый")
+    place_older_copy(still_old)
+    if place == "простая папка":
+        outside = tmp_path / "простая-папка"
+        outside.mkdir()
+    else:
+        outside = new_repo(tmp_path, "сосед")
+    env = hook_env(still_old, tmp_path)
+    watched = {folder: every_entry(folder) for folder in (outside, still_old)}
+
+    calls = calls_from(outside, "s-old", still_old / PLANS / "2026-01-01-wave3-draft.md")
+    for what, command in commands.items():
+        done = run_wired(command, outside, calls[what], env)
+        assert "запустилась старая копия" not in done.stdout, (
+            f"{what}: из «{place}» команда запустила старую копию проекта сессии"
+        )
+        assert done.stdout.strip() == "", f"{what}: из «{place}» кто-то ответил: {done.stdout!r}"
+    for folder, before in watched.items():
+        assert every_entry(folder) == before, f"хук записал в {folder.name}"
+
+
+@needs_pwsh
+def test_a_worktree_with_an_older_copy_is_served_by_the_session_project(
+    project_with_skill: Path, tmp_path: Path
+) -> None:
+    """Вкладка в корне рабочего дерева с копией до 1.19.0 запускает новую копию проекта.
+
+    В таком дереве нет файла под новыми именами, и команда отступает к проекту, где началась
+    сессия, — а та копия считает дерево своим: все рабочие деревья проекта делят его служебный
+    каталог git. Дерево охраняется как прежде, новым кодом, пока само не возьмёт новую копию. Каждый
+    сторож проверяется по тому, что он там делает.
+    """
+    install_in(project_with_skill)
+    commands = wired_commands(project_with_skill)
+    # Рабочее дерево видит только зафиксированное: профиль должен быть там, чтобы подсказка его
+    # прочла.
+    git(project_with_skill, "add", ".parallel-streams.md")
+    git(
+        project_with_skill,
+        "-c",
+        "user.email=test@example.com",
+        "-c",
+        "user.name=probe",
+        "commit",
+        "-m",
+        "profile",
+    )
+    tree = project_with_skill / ".claude" / "worktrees" / "older-tree"
+    git(project_with_skill, "worktree", "add", "-b", "feat/older-tree", str(tree))
+    place_older_copy(tree)
+    env = hook_env(project_with_skill, tmp_path)
+
+    calls = calls_from(tree, "s-tree", tree / PLANS / "2026-01-01-wave3-draft.md")
+    answers = {
+        what: run_wired(command, tree, calls[what], env) for what, command in commands.items()
+    }
+    for what, done in answers.items():
+        assert done.returncode == 0 and not done.stderr.strip(), f"{what}: {done.stderr}"
+        assert "запустилась старая копия" not in done.stdout, (
+            f"{what}: вместо копии проекта запустилась старая копия дерева"
+        )
+    assert "этот поток не объявлялся" in answers["claim"].stdout, (
+        f"фиксация необъявленного потока в рабочем дереве прошла: {answers['claim'].stdout!r}"
+    )
+    beacon = tree / ".claude" / ".cache" / "wave-board-alive.txt"
+    assert beacon.exists() and "s-tree-prompt" in beacon.read_text(encoding="utf-8"), (
+        "доставка не отметила дерево живым — копия проекта не сочла его своим"
+    )
+    assert "Правится план волны" in answers["nudge"].stdout, (
+        f"подсказка промолчала на собственном плане дерева: {answers['nudge'].stdout!r}"
+    )
+    assert not (tree / "older-copy-ran.txt").exists(), "запустилась старая копия дерева"
+
+
+# ПЕРЕХОДНОЕ: проверяет пересыльщиков под старыми именами; убрать вместе с ними.
+@needs_pwsh
+def test_settings_of_an_older_version_reach_the_renamed_guards(
+    project_with_skill: Path, tmp_path: Path
+) -> None:
+    """Настройки, записанные до 1.19.0, доходят до каждого сторожа через файлы под старыми именами.
+
+    До 1.19.0 обновление было «скопировать новую папку поверх старой», без запуска установщика, так
+    что такой проект всё ещё зовёт сторожей старыми именами, от рабочей папки. Каждый сторож
+    проверяется по тому, что он делает: доставка доставляет (она получила `-Stage`), сторож фиксации
+    отказывает (он получил вызов на стандартный ввод, а его ответ и код выхода вернулись), подсказка
+    говорит.
+    """
+    install_in(project_with_skill)
+    commands = {
+        what: older_form(command, "от рабочей папки", tmp_path)
+        for what, command in wired_commands(project_with_skill).items()
+    }
+    board = project_with_skill / ".git" / "wave-board" / "board.jsonl"
+    board.parent.mkdir(parents=True)
+    record = {
+        "id": "aaaa0001",
+        "at": datetime.now().isoformat(timespec="seconds"),
+        "wave": "",
+        "to": "*",
+        "title": "находка для всех",
+        "where": "",
+        "from": "wave9-author",
+    }
+    board.write_text(json.dumps(record, ensure_ascii=False) + "\n", encoding="utf-8")
+    env = hook_env(project_with_skill, tmp_path)
+
+    plan = project_with_skill / PLANS / "2026-01-01-wave3-draft.md"
+    calls = calls_from(project_with_skill, "s-older", plan)
+    answers = {
+        what: run_wired(command, project_with_skill, calls[what], env)
+        for what, command in commands.items()
+    }
+    for what, done in answers.items():
+        assert done.returncode == 0 and not done.stderr.strip(), (
+            f"{what}: старое имя не довело до сторожа: {done.stderr}"
+        )
+    assert "находка для всех" in answers["deliver Start"].stdout, (
+        f"доставка под старым именем ничего не доставила: {answers['deliver Start'].stdout!r}"
+    )
+    assert "этот поток не объявлялся" in answers["claim"].stdout, (
+        f"сторож фиксации под старым именем пропустил необъявленную фиксацию: {answers['claim'].stdout!r}"
+    )
+    assert "Правится план волны" in answers["nudge"].stdout, (
+        f"подсказка под старым именем промолчала: {answers['nudge'].stdout!r}"
+    )
+
+
+# ПЕРЕХОДНОЕ: проверяет пересыльщиков под старыми именами; убрать вместе с ними.
+@needs_pwsh
+@pytest.mark.parametrize("name", HOOK_FILES)
+def test_a_forwarder_hands_over_the_whole_call(tmp_path: Path, name: str) -> None:
+    """Файл под старым именем сторожа передаёт переименованному сторожу ВЕСЬ вызов.
+
+    Аргументы, стандартный ввод, вывод и код выхода. Проверяется на подставном стороже, потому что
+    настоящие всегда выходят нулём: код, с которым сторож вышел, возвращается как есть, а сторож,
+    закончившийся без `exit` после неудачного вызова git, всё равно возвращается успехом — код,
+    оставленный git, не ответ сторожа.
+    """
+    assert pwsh
+    hooks = tmp_path / "hooks"
+    hooks.mkdir()
+    forwarder = hooks / FORMER_NAME[name]
+    shutil.copy2(COORDINATION_DIR / "hooks" / FORMER_NAME[name], forwarder)
+    (hooks / name).write_text(
+        "param([string]$Stage)\n"
+        "$reader = [System.IO.StreamReader]::new(\n"
+        "    [Console]::OpenStandardInput(), [System.Text.UTF8Encoding]::new($false))\n"
+        "$call = $reader.ReadToEnd() | ConvertFrom-Json\n"
+        '"stage [$Stage], rest [$args], call [$($call.probe)]"\n'
+        "& git --no-such-switch 2>$null\n"
+        "if ($null -ne $call.code) { exit $call.code }\n",
+        encoding="utf-8",
+    )
+    for code, expected in ((3, 3), (None, 0)):
+        done = subprocess.run(
+            [pwsh, "-NoProfile", "-File", str(forwarder), "-Stage", "Start", "more"],
+            input=json.dumps({"probe": "through", "code": code}),
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            timeout=120,
+        )
+        assert "stage [Start], rest [more], call [through]" in done.stdout, (
+            f"пересыльщик потерял аргументы или ввод: {done.stdout!r} {done.stderr!r}"
+        )
+        assert done.returncode == expected, (
+            f"сторож вышел с {code!r}, пересыльщик — с {done.returncode}"
+        )
 
 
 @needs_pwsh
@@ -904,7 +1489,7 @@ def test_check_only_reports(project: Path) -> None:
 
     out = install(project, "-Mode", "Check")
     assert snapshot(project) == before, "показ состояния изменил файлы проекта"
-    assert "SessionStart" in out and "wave-board-deliver.ps1" in out, (
+    assert "SessionStart" in out and "deliver-wave-board.ps1" in out, (
         "показ не говорит, какие сторожа подключены и куда ведут"
     )
     assert PLANS in out, "показ не называет папку планов волн"

@@ -3,6 +3,102 @@
 All notable changes to this project are documented here.
 This project follows [Semantic Versioning](https://semver.org/).
 
+## [1.19.0] — 2026-11-14
+
+### Fixed
+
+- **The guards are found from any folder the session stands in.** The installer wrote every hook
+  command from the bare working folder — `& "$PWD/.claude/skills/parallel-streams/coordination/hooks/…"`
+  — and a hook runs in the session's CURRENT folder. As soon as a session stepped into a subfolder of
+  the project, or into another folder altogether, the script was not found: the hook failed with a
+  non-blocking error and the action went through unchecked. The commit guard did not refuse, delivery
+  did not deliver, the liveness mark was not set — and nothing told that apart from "nothing to say".
+  The command now looks for the skill twice: in the folder the session stands in (so a session at
+  the root of a worktree that carries its own copy of 1.19.0 or later runs that copy, the version of
+  that tree), otherwise in the project the session started in (`CLAUDE_PROJECT_DIR`, which the host
+  sets for every hook). A skill installed outside the project keeps its full path, which already
+  worked from any folder.
+
+- **The plan-edit nudge fires from a subfolder too.** Its two conditions were written relative —
+  `Edit(docs/plans/**)` — and the host matches such a condition against the current folder, so from a
+  subfolder it never matched. They are now anchored at the root of the file system —
+  `Edit(//**/docs/plans/**)` — so they match from any folder. Such a condition matches a same-named
+  folder anywhere on the path too, so the nudge itself now speaks only for the plans folder at the
+  root of the edited file's own tree — the main folder or any worktree of the project. A namesake
+  deeper inside the project (`src/docs/plans/`) or in someone else's repository gets no hint, and
+  does not use up the session's one reminder.
+
+### Changed
+
+- **The three hook files have new names:** `wave-board-deliver.ps1` is now `deliver-wave-board.ps1`,
+  `pretooluse-wave-board-nudge.ps1` is `nudge-wave-plan-edit.ps1`, and
+  `pretooluse-claim-before-publish.ps1` is `guard-claim-before-publish.ps1`. The new command falls
+  back to the project the session started in, and under the old names that fallback would also find
+  an OLD copy there — one with no notion of "not our project" — and run it from every folder.
+  Measured with a 1.18.1 copy: from someone else's repository it delivered that repository's board
+  into the session, left its state files there and refused its commits. Under the new names the
+  command finds only a copy of 1.19.0 or later; where there is none, the hook fails to start, as the
+  old command did from such a folder. The old names stay in the skill folder as small forwarders
+  that hand the whole call — arguments, input, output, exit code — to the renamed hook, so settings
+  written by an older installer keep every guard working as before once the new folder is copied
+  over. The forwarders will be removed no earlier than the next major version.
+
+- **Outside the project they serve, the hooks do nothing.** Found from any folder, a hook now also
+  runs where it used to fail to start: a session that stepped into an unrelated repository or into a
+  plain folder. There it says nothing and writes nothing — no delivery of that repository's board, no
+  refusal of its commits, no state folder left in it. The project a hook serves is the repository
+  holding its copy of the skill, or the repository of the project the session started in; every
+  worktree of it counts, because they are compared by their shared git directory. The nudge judges
+  by the repository of the edited file, not of the folder the session stands in, so a plan of the
+  project itself gets the hint from whatever folder the session stands in. Where the old command
+  worked — at the root of a tree with its own copy — a session gets what it got there before, the
+  commit guard standing aside in a clone of a contributor's fork included, as long as the project is
+  a git repository and git answers. Where git does not answer, or the project is not a git
+  repository, all three hooks are now silent (before, delivery still refreshed its liveness mark and
+  the nudge could speak; nothing that needs the board is lost), and a copy that lies in a repository
+  of its own inside the project — a submodule, a nested clone — no longer acts there for a session
+  started outside the project's repository.
+
+- **A skill installed outside the project** (its settings carry a full path) used to act in every
+  repository the session stood in. Now it acts only in the repository of the project the session
+  started in, and in the repository holding the copy, if any. Three things follow. A session that
+  steps into another project wired to the same outside copy no longer gets that project's delivery
+  and commit guard there — with the skill installed inside each project it still does at that
+  project's root, where the project's own copy runs. The change takes effect as soon as the new
+  folder is copied over: an outside install calls the hooks by their old names, and the forwarders
+  hand those calls on. And the hooks now depend on the host setting `CLAUDE_PROJECT_DIR`: without it
+  they are silent everywhere, a run by hand included.
+
+### Notes
+
+- **Run the installer again after copying the new folder:**
+  `pwsh .claude/skills/parallel-streams/coordination/install.ps1`. Copying the folder alone leaves
+  the old command form in the settings: the forwarders keep the guards working where they worked
+  before, and from subfolders they stay blind. The run rewrites the channel's own entries in
+  `.claude/settings.json` in place — the command of each of its entries, now under the new file
+  names, and the two conditions of the nudge — and reports each one as "entry fixed up". It
+  recognizes its entries in every form it has ever written (`$PWD/…`, a full path, the new form),
+  under either file name, adds no duplicates, and leaves every other entry and its order as it was —
+  in a file already in the installer's layout, byte for byte; a file in another layout gets
+  rewritten in the installer's layout, as on every run, and the report says so. Uninstall removes
+  every form under both names. The settings file is usually committed, so each worktree gets the new
+  entries when it takes the change from main.
+- **Settings in the new form with the skill folder still old: the hooks do not start** until the
+  folder is updated — the new file names are not there to be found. Measured with a 1.18.1 copy and
+  1.19.0 settings: no delivery, no refusal, no nudge, from the project root or anywhere; each hook
+  fails to start with a "not recognized" error, the same non-blocking failure the old command gave
+  from a subfolder. It happens when the two do not travel together — settings committed and the
+  skill folder not, or the folder switched to a branch from before the update while uncommitted
+  settings stay new. Copy the new folder in, or switch back, and it ends.
+- **A worktree that still carries a copy from before 1.19.0** is served from its root by the copy of
+  the project the session started in, since the new command does not find the old names there.
+  Measured with a 1.18.1 copy in the worktree: delivery delivers, the commit guard refuses an
+  unannounced commit, and the nudge stays silent on a same-named plans folder of another repository
+  while the worktree's own plan, edited next in the same session, gets the hint. The root of ANOTHER
+  project that still carries an old copy gets no guard from a session started in an updated project
+  until that project updates too; before, its old copy ran there. Both end when the tree takes the
+  new copy.
+
 ## [1.18.1] — 2026-11-14
 
 ### Fixed

@@ -72,8 +72,8 @@ REPO_ROOT = _find_repo_root(Path(__file__).resolve())
 SETTINGS = REPO_ROOT / ".claude" / "settings.json"
 HOOKS_DIR = COORDINATION_DIR / "hooks"
 TOOL = COORDINATION_DIR / "wave-board.ps1"
-DELIVER = HOOKS_DIR / "wave-board-deliver.ps1"
-NUDGE = HOOKS_DIR / "pretooluse-wave-board-nudge.ps1"
+DELIVER = HOOKS_DIR / "deliver-wave-board.ps1"
+NUDGE = HOOKS_DIR / "nudge-wave-plan-edit.ps1"
 
 pwsh = shutil.which("pwsh")
 needs_pwsh = pytest.mark.skipif(not pwsh, reason="pwsh не найден — запускать скрипты нечем")
@@ -87,10 +87,15 @@ def claude_config(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     Без этой приспособы любое объявление в любой проверке записало бы в заявку НАСТОЯЩУЮ сессию того,
     кто гоняет набор, а запись вкладки полезла бы в его настоящий каталог настроек читать журнал.
     Проверки, которым сессия нужна, ставят её сами — и журнал кладут сюда же.
+
+    Ещё среда называет проект, где началась её сессия (`CLAUDE_PROJECT_DIR`), и сторожа считают этот
+    проект своим. Оставленный на месте, он делал бы проект того, кто гоняет набор, «нашим» в каждой
+    проверке; проверки, запускающие сторожа, называют подставной проект сами.
     """
     folder = tmp_path / "claude-config"
     monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(folder))
     monkeypatch.delenv("CLAUDE_CODE_SESSION_ID", raising=False)
+    monkeypatch.delenv("CLAUDE_PROJECT_DIR", raising=False)
     return folder
 
 
@@ -162,7 +167,7 @@ def test_delivery_guard_is_wired_to_both_events() -> None:
     """
     for event, stage in (("SessionStart", "-Stage Start"), ("UserPromptSubmit", "-Stage Prompt")):
         commands = [hook.get("command", "") for hook in hooks_for(event)]
-        wired = [cmd for cmd in commands if "wave-board-deliver.ps1" in cmd]
+        wired = [cmd for cmd in commands if "deliver-wave-board.ps1" in cmd]
         assert wired, (
             f"сторож доставки не подключён на {event} — находка соседа не дойдёт до вкладки, "
             "и выглядеть это будет как «соседу нечего сказать»"
@@ -176,7 +181,9 @@ def test_plan_edit_guard_is_wired_for_both_tools() -> None:
     """Половина правок идёт одним инструментом, половина другим: пропуск любого — молчание.
 
     Папку в условии сверяем с той, что назвал профиль ЭТОГО проекта: зашитая в проверке, она
-    уронила бы её в любом другом репозитории, хотя канал там работал бы верно.
+    уронила бы её в любом другом репозитории, хотя канал там работал бы верно. И привязана она к
+    корню файловой системы, в той форме, что пишет установщик: условие без ведущей косой черты среда
+    сверяет с ТЕКУЩЕЙ папкой вкладки, и из подпапки оно не срабатывает вовсе.
     """
     plans = plans_folder()
     if not plans:
@@ -186,11 +193,11 @@ def test_plan_edit_guard_is_wired_for_both_tools() -> None:
     filters = " ".join(
         hook.get("if", "")
         for hook in hooks_for("PreToolUse")
-        if "pretooluse-wave-board-nudge.ps1" in hook.get("command", "")
+        if "nudge-wave-plan-edit.ps1" in hook.get("command", "")
     )
     assert filters, "сторож правки плана волны не подключён вовсе"
     for tool_name in ("Edit", "Write"):
-        assert f"{tool_name}({plans}**)" in filters, (
+        assert f"{tool_name}(//**/{plans}**)" in filters, (
             f"сторож правки плана не слушает {tool_name} — правка плана пройдёт без напоминания "
             "о том, что до живой вкладки соседа она сама не дойдёт"
         )
@@ -778,7 +785,15 @@ def test_adding_a_record_compacts_a_crowded_board(tmp_path: Path) -> None:
 
 
 def run_nudge(cwd: Path, file_path: str, session: str) -> subprocess.CompletedProcess[str]:
+    """Подсказка из папки вкладки, в сессии, начатой в этой же папке.
+
+    Набор, который гоняет этот файл, лежит ВНЕ каждого подставного проекта — ровно набор,
+    поставленный снаружи проекта, в настройках которого стоит полный путь. Такой сторож знает свой
+    проект по папке, где началась сессия, а её среда называет в `CLAUDE_PROJECT_DIR`.
+    """
     assert pwsh
+    env = dict(os.environ)
+    env["CLAUDE_PROJECT_DIR"] = str(cwd)
     return subprocess.run(
         [pwsh, "-NoProfile", "-File", str(NUDGE)],
         input=json.dumps({"session_id": session, "tool_input": {"file_path": file_path}}),
@@ -786,6 +801,7 @@ def run_nudge(cwd: Path, file_path: str, session: str) -> subprocess.CompletedPr
         text=True,
         encoding="utf-8",
         cwd=str(cwd),
+        env=env,
         timeout=60,
     )
 
@@ -7843,7 +7859,7 @@ def test_a_forgotten_move_is_named_aloud_when_the_memory_overflows(tmp_path: Pat
 
 # ─── Сторож фиксации: необъявленный поток останавливают до того, как работа уедет ─────────────────
 
-CLAIM_GUARD = HOOKS_DIR / "pretooluse-claim-before-publish.ps1"
+CLAIM_GUARD = HOOKS_DIR / "guard-claim-before-publish.ps1"
 
 
 def guard_call(
@@ -10654,4 +10670,397 @@ def test_reading_the_registry_costs_the_same_per_claim_however_big_it_grows(
         f"{carried[0]} раз на 20 заявок, {carried[1]} на 80. Загрузчик всё равно вычисляет их для "
         "записи и обязан отдать их запомненным именам; дай тем спросить заново — и каждая запись "
         "платит за свои носимые имена дважды"
+    )
+
+
+# ─── Вне проекта, которому он служит, сторож не делает ничего ────────────────────────────────────
+#
+# Команда сторожа находит набор из любой папки, где стоит вкладка: копию дерева, в котором она
+# стоит, а иначе копию проекта, где началась сессия. Значит, сторож теперь ЗАПУСКАЕТСЯ там, где
+# раньше не стартовал вовсе, — вкладка шагнула в чужой репозиторий или в простую папку. Всё, что он
+# там сделал бы, было бы сделано с чужим. Эти проверки запускают сторожей так, как в работе: без
+# тестовой доски — доска, реестр и папка состояния берутся у git.
+
+# Где набор держит проект-потребитель: сюда эти проверки кладут копию, когда проверяется
+# репозиторий самой копии.
+KIT_INSIDE = Path(".claude") / "skills" / "parallel-streams" / "coordination"
+
+
+def hook_env(session_project: Path | None) -> dict[str, str]:
+    """Окружение, которое среда даёт хуку: `CLAUDE_PROJECT_DIR` называет папку, где началась сессия."""
+    env = dict(os.environ)
+    env.pop("PARALLEL_STREAMS_ALLOW_UNCLAIMED", None)
+    env.pop("CLAUDE_PROJECT_DIR", None)
+    if session_project is not None:
+        env["CLAUDE_PROJECT_DIR"] = str(session_project)
+    return env
+
+
+def run_hook(
+    script: Path, cwd: Path, call: dict[str, object], session_project: Path | None, *args: str
+) -> subprocess.CompletedProcess[str]:
+    """Сторож в текущей папке вкладки, вызов — JSON на стандартный ввод, и без тестовой доски."""
+    assert pwsh
+    return subprocess.run(
+        [pwsh, "-NoProfile", "-File", str(script), *args],
+        input=json.dumps(call),
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        cwd=str(cwd),
+        env=hook_env(session_project),
+        timeout=120,
+    )
+
+
+def every_entry(root: Path) -> dict[str, bytes | None]:
+    """Всё внутри папки, её служебный каталог git тоже: файл — со своими байтами, папка — None."""
+    return {
+        path.relative_to(root).as_posix(): (path.read_bytes() if path.is_file() else None)
+        for path in sorted(root.rglob("*"))
+    }
+
+
+def home_and_strangers(root: Path) -> tuple[Path, Path, Path]:
+    """Проект, которому служит сессия; соседний репозиторий с ТОЙ ЖЕ папкой планов и своим
+    профилем; и простая папка, не принадлежащая никакому репозиторию.
+
+    На доске обоих проектов лежит находка для всех: сторожу доставки, взявшемуся за соседа, было бы
+    что там сказать, так что его молчание — не молчание пустой доски.
+    """
+    home = stub_project(root, "home", profile_text())
+    neighbour = stub_project(root, "neighbour", profile_text())
+    for project in (home, neighbour):
+        (project / STUB_PLANS).mkdir(parents=True)
+        board = project / ".git" / "wave-board" / "board.jsonl"
+        board.parent.mkdir(parents=True)
+        board.write_text(board_line(title="находка для всех") + "\n", encoding="utf-8")
+    plain = root / "plain-folder"
+    plain.mkdir()
+    return home, neighbour, plain
+
+
+@needs_pwsh
+@needs_git
+@pytest.mark.parametrize("place", ["соседний репозиторий", "простая папка"])
+def test_delivery_does_nothing_outside_its_project(tmp_path: Path, place: str) -> None:
+    """Вкладке вне проекта — ни доставки, ни папки состояния: там не пишется ни байта.
+
+    Доска соседа чужая: принести её — значит положить в эту сессию чужие находки, а маячок живости и
+    журнал показанного остались бы в чужом дереве. Молчание двусмысленно, поэтому тот же сторож для
+    той же сессии в своём проекте заговаривает.
+    """
+    home, neighbour, plain = home_and_strangers(tmp_path)
+    outside = neighbour if place == "соседний репозиторий" else plain
+    before = every_entry(outside)
+
+    done = run_hook(
+        DELIVER, outside, {"session_id": "s-away", "cwd": str(outside)}, home, "-Stage", "Start"
+    )
+    assert done.returncode == 0, done.stderr
+    assert done.stdout.strip() == "", f"сторож доставки заговорил, место — {place}: {done.stdout!r}"
+    assert every_entry(outside) == before, f"сторож доставки записал что-то, место — {place}"
+
+    at_home = run_hook(
+        DELIVER, home, {"session_id": "s-home", "cwd": str(home)}, home, "-Stage", "Start"
+    )
+    assert at_home.returncode == 0, at_home.stderr
+    assert "находка для всех" in context_text(at_home.stdout), (
+        "сторож доставки молчит и в своём проекте — значит молчание выше ничего не доказывает"
+    )
+
+
+@needs_pwsh
+@needs_git
+@pytest.mark.parametrize("place", ["соседний репозиторий", "простая папка"])
+def test_the_commit_guard_does_nothing_outside_its_project(tmp_path: Path, place: str) -> None:
+    """Сессия, шагнувшая в чужой репозиторий, фиксирует там свободно.
+
+    Отказать ей «за необъявленный поток» значило бы судить проект по доске, к которой он отношения не
+    имеет, — и ответить сессии было бы нечем, кроме клапана руками. Та же фиксация в своём проекте,
+    без объявления, получает отказ — иначе молчание выше ничего не доказывает.
+    """
+    home, neighbour, plain = home_and_strangers(tmp_path)
+    outside = neighbour if place == "соседний репозиторий" else plain
+    before = every_entry(outside)
+
+    commit = {
+        "session_id": "s-away",
+        "cwd": str(outside),
+        "tool_input": {"command": 'git commit -m "x"'},
+    }
+    done = run_hook(CLAIM_GUARD, outside, commit, home)
+    assert done.returncode == 0, done.stderr
+    assert done.stdout.strip() == "", (
+        f"сторож фиксации отказал в фиксации, место — {place}: {done.stdout!r}"
+    )
+    assert every_entry(outside) == before, f"сторож фиксации записал что-то, место — {place}"
+
+    commit = {
+        "session_id": "s-home",
+        "cwd": str(home),
+        "tool_input": {"command": 'git commit -m "x"'},
+    }
+    at_home = run_hook(CLAIM_GUARD, home, commit, home)
+    assert "этот поток не объявлялся" in at_home.stdout, (
+        f"сторож фиксации немой и в своём проекте: {at_home.stdout!r}"
+    )
+
+
+@needs_pwsh
+@needs_git
+@pytest.mark.parametrize(
+    "process, call",
+    [
+        ("проект", "соседний репозиторий"),
+        ("соседний репозиторий", "проект"),
+    ],
+)
+def test_the_commit_guard_judges_the_folder_of_the_call(
+    tmp_path: Path, process: str, call: str
+) -> None:
+    """Сторож фиксации судит по папке, которую называет вызов, а не по папке своего процесса.
+
+    Вызов несёт рабочую папку сессии, и всё, что сторож спрашивает, — поток, его заявку, реестр, —
+    спрашивается про эту папку. Суди он по папке процесса, фиксация в проекте проходила бы всякий
+    раз, когда хук случайно запустился в другом месте, а фиксация в чужом репозитории получала бы
+    отказ по пустому реестру того репозитория.
+    """
+    home, neighbour, _plain = home_and_strangers(tmp_path)
+    folders = {"проект": home, "соседний репозиторий": neighbour}
+    commit = {
+        "session_id": "s-call",
+        "cwd": str(folders[call]),
+        "tool_input": {"command": 'git commit -m "x"'},
+    }
+    done = run_hook(CLAIM_GUARD, folders[process], commit, home)
+    assert done.returncode == 0, done.stderr
+    if call == "проект":
+        assert "этот поток не объявлялся" in done.stdout, (
+            f"фиксация в проекте прошла, потому что хук работал в «{process}»: {done.stdout!r}"
+        )
+    else:
+        assert done.stdout.strip() == "", (
+            f"фиксации в «{call}» отказано, потому что хук работал в «{process}»: {done.stdout!r}"
+        )
+
+
+@needs_pwsh
+@needs_git
+def test_every_worktree_of_the_project_gets_delivery_and_the_commit_guard(tmp_path: Path) -> None:
+    """Вкладку в корне рабочего дерева проекта обслуживают ровно как его основную папку.
+
+    Рабочее дерево отличают от чужого репозитория по служебному каталогу git, общему с основной
+    папкой, а не по его собственному корню: сравнивай по корню — и каждое рабочее дерево выглядело
+    бы чужим, а те самые вкладки, ради которых канал и есть, — потоки, каждый в своём дереве, — не
+    получали бы доставки и фиксировали бы без отказа.
+    """
+    home = stub_project(tmp_path, "home", profile_text())
+    git(home, "config", "user.email", "test@example.com")
+    git(home, "config", "user.name", "probe")
+    git(home, "add", "-A")
+    git(home, "commit", "-m", "first")
+    tree = home / ".claude" / "worktrees" / "wave7-tree"
+    git(home, "worktree", "add", "-b", "feat/wave7-tree", ".claude/worktrees/wave7-tree")
+    board = home / ".git" / "wave-board" / "board.jsonl"
+    board.parent.mkdir(parents=True)
+    board.write_text(board_line(title="находка для всех") + "\n", encoding="utf-8")
+
+    delivered = run_hook(
+        DELIVER, tree, {"session_id": "s-tree", "cwd": str(tree)}, home, "-Stage", "Start"
+    )
+    assert delivered.returncode == 0, delivered.stderr
+    assert "находка для всех" in context_text(delivered.stdout), (
+        f"рабочее дерево проекта не получило доставки: {delivered.stdout!r}"
+    )
+    commit = {
+        "session_id": "s-tree",
+        "cwd": str(tree),
+        "tool_input": {"command": 'git commit -m "x"'},
+    }
+    refused = run_hook(CLAIM_GUARD, tree, commit, home)
+    assert "этот поток не объявлялся" in refused.stdout, (
+        f"необъявленная фиксация в рабочем дереве проекта прошла: {refused.stdout!r}"
+    )
+
+
+@needs_pwsh
+@needs_git
+@pytest.mark.parametrize("namesake", ["папка есть", "папки ещё нет"])
+def test_the_nudge_ignores_a_same_named_folder_deeper_in_its_own_tree(
+    tmp_path: Path, namesake: str
+) -> None:
+    """Планы волн лежат только в папке планов в корне собственного дерева файла.
+
+    Условие в настройках ловит папку планов на любой глубине, так что зовёт подсказку и для
+    `src/<папка планов>/…` внутри самого проекта. Подсказка там была бы ни о какой волне, и она
+    истратила бы единственное за сессию напоминание: настоящий план, который правят следом, не
+    получил бы ничего. Поэтому тёзке — ни слова и ни байта, а настоящему плану в той же сессии —
+    подсказка.
+    """
+    home = stub_project(tmp_path, "home", profile_text())
+    (home / STUB_PLANS).mkdir(parents=True)
+    deeper = home / "src" / STUB_PLANS
+    if namesake == "папка есть":
+        deeper.mkdir(parents=True)
+    before = every_entry(home)
+
+    call = {
+        "session_id": "s-namesake",
+        "tool_input": {"file_path": str(deeper / "2026-01-01-wave7-namesake.md")},
+    }
+    done = run_hook(NUDGE, home, call, home)
+    assert done.returncode == 0, done.stderr
+    assert done.stdout.strip() == "", (
+        f"подсказка заговорила на одноимённой папке глубже в проекте: {done.stdout!r}"
+    )
+    assert every_entry(home) == before, "подсказка записала своё состояние на одноимённой папке"
+
+    call = {
+        "session_id": "s-namesake",
+        "tool_input": {"file_path": str(home / STUB_PLANS / "2026-01-01-wave7-mine.md")},
+    }
+    own = run_hook(NUDGE, home, call, home)
+    assert own.returncode == 0, own.stderr
+    assert "Правится план волны" in context_text(own.stdout), (
+        "собственный план проекта не получил подсказки в той же сессии — тёзка истратил "
+        "напоминание, или молчание выше ничего не доказывает"
+    )
+
+
+@needs_pwsh
+@needs_git
+@pytest.mark.parametrize("tab", ["проект", "соседний репозиторий", "простая папка"])
+def test_the_nudge_ignores_a_same_named_plans_folder_of_another_repository(
+    tmp_path: Path, tab: str
+) -> None:
+    """План чужого репозитория не получает ни слова и ни байта, где бы ни стояла вкладка.
+
+    Условие в настройках привязано к корню файловой системы, чтобы срабатывать из любой папки, — и по
+    той же причине оно ловит одноимённую папку соседнего репозитория. Этот файл проекта не касается:
+    подсказка там назвала бы деревья этого проекта для чужого плана, а её отметка «раз за сессию»
+    ушла бы на него. Затем план самого проекта из той же папки: подсказка обязана прийти.
+    """
+    home, neighbour, plain = home_and_strangers(tmp_path)
+    where = {"проект": home, "соседний репозиторий": neighbour, "простая папка": plain}[tab]
+    watched = {folder: every_entry(folder) for folder in (home, neighbour, plain)}
+
+    theirs = neighbour / STUB_PLANS / "2026-01-01-wave7-чужой.md"
+    call = {"session_id": "s-theirs", "tool_input": {"file_path": str(theirs)}}
+    done = run_hook(NUDGE, where, call, home)
+    assert done.returncode == 0, done.stderr
+    assert done.stdout.strip() == "", f"подсказка заговорила о чужом плане: {done.stdout!r}"
+    for folder, before in watched.items():
+        assert every_entry(folder) == before, (
+            f"подсказка записала что-то в {folder.name} из-за чужого плана"
+        )
+
+    mine = home / STUB_PLANS / "2026-01-01-wave7-свой.md"
+    call = {"session_id": "s-theirs", "tool_input": {"file_path": str(mine)}}
+    own = run_hook(NUDGE, where, call, home)
+    assert own.returncode == 0, own.stderr
+    assert "Правится план волны" in context_text(own.stdout), (
+        "подсказка молчит о собственном плане проекта в той же сессии — значит либо молчание выше "
+        "ничего не доказывает, либо чужой план потратил единственное напоминание сессии"
+    )
+    # Подсказка о собственном плане держит своё состояние в проекте, где бы ни стояла вкладка.
+    for folder in (neighbour, plain):
+        assert every_entry(folder) == watched[folder], (
+            f"подсказка о собственном плане оставила своё состояние в {folder.name}"
+        )
+
+
+@needs_pwsh
+@needs_git
+@pytest.mark.parametrize("tab", ["подпапка дерева", "простая папка", "соседний репозиторий"])
+def test_the_nudge_names_its_own_wave_from_any_folder(
+    tmp_path: Path, wave_repo: Path, tab: str
+) -> None:
+    """План проекта, правленный откуда угодно, получает ту же подсказку, что и из своего дерева.
+
+    Профиль, рабочие деревья и папка состояния берутся от дерева плана, когда вкладка стоит вне его
+    репозитория: взятые от места вкладки, они дали бы чужой профиль (и подсказка промолчала бы) или
+    чужие деревья, а отметка легла бы в чужую папку.
+    """
+    here = here_of(wave_repo)
+    plan = here / STUB_PLANS / "2026-01-01-wave7-probe.md"
+    if tab == "подпапка дерева":
+        where = here / "src" / "deep"
+        where.mkdir(parents=True, exist_ok=True)
+    elif tab == "простая папка":
+        where = tmp_path / "plain-folder"
+        where.mkdir()
+    else:
+        where = stub_project(tmp_path, "neighbour", profile_text(plans="elsewhere/"))
+    before = every_entry(where)
+
+    session = "s-anywhere-" + str(
+        ["подпапка дерева", "простая папка", "соседний репозиторий"].index(tab)
+    )
+    call = {"session_id": session, "tool_input": {"file_path": str(plan)}}
+    done = run_hook(NUDGE, where, call, wave_repo)
+    assert done.returncode == 0, done.stderr
+    names = named_streams(context_text(done.stdout))
+    assert names[:3] == [f"feat/{name}" for name in ALIVE], (
+        f"место — {tab}: подсказка не называет первыми отозвавшиеся вкладки волны: {names}"
+    )
+    assert "feat/wave7-here" not in names, (
+        "подсказка предлагает адресовать находку дереву самого плана"
+    )
+    assert "feat/wave8-other" not in names, "подсказка называет дерево ЧУЖОЙ волны"
+    assert every_entry(where) == before, f"подсказка записала что-то, место — {tab}"
+
+
+@needs_pwsh
+@needs_git
+@ISOLATED_GIT
+def test_a_tab_at_the_root_of_a_tree_with_its_own_copy_is_served_as_before(tmp_path: Path) -> None:
+    """Набор, поставленный внутрь проекта, служит ему, даже если сессия началась в другом месте.
+
+    Вкладка в корне дерева со своей копией запускает эту копию и получает ровно то, что получала
+    всегда: проект, которому служит копия, — её собственный репозиторий, в какой бы папке ни
+    началась сессия. Сторож фиксации отказывает необъявленной фиксации дома и отходит в сторону в
+    клоне форка участника, о чём говорится на старте сессии; подсказка говорит о плане проекта.
+    """
+    project = stub_project(
+        tmp_path, "with-its-own-copy", profile_text() + "\n## Home\n\n- `keeper/project`\n"
+    )
+    (project / STUB_PLANS).mkdir(parents=True)
+    shutil.copytree(
+        COORDINATION_DIR,
+        project / KIT_INSIDE,
+        ignore=shutil.ignore_patterns("__pycache__", "tests"),
+    )
+    hooks = project / KIT_INSIDE / "hooks"
+    started_elsewhere = tmp_path / "started-elsewhere"
+    started_elsewhere.mkdir()
+    git(project, "remote", "add", "origin", HOME_ORIGIN)
+
+    commit = {
+        "session_id": "s-own",
+        "cwd": str(project),
+        "tool_input": {"command": 'git commit -m "x"'},
+    }
+    refused = run_hook(hooks / CLAIM_GUARD.name, project, commit, started_elsewhere)
+    assert "этот поток не объявлялся" in refused.stdout, (
+        "копия внутри проекта не стережёт его, если сессия началась в другом месте: "
+        f"{refused.stdout!r}"
+    )
+
+    plan = project / STUB_PLANS / "2026-01-01-wave7-probe.md"
+    call = {"session_id": "s-own", "tool_input": {"file_path": str(plan)}}
+    nudged = run_hook(hooks / NUDGE.name, project, call, started_elsewhere)
+    assert "Правится план волны" in context_text(nudged.stdout), (
+        f"копия внутри проекта молчит о собственном плане: {nudged.stdout!r}"
+    )
+
+    git(project, "remote", "set-url", "origin", FORK_ORIGIN)
+    aside = run_hook(hooks / CLAIM_GUARD.name, project, commit, started_elsewhere)
+    assert aside.returncode == 0 and aside.stdout.strip() == "", (
+        f"сторож фиксации отказал в фиксации в клоне форка участника: {aside.stdout!r}"
+    )
+    start = {"session_id": "s-own", "cwd": str(project)}
+    told = run_hook(hooks / DELIVER.name, project, start, started_elsewhere, "-Stage", "Start")
+    assert STANDS_ASIDE in context_text(told.stdout), (
+        f"в клоне форка сессии больше не говорят, что сторож отходит в сторону: {told.stdout!r}"
     )

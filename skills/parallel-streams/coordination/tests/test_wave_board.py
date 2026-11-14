@@ -75,8 +75,8 @@ REPO_ROOT = _find_repo_root(Path(__file__).resolve())
 SETTINGS = REPO_ROOT / ".claude" / "settings.json"
 HOOKS_DIR = COORDINATION_DIR / "hooks"
 TOOL = COORDINATION_DIR / "wave-board.ps1"
-DELIVER = HOOKS_DIR / "wave-board-deliver.ps1"
-NUDGE = HOOKS_DIR / "pretooluse-wave-board-nudge.ps1"
+DELIVER = HOOKS_DIR / "deliver-wave-board.ps1"
+NUDGE = HOOKS_DIR / "nudge-wave-plan-edit.ps1"
 
 pwsh = shutil.which("pwsh")
 needs_pwsh = pytest.mark.skipif(not pwsh, reason="pwsh not found — nothing to run the scripts with")
@@ -91,10 +91,15 @@ def claude_config(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     REAL session of whoever runs the suite into the claim, and the tab record would go reading a
     transcript in their real config directory. Checks that need a session set it themselves — and put
     the transcript here too.
+
+    The host also names the project its session started in (`CLAUDE_PROJECT_DIR`), and the hooks
+    take that project for their own. Left in place, it would make the project of whoever runs the
+    suite count as "ours" in every check; checks that run a hook name the stand-in project themselves.
     """
     folder = tmp_path / "claude-config"
     monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(folder))
     monkeypatch.delenv("CLAUDE_CODE_SESSION_ID", raising=False)
+    monkeypatch.delenv("CLAUDE_PROJECT_DIR", raising=False)
     return folder
 
 
@@ -167,7 +172,7 @@ def test_delivery_guard_is_wired_to_both_events() -> None:
     """
     for event, stage in (("SessionStart", "-Stage Start"), ("UserPromptSubmit", "-Stage Prompt")):
         commands = [hook.get("command", "") for hook in hooks_for(event)]
-        wired = [cmd for cmd in commands if "wave-board-deliver.ps1" in cmd]
+        wired = [cmd for cmd in commands if "deliver-wave-board.ps1" in cmd]
         assert wired, (
             f"the delivery guard isn't wired on {event} — a neighbour's finding won't reach the tab, "
             'and it will look exactly like "the neighbour has nothing to say"'
@@ -182,7 +187,9 @@ def test_plan_edit_guard_is_wired_for_both_tools() -> None:
 
     The folder in the condition is checked against the one THIS project's profile names: hardcoded in
     the check, it would fail this test in any other repository even though the channel would work
-    correctly there.
+    correctly there. And it is anchored at the root of the file system, the form the installer
+    writes: a condition without a leading slash is matched against the tab's CURRENT folder, and
+    from a subfolder it never matches at all.
     """
     plans = plans_folder()
     if not plans:
@@ -192,11 +199,11 @@ def test_plan_edit_guard_is_wired_for_both_tools() -> None:
     filters = " ".join(
         hook.get("if", "")
         for hook in hooks_for("PreToolUse")
-        if "pretooluse-wave-board-nudge.ps1" in hook.get("command", "")
+        if "nudge-wave-plan-edit.ps1" in hook.get("command", "")
     )
     assert filters, "the plan-edit guard isn't wired at all"
     for tool_name in ("Edit", "Write"):
-        assert f"{tool_name}({plans}**)" in filters, (
+        assert f"{tool_name}(//**/{plans}**)" in filters, (
             f"the plan-edit guard doesn't listen to {tool_name} — a plan edit will go through without the "
             "reminder that it won't reach a neighbour's live tab on its own"
         )
@@ -833,7 +840,15 @@ def test_adding_a_record_compacts_a_crowded_board(tmp_path: Path) -> None:
 
 
 def run_nudge(cwd: Path, file_path: str, session: str) -> subprocess.CompletedProcess[str]:
+    """The nudge from the tab's folder, in a session started in that same folder.
+
+    The kit this suite runs lies OUTSIDE every stand-in project — exactly a kit installed outside
+    the project, whose settings carry a full path. Such a hook knows its project from the folder the
+    session started in, and the host names that folder in `CLAUDE_PROJECT_DIR`.
+    """
     assert pwsh
+    env = dict(os.environ)
+    env["CLAUDE_PROJECT_DIR"] = str(cwd)
     return subprocess.run(
         [pwsh, "-NoProfile", "-File", str(NUDGE)],
         input=json.dumps({"session_id": session, "tool_input": {"file_path": file_path}}),
@@ -841,6 +856,7 @@ def run_nudge(cwd: Path, file_path: str, session: str) -> subprocess.CompletedPr
         text=True,
         encoding="utf-8",
         cwd=str(cwd),
+        env=env,
         timeout=60,
     )
 
@@ -8215,7 +8231,7 @@ def test_a_forgotten_move_is_named_aloud_when_the_memory_overflows(tmp_path: Pat
 
 # ─── The commit guard: an unannounced stream is stopped before its work lands ─────────────────────
 
-CLAIM_GUARD = HOOKS_DIR / "pretooluse-claim-before-publish.ps1"
+CLAIM_GUARD = HOOKS_DIR / "guard-claim-before-publish.ps1"
 
 
 def guard_call(
@@ -11066,4 +11082,415 @@ def test_reading_the_registry_costs_the_same_per_claim_however_big_it_grows(
         f"{carried[0]} times for 20 claims, {carried[1]} for 80. The loader computes them for the "
         "record anyway and must hand them to the remembered names; let those ask again and every "
         "record pays for its carried names twice"
+    )
+
+
+# ─── Outside the project it serves a hook does nothing ───────────────────────────────────────────
+#
+# The hook command finds the kit from any folder the tab stands in: the copy of the tree the tab
+# stands in, otherwise the copy of the project the session started in. So a hook now RUNS where it
+# used to fail to start — a tab that stepped into someone else's repository or into a plain folder.
+# Whatever it did there would be done to someone else. These checks run the hooks the way production
+# does: no test board — the board, the registry and the state folder come from git.
+
+# Where a consumer project keeps the kit: these checks put a copy there when the copy's own
+# repository is what is being checked.
+KIT_INSIDE = Path(".claude") / "skills" / "parallel-streams" / "coordination"
+
+
+def hook_env(session_project: Path | None) -> dict[str, str]:
+    """The environment the host gives a hook: `CLAUDE_PROJECT_DIR` names the folder the session started in."""
+    env = dict(os.environ)
+    env.pop("PARALLEL_STREAMS_ALLOW_UNCLAIMED", None)
+    env.pop("CLAUDE_PROJECT_DIR", None)
+    if session_project is not None:
+        env["CLAUDE_PROJECT_DIR"] = str(session_project)
+    return env
+
+
+def run_hook(
+    script: Path, cwd: Path, call: dict[str, object], session_project: Path | None, *args: str
+) -> subprocess.CompletedProcess[str]:
+    """A hook in the tab's current folder, its call as JSON on stdin — and no test board."""
+    assert pwsh
+    return subprocess.run(
+        [pwsh, "-NoProfile", "-File", str(script), *args],
+        input=json.dumps(call),
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        cwd=str(cwd),
+        env=hook_env(session_project),
+        timeout=120,
+    )
+
+
+def every_entry(root: Path) -> dict[str, bytes | None]:
+    """Everything under a folder, its git directory included: a file with its bytes, a folder as None."""
+    return {
+        path.relative_to(root).as_posix(): (path.read_bytes() if path.is_file() else None)
+        for path in sorted(root.rglob("*"))
+    }
+
+
+def home_and_strangers(root: Path) -> tuple[Path, Path, Path]:
+    """The project the session serves; a neighbouring repository with the SAME plans folder and a
+    profile of its own; and a plain folder belonging to no repository.
+
+    Both projects carry a finding for everyone on their own board: a delivery hook that acted on the
+    neighbour would have something to say there, so its silence is not an empty board's.
+    """
+    home = stub_project(root, "home", profile_text())
+    neighbour = stub_project(root, "neighbour", profile_text())
+    for project in (home, neighbour):
+        (project / STUB_PLANS).mkdir(parents=True)
+        board = project / ".git" / "wave-board" / "board.jsonl"
+        board.parent.mkdir(parents=True)
+        board.write_text(board_line(title="a finding for everyone") + "\n", encoding="utf-8")
+    plain = root / "plain-folder"
+    plain.mkdir()
+    return home, neighbour, plain
+
+
+@needs_pwsh
+@needs_git
+@pytest.mark.parametrize("place", ["a neighbouring repository", "a plain folder"])
+def test_delivery_does_nothing_outside_its_project(tmp_path: Path, place: str) -> None:
+    """A tab outside the project gets no delivery and no state folder — not one byte is written there.
+
+    The neighbour's board is someone else's: delivering it would put a stranger's findings into this
+    session, and the liveness beacon and the shown-log would be left in someone else's tree. Silence
+    is ambiguous, so the same hook, for the same session, speaks up in its own project.
+    """
+    home, neighbour, plain = home_and_strangers(tmp_path)
+    outside = neighbour if place == "a neighbouring repository" else plain
+    before = every_entry(outside)
+
+    done = run_hook(
+        DELIVER, outside, {"session_id": "s-away", "cwd": str(outside)}, home, "-Stage", "Start"
+    )
+    assert done.returncode == 0, done.stderr
+    assert done.stdout.strip() == "", f"the delivery hook spoke in {place}: {done.stdout!r}"
+    assert every_entry(outside) == before, f"the delivery hook wrote into {place}"
+
+    at_home = run_hook(
+        DELIVER, home, {"session_id": "s-home", "cwd": str(home)}, home, "-Stage", "Start"
+    )
+    assert at_home.returncode == 0, at_home.stderr
+    assert "a finding for everyone" in context_text(at_home.stdout), (
+        "the delivery hook is silent in its own project too — so the silence above proves nothing"
+    )
+
+
+@needs_pwsh
+@needs_git
+@pytest.mark.parametrize("place", ["a neighbouring repository", "a plain folder"])
+def test_the_commit_guard_does_nothing_outside_its_project(tmp_path: Path, place: str) -> None:
+    """A session that stepped into someone else's repository commits there freely.
+
+    Refusing it "for a stream that never announced itself" would be judging a project by a board it
+    has nothing to do with — and the session's only answer would be the valve, by hand. The same
+    commit in its own project, unannounced, is refused, or the silence above proves nothing.
+    """
+    home, neighbour, plain = home_and_strangers(tmp_path)
+    outside = neighbour if place == "a neighbouring repository" else plain
+    before = every_entry(outside)
+
+    commit = {
+        "session_id": "s-away",
+        "cwd": str(outside),
+        "tool_input": {"command": 'git commit -m "x"'},
+    }
+    done = run_hook(CLAIM_GUARD, outside, commit, home)
+    assert done.returncode == 0, done.stderr
+    assert done.stdout.strip() == "", (
+        f"the commit guard refused a commit in {place}: {done.stdout!r}"
+    )
+    assert every_entry(outside) == before, f"the commit guard wrote into {place}"
+
+    commit = {
+        "session_id": "s-home",
+        "cwd": str(home),
+        "tool_input": {"command": 'git commit -m "x"'},
+    }
+    at_home = run_hook(CLAIM_GUARD, home, commit, home)
+    assert "never announced itself" in at_home.stdout, (
+        f"the commit guard is mute in its own project too: {at_home.stdout!r}"
+    )
+
+
+@needs_pwsh
+@needs_git
+@pytest.mark.parametrize(
+    "process, call",
+    [
+        ("the project", "the neighbouring repository"),
+        ("the neighbouring repository", "the project"),
+    ],
+)
+def test_the_commit_guard_judges_the_folder_of_the_call(
+    tmp_path: Path, process: str, call: str
+) -> None:
+    """The commit guard judges the folder the call names, not the folder its own process runs in.
+
+    The call carries the session's working folder, and everything the guard asks — the stream, its
+    claim, the registry — is asked about that folder. Judged by the process folder instead, a commit
+    in the project would go through whenever the hook happened to start elsewhere, and a commit in
+    someone else's repository would be refused against that repository's empty registry.
+    """
+    home, neighbour, _plain = home_and_strangers(tmp_path)
+    folders = {"the project": home, "the neighbouring repository": neighbour}
+    commit = {
+        "session_id": "s-call",
+        "cwd": str(folders[call]),
+        "tool_input": {"command": 'git commit -m "x"'},
+    }
+    done = run_hook(CLAIM_GUARD, folders[process], commit, home)
+    assert done.returncode == 0, done.stderr
+    if call == "the project":
+        assert "never announced itself" in done.stdout, (
+            f"a commit in the project went through because the hook ran in {process}: {done.stdout!r}"
+        )
+    else:
+        assert done.stdout.strip() == "", (
+            f"a commit in {call} was refused because the hook ran in {process}: {done.stdout!r}"
+        )
+
+
+@needs_pwsh
+@needs_git
+def test_every_worktree_of_the_project_gets_delivery_and_the_commit_guard(tmp_path: Path) -> None:
+    """A tab at the root of a worktree of the project is served exactly like its main folder.
+
+    A worktree is told apart from someone else's repository by the git directory it shares with the
+    main folder, not by its own root: compared by root, every worktree would look like a stranger,
+    and the very sessions the channel exists for — streams, each in a worktree of its own — would get
+    no delivery and commit unrefused.
+    """
+    home = stub_project(tmp_path, "home", profile_text())
+    git(home, "config", "user.email", "test@example.com")
+    git(home, "config", "user.name", "probe")
+    git(home, "add", "-A")
+    git(home, "commit", "-m", "first")
+    tree = home / ".claude" / "worktrees" / "wave7-tree"
+    git(home, "worktree", "add", "-b", "feat/wave7-tree", ".claude/worktrees/wave7-tree")
+    board = home / ".git" / "wave-board" / "board.jsonl"
+    board.parent.mkdir(parents=True)
+    board.write_text(board_line(title="a finding for everyone") + "\n", encoding="utf-8")
+
+    delivered = run_hook(
+        DELIVER, tree, {"session_id": "s-tree", "cwd": str(tree)}, home, "-Stage", "Start"
+    )
+    assert delivered.returncode == 0, delivered.stderr
+    assert "a finding for everyone" in context_text(delivered.stdout), (
+        f"a worktree of the project got no delivery: {delivered.stdout!r}"
+    )
+    commit = {
+        "session_id": "s-tree",
+        "cwd": str(tree),
+        "tool_input": {"command": 'git commit -m "x"'},
+    }
+    refused = run_hook(CLAIM_GUARD, tree, commit, home)
+    assert "never announced itself" in refused.stdout, (
+        f"an unannounced commit in a worktree of the project went through: {refused.stdout!r}"
+    )
+
+
+@needs_pwsh
+@needs_git
+@pytest.mark.parametrize("namesake", ["an existing folder", "a folder not created yet"])
+def test_the_nudge_ignores_a_same_named_folder_deeper_in_its_own_tree(
+    tmp_path: Path, namesake: str
+) -> None:
+    """Only the plans folder at the root of the file's own tree holds wave plans.
+
+    The condition in the settings matches the plans folder at any depth, so it also calls the nudge
+    for `src/<plans folder>/…` inside the project itself. A hint there would be about no wave at all,
+    and it would spend the session's one reminder: the real plan, edited next, would get nothing. So
+    the namesake gets no word and no byte — and the real plan, in the same session, the hint.
+    """
+    home = stub_project(tmp_path, "home", profile_text())
+    (home / STUB_PLANS).mkdir(parents=True)
+    deeper = home / "src" / STUB_PLANS
+    if namesake == "an existing folder":
+        deeper.mkdir(parents=True)
+    before = every_entry(home)
+
+    call = {
+        "session_id": "s-namesake",
+        "tool_input": {"file_path": str(deeper / "2026-01-01-wave7-namesake.md")},
+    }
+    done = run_hook(NUDGE, home, call, home)
+    assert done.returncode == 0, done.stderr
+    assert done.stdout.strip() == "", (
+        f"the nudge spoke on a same-named folder deeper in the project: {done.stdout!r}"
+    )
+    assert every_entry(home) == before, "the nudge wrote its state over a same-named folder"
+
+    call = {
+        "session_id": "s-namesake",
+        "tool_input": {"file_path": str(home / STUB_PLANS / "2026-01-01-wave7-mine.md")},
+    }
+    own = run_hook(NUDGE, home, call, home)
+    assert own.returncode == 0, own.stderr
+    assert "The wave plan is being edited" in context_text(own.stdout), (
+        "the project's own plan got no hint in the same session — the namesake spent the reminder, "
+        "or the silence above proves nothing"
+    )
+
+
+@needs_pwsh
+@needs_git
+@pytest.mark.parametrize("tab", ["the project", "the neighbouring repository", "a plain folder"])
+def test_the_nudge_ignores_a_same_named_plans_folder_of_another_repository(
+    tmp_path: Path, tab: str
+) -> None:
+    """A plan of someone else's repository gets no word and no byte, wherever the tab stands.
+
+    The condition in the settings is anchored at the root of the file system so that it matches
+    from any folder — and for the same reason it matches a same-named folder in a neighbouring
+    repository. That file is none of this project's business: a hint there would name this project's
+    worktrees for someone else's plan, and its once-per-session flag would be spent on it. Then a plan
+    of the project itself, from the same folder: the hint must come.
+    """
+    home, neighbour, plain = home_and_strangers(tmp_path)
+    where = {
+        "the project": home,
+        "the neighbouring repository": neighbour,
+        "a plain folder": plain,
+    }[tab]
+    watched = {folder: every_entry(folder) for folder in (home, neighbour, plain)}
+
+    theirs = neighbour / STUB_PLANS / "2026-01-01-wave7-theirs.md"
+    done = run_hook(
+        NUDGE, where, {"session_id": "s-theirs", "tool_input": {"file_path": str(theirs)}}, home
+    )
+    assert done.returncode == 0, done.stderr
+    assert done.stdout.strip() == "", f"the nudge spoke on someone else's plan: {done.stdout!r}"
+    for folder, before in watched.items():
+        assert every_entry(folder) == before, (
+            f"the nudge wrote into {folder.name} over someone else's plan"
+        )
+
+    mine = home / STUB_PLANS / "2026-01-01-wave7-mine.md"
+    own = run_hook(
+        NUDGE, where, {"session_id": "s-theirs", "tool_input": {"file_path": str(mine)}}, home
+    )
+    assert own.returncode == 0, own.stderr
+    assert "The wave plan is being edited" in context_text(own.stdout), (
+        "the nudge is silent on the project's own plan in the same session — so either the silence "
+        "above proves nothing, or someone else's plan spent the session's one reminder"
+    )
+    # The hint on the project's own plan keeps its state in the project, wherever the tab stands.
+    for folder in (neighbour, plain):
+        assert every_entry(folder) == watched[folder], (
+            f"the hint on the project's own plan left its state in {folder.name}"
+        )
+
+
+@needs_pwsh
+@needs_git
+@pytest.mark.parametrize(
+    "tab", ["a subfolder of the tree", "a plain folder", "a neighbouring repository"]
+)
+def test_the_nudge_names_its_own_wave_from_any_folder(
+    tmp_path: Path, wave_repo: Path, tab: str
+) -> None:
+    """A plan of the project edited from anywhere gets the same hint as from its own tree.
+
+    The profile, the worktrees and the state folder come from the plan's tree when the tab stands
+    outside its repository: taken from where the tab stands, the hint would read a stranger's
+    profile (and stay silent) or list a stranger's worktrees, and its flag would land in a stranger's
+    folder.
+    """
+    here = here_of(wave_repo)
+    plan = here / STUB_PLANS / "2026-01-01-wave7-probe.md"
+    if tab == "a subfolder of the tree":
+        where = here / "src" / "deep"
+        where.mkdir(parents=True, exist_ok=True)
+    elif tab == "a plain folder":
+        where = tmp_path / "plain-folder"
+        where.mkdir()
+    else:
+        where = stub_project(tmp_path, "neighbour", profile_text(plans="elsewhere/"))
+    before = every_entry(where)
+
+    session = "s-anywhere-" + str(
+        ["a subfolder of the tree", "a plain folder", "a neighbouring repository"].index(tab)
+    )
+    call = {"session_id": session, "tool_input": {"file_path": str(plan)}}
+    done = run_hook(NUDGE, where, call, wave_repo)
+    assert done.returncode == 0, done.stderr
+    names = named_streams(context_text(done.stdout))
+    assert names[:3] == [f"feat/{name}" for name in ALIVE], (
+        f"from {tab} the hint does not name the wave's answering tabs first: {names}"
+    )
+    assert "feat/wave7-here" not in names, (
+        "the hint suggests addressing a finding to the plan's own tree"
+    )
+    assert "feat/wave8-other" not in names, "the hint names a tree of ANOTHER wave"
+    assert every_entry(where) == before, f"the nudge wrote into {tab}"
+
+
+@needs_pwsh
+@needs_git
+@ISOLATED_GIT
+def test_a_tab_at_the_root_of_a_tree_with_its_own_copy_is_served_as_before(tmp_path: Path) -> None:
+    """The kit installed inside the project serves it even when the session started elsewhere.
+
+    A tab at the root of a tree that carries its own copy runs that copy, and gets exactly what it
+    always got: the copy's own repository is the project it serves, whatever folder the session
+    started in. The commit guard refuses an unannounced commit at home and steps aside in a clone of
+    a contributor's fork, and says so at session start; the nudge speaks on the project's plan.
+    """
+    project = stub_project(
+        tmp_path, "with-its-own-copy", profile_text() + "\n## Home\n\n- `keeper/project`\n"
+    )
+    (project / STUB_PLANS).mkdir(parents=True)
+    shutil.copytree(
+        COORDINATION_DIR,
+        project / KIT_INSIDE,
+        ignore=shutil.ignore_patterns("__pycache__", "tests"),
+    )
+    hooks = project / KIT_INSIDE / "hooks"
+    started_elsewhere = tmp_path / "started-elsewhere"
+    started_elsewhere.mkdir()
+    git(project, "remote", "add", "origin", HOME_ORIGIN)
+
+    commit = {
+        "session_id": "s-own",
+        "cwd": str(project),
+        "tool_input": {"command": 'git commit -m "x"'},
+    }
+    refused = run_hook(hooks / CLAIM_GUARD.name, project, commit, started_elsewhere)
+    assert "never announced itself" in refused.stdout, (
+        f"the copy inside the project does not guard it once the session started elsewhere: {refused.stdout!r}"
+    )
+
+    plan = project / STUB_PLANS / "2026-01-01-wave7-probe.md"
+    nudged = run_hook(
+        hooks / NUDGE.name,
+        project,
+        {"session_id": "s-own", "tool_input": {"file_path": str(plan)}},
+        started_elsewhere,
+    )
+    assert "The wave plan is being edited" in context_text(nudged.stdout), (
+        f"the copy inside the project is silent on its own plan: {nudged.stdout!r}"
+    )
+
+    git(project, "remote", "set-url", "origin", FORK_ORIGIN)
+    aside = run_hook(hooks / CLAIM_GUARD.name, project, commit, started_elsewhere)
+    assert aside.returncode == 0 and aside.stdout.strip() == "", (
+        f"the commit guard refused a commit in a clone of a contributor's fork: {aside.stdout!r}"
+    )
+    told = run_hook(
+        hooks / DELIVER.name,
+        project,
+        {"session_id": "s-own", "cwd": str(project)},
+        started_elsewhere,
+        "-Stage",
+        "Start",
+    )
+    assert STANDS_ASIDE in context_text(told.stdout), (
+        f"in a fork clone the session is no longer told that the guard stands aside: {told.stdout!r}"
     )
