@@ -15,7 +15,7 @@ comes from a profile file, so the skill itself stays portable.
 | `## Stream size` | The size a single stream should stay under | one reviewable pull request |
 | `## Tests` | Command that proves the stream works | the project's documented test command |
 | `## Gates` | Lint, types, formatting, and where heavy checks run | the project's documented checks |
-| `## Review` | Review gate before the pull request, its depths, and whether a stream may answer `none` | a review pass before merge, `none` only for a diff that cannot change behaviour |
+| `## Review` | Review gate before the pull request, its depths, and whether a stream may answer `none`; whether a review on the strongest model is set up that runs only on the person's yes | a review pass before merge, `none` only for a diff that cannot change behaviour; no review on the strongest model on the person's yes until the profile sets one up (then name the models, where the session advises, the signs, and the wording of the advice) |
 | `## Security review` | Extra pass, and what triggers it | money, access control, secrets, network boundaries |
 | `## Delegation` | What a session hands to a subagent, and the model tier per kind of work | research and each task's implementation to subagents, implementation reviewed by another; cheap tier for research and mechanical tasks; session tier for new logic, capped at the workhorse model when the profile names one; never below the session tier for review; the model named in every launch |
 | `## Escalation` | What this project calls the deeper mode, how a session asks for it — and how it asks for it to be turned off once the flagged steps are done | described generically in the brief; both ends of the span are asked for |
@@ -54,6 +54,9 @@ Run the project's review command over the stream's diff before opening the pull 
 Default depth: high. Mechanical work following an existing pattern: medium. A stream whose diff
 cannot change behaviour — docs, translated strings, a version bump — may answer `none` with the
 reason; write "every stream carries a gate" here instead if this project never skips.
+The session neither starts a review on the strongest model on its own nor skips it in silence: the
+plan marks the tasks for it on the person's yes, and before the stream's final summary the session
+advises, in a line of its own, whether the stream as a whole needs it.
 
 ## Security review
 Additionally required for: billing, authentication, permissions, token handling, anything exposed

@@ -5,6 +5,24 @@ This project follows [Semantic Versioning](https://semver.org/).
 
 ## [1.19.0] — 2026-11-14
 
+### Added
+
+- **A review on the strongest model that runs only on the person's yes.** Such a model costs
+  noticeably more than the workhorse, and as a reviewer it pays for itself only where a mistake is
+  expensive and the ordinary review usually misses it — so the person decides, and the session
+  advises. A project can now set this up in the profile's `## Review`: which models, where the
+  session advises, on what signs and in what words. The plan marks the tasks that get such a
+  review, and the mark is that yes. A stream's brief then carries the numbers of its marked tasks
+  in block 7, so the session does not ask again, and tells the session to stop and ask when an
+  unmarked task turns out risky on the way. At the end of the stream, before its final summary, the
+  session advises in a line of its own whether the stream as a whole needs such a review — or
+  writes one line in the summary saying why not. The skill, the brief template, the reference and
+  the profile scaffold carry it in both languages, and so does the example profile template.
+
+- **Without that setting nothing changes.** A profile whose `## Review` does not set it up gets the
+  same briefs as before. Text only: no script, hook or test of the coordination channel changed for
+  it.
+
 ### Fixed
 
 - **The guards are found from any folder the session stands in.** The installer wrote every hook

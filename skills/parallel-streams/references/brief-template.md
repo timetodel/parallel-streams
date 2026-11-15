@@ -110,6 +110,11 @@ open the pull request.»]
  touching executable code, run <the profile's default gate> before the pull request anyway.»]
 [+ when applicable: «This stream touches <money / access control / secrets / network boundary> —
 run a security review as well.»]
+[+ when the profile sets up a review on the strongest model on the person's yes: «Tasks N, M —
+ review on <strong model from the profile>: the mark in the plan is the person's yes, do not ask
+ again. The rest — on <model from the profile>. If a task without the mark turns out risky on the
+ way, stop and ask.» OR «None of this stream's tasks is marked for <strong model>; if a task turns
+ out risky on the way, stop and ask.»]
 
 ## Decide with me before implementing
 - [concrete fork 1, taken from the plan]
@@ -128,6 +133,9 @@ it apart from what you are assuming.
 - [ ] the review above ran and its findings are resolved — or it said `none`, and the finished diff
       really did stay non-executable
 - [ ] pull request opened and merged the usual way
+[+ when the profile sets up a review on the strongest model: «- [ ] before the summary — a line of
+ its own advising whether the whole stream needs <strong model>, in the profile's words, and a wait
+ for the answer; or a line in the summary saying why it is not needed»]
 ```
 
 The review item appears twice on purpose — once as a section, once in the done-when list. It is the
@@ -357,6 +365,16 @@ gate.
 
 Do not assign the heaviest, most expensive tier by default either. That one belongs to a deliberate
 decision by the person paying for it, not to a template.
+
+**Review on the strongest model — on the session's advice and the person's yes, when the profile
+sets it up that way.** Such a model costs noticeably more than the workhorse, and as a reviewer it
+does not pay for itself everywhere — only where a mistake is expensive and the ordinary review
+usually misses it. So the person decides, and the session advises, with the reason; where to
+advise, on what signs and in what words, the profile names. The brief carries over from the plan
+the numbers of the stream's marked tasks, and the mark there already means yes. Without a mark the
+session does not ask again task by task, but it does not skip in silence either: a task that turns
+out risky on the way means a stop and a question; the end of the stream means advice on reviewing
+the stream as a whole.
 
 ## Block 8: forks
 
