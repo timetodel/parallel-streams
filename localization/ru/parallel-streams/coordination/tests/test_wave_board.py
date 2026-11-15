@@ -7988,6 +7988,76 @@ def test_the_guard_minds_only_the_commands_that_publish(tmp_path: Path, command:
 
 
 @needs_pwsh
+@pytest.mark.parametrize(
+    "command",
+    [
+        "git merge --no-ff --no-commit origin/main",
+        "git merge --no-commit origin/main",
+        'git merge -m "fold the push notes in" origin/main',
+        "git log --grep commit",
+        "git -C D:/some/repo log --grep push",
+        "git stash push -m x",
+        "git commit-treeish",
+    ],
+)
+def test_a_word_in_a_flag_or_an_argument_is_not_a_publishing_command(
+    tmp_path: Path, command: str
+) -> None:
+    """`commit` и `push` публикуют только как подкоманда git, не как ключ и не как аргумент.
+
+    Слияние вне сторожа намеренно (оно двигает уже существующую работу), но `git merge --no-commit`
+    отклонялся как фиксация: слово искали где угодно после `git` в строке. Так же ошибались
+    `git log --grep commit` и `git stash push`.
+    """
+    board = tmp_path / "board.jsonl"
+    silent = tmp_path / "wave9-flags"
+
+    assert refusal(board, silent, command) == "", f"сторож отклонил не публикующую {command!r}"
+    assert refusal(board, silent, "git commit -m x"), (
+        "сторож молчит и на фиксации — тогда его молчание выше ничего не доказывает"
+    )
+
+
+@needs_pwsh
+@pytest.mark.parametrize(
+    "command",
+    [
+        "git commit -m x",
+        "git commit -F message.txt",
+        'git -C "D:\\path with spaces" commit -F x',
+        "git -C D:/some/repo commit -m x",
+        'git -c user.name="A B" commit -m x',
+        "git --no-pager commit -m x",
+        "git --git-dir=.git --work-tree . commit -m x",
+        "git --git-dir .git push",
+        "git push",
+        "git push -u origin feat/next",
+        "git add a && git commit -m b",
+        "cd x; git push",
+        "git add .\ngit commit -m x",
+        "git status | git push",
+        'pwsh -c "git commit -m x"',
+        "bash -c 'git push'",
+        "sudo git push",
+        '"C:\\Program Files\\Git\\bin\\git.exe" commit -m x',
+        "git commit-tree abc123",
+        "git -c alias.ship=push ship",
+        "gh pr create --fill",
+    ],
+)
+def test_every_shape_of_a_publishing_command_is_still_refused(tmp_path: Path, command: str) -> None:
+    """Сужение шаблона до подкоманды не пропускает ничего из прежнего улова.
+
+    Глобальные ключи перед подкомандой, цепочка команд, оболочка-обёртка, служебная `commit-tree` и
+    псевдоним, заведённый на месте, отклоняются по-прежнему — так же, как их отклонял широкий шаблон.
+    """
+    board = tmp_path / "board.jsonl"
+    silent = tmp_path / "wave9-shapes"
+
+    assert refusal(board, silent, command), f"сторож пропустил публикующую {command!r}"
+
+
+@needs_pwsh
 def test_the_valve_lets_a_deliberate_commit_through(tmp_path: Path) -> None:
     """Осознанное исключение работает — сторож отличит от потока не всякое «не поток».
 

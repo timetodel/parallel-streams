@@ -8367,6 +8367,77 @@ def test_the_guard_minds_only_the_commands_that_publish(tmp_path: Path, command:
 
 
 @needs_pwsh
+@pytest.mark.parametrize(
+    "command",
+    [
+        "git merge --no-ff --no-commit origin/main",
+        "git merge --no-commit origin/main",
+        'git merge -m "fold the push notes in" origin/main',
+        "git log --grep commit",
+        "git -C D:/some/repo log --grep push",
+        "git stash push -m x",
+        "git commit-treeish",
+    ],
+)
+def test_a_word_in_a_flag_or_an_argument_is_not_a_publishing_command(
+    tmp_path: Path, command: str
+) -> None:
+    """`commit` and `push` publish only as the git subcommand, never as a flag or an argument.
+
+    A merge is outside the guard on purpose (it moves work that already exists), yet
+    `git merge --no-commit` was refused as a commit because the word was looked for anywhere after
+    `git` on the line. `git log --grep commit` and `git stash push` failed the same way.
+    """
+    board = tmp_path / "board.jsonl"
+    silent = tmp_path / "wave9-flags"
+
+    assert refusal(board, silent, command) == "", f"the guard refused a non-publishing {command!r}"
+    assert refusal(board, silent, "git commit -m x"), (
+        "the guard is mute on the commit as well — then its silence above proves nothing"
+    )
+
+
+@needs_pwsh
+@pytest.mark.parametrize(
+    "command",
+    [
+        "git commit -m x",
+        "git commit -F message.txt",
+        'git -C "D:\\path with spaces" commit -F x',
+        "git -C D:/some/repo commit -m x",
+        'git -c user.name="A B" commit -m x',
+        "git --no-pager commit -m x",
+        "git --git-dir=.git --work-tree . commit -m x",
+        "git --git-dir .git push",
+        "git push",
+        "git push -u origin feat/next",
+        "git add a && git commit -m b",
+        "cd x; git push",
+        "git add .\ngit commit -m x",
+        "git status | git push",
+        'pwsh -c "git commit -m x"',
+        "bash -c 'git push'",
+        "sudo git push",
+        '"C:\\Program Files\\Git\\bin\\git.exe" commit -m x',
+        "git commit-tree abc123",
+        "git -c alias.ship=push ship",
+        "gh pr create --fill",
+    ],
+)
+def test_every_shape_of_a_publishing_command_is_still_refused(tmp_path: Path, command: str) -> None:
+    """Tightening the match to the subcommand lets none of the old catches through.
+
+    Global options before the subcommand, a chain of commands, a shell wrapper, the plumbing
+    `commit-tree` and an alias made on the spot all stay refused, exactly as the broad match refused
+    them.
+    """
+    board = tmp_path / "board.jsonl"
+    silent = tmp_path / "wave9-shapes"
+
+    assert refusal(board, silent, command), f"the guard let the publishing {command!r} through"
+
+
+@needs_pwsh
 def test_the_valve_lets_a_deliberate_commit_through(tmp_path: Path) -> None:
     """The deliberate exception works — the guard cannot tell every non-stream apart from a stream.
 
