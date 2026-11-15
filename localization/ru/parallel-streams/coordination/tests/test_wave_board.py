@@ -7863,9 +7863,18 @@ CLAIM_GUARD = HOOKS_DIR / "guard-claim-before-publish.ps1"
 
 
 def guard_call(
-    board: Path, cwd: Path, command: str, session: str = "s-guard", valve: bool = False
+    board: Path,
+    cwd: Path,
+    command: str,
+    session: str = "s-guard",
+    valve: bool = False,
+    agent: str = "",
 ) -> subprocess.CompletedProcess[str]:
-    """Запускает сторожа фиксации так же, как среда: вызов приходит на вход в виде JSON."""
+    """Запускает сторожа фиксации так же, как среда: вызов приходит на вход в виде JSON.
+
+    `agent` — вызов от субагента: среда тогда добавляет в вызов номер субагента, а `session` остаётся
+    сессией вкладки, которая его запустила.
+    """
     assert pwsh
     env = dict(os.environ)
     # ‼️ Клапан снимаем явно, а не полагаемся на то, что его нет: выставленный в окружении того, кто
@@ -7875,11 +7884,17 @@ def guard_call(
     if valve:
         env["PARALLEL_STREAMS_ALLOW_UNCLAIMED"] = "1"
     cwd.mkdir(parents=True, exist_ok=True)
+    call: dict[str, object] = {
+        "session_id": session,
+        "cwd": str(cwd),
+        "tool_input": {"command": command},
+    }
+    if agent:
+        call["agent_id"] = agent
+        call["agent_type"] = "general-purpose"
     return subprocess.run(
         [pwsh, "-NoProfile", "-File", str(CLAIM_GUARD), "-BoardPath", str(board)],
-        input=json.dumps(
-            {"session_id": session, "cwd": str(cwd), "tool_input": {"command": command}}
-        ),
+        input=json.dumps(call),
         capture_output=True,
         text=True,
         encoding="utf-8",
@@ -7889,13 +7904,20 @@ def guard_call(
     )
 
 
-def refusal(board: Path, cwd: Path, command: str, valve: bool = False) -> str:
+def refusal(
+    board: Path,
+    cwd: Path,
+    command: str,
+    valve: bool = False,
+    session: str = "s-guard",
+    agent: str = "",
+) -> str:
     """Текст отказа или пустая строка, если сторож пропустил вызов.
 
     Споткнувшийся сторож не вправе превращаться в проект, где нельзя зафиксировать работу, поэтому
     ненулевой код возврата — сам по себе дефект: он проверяется здесь, а не в каждом месте вызова.
     """
-    done = guard_call(board, cwd, command, valve=valve)
+    done = guard_call(board, cwd, command, session=session, valve=valve, agent=agent)
     assert done.returncode == 0, f"сторож вышел ненулём — он сорвал бы вызов: {done.stderr}"
     text = done.stdout.strip()
     if not text:
@@ -8027,6 +8049,113 @@ def test_the_guard_stays_out_of_the_way_when_it_cannot_answer(tmp_path: Path) ->
     assert done.stdout.strip() == "", (
         f"нечитаемый реестр превратился в отказ — в проекте нельзя зафиксировать работу: {done.stdout!r}"
     )
+
+
+@needs_pwsh
+def test_a_subagent_commits_under_the_stream_of_the_tab_that_launched_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Субагент в своём рабочем дереве фиксирует работу под потоком, который объявила его вкладка.
+
+    Вкладка отдаёт каждую задачу субагенту-исполнителю, и среда может дать ему собственное рабочее
+    дерево. Из этой папки никто не объявлялся, и не должен: объявление оттуда откроет второй поток,
+    который никто не поведёт, когда субагент закончит, а с адресом самого потока и `-TakeOver` —
+    уведёт поток у вкладки. Субагента с его потоком связывает сессия: среда называет сессию вкладки в
+    каждом вызове субагента, а заявка вкладки хранит сессию, из которой её объявили.
+
+    Молчание двусмысленно, поэтому та же папка проверяется вокруг него: до объявления вкладки и на
+    вызове не от субагента сторож по-прежнему отказывает. А пропуск субагента оставляет реестр ровно
+    таким, каким он был: заявку вкладки не переносят и не трогают.
+    """
+    board = tmp_path / "board.jsonl"
+    tab = tmp_path / "wave9-tab"
+    worker = tmp_path / "agent-a1b2c3"
+    assert refusal(board, worker, "git commit -m x", session="sess-tab", agent="a1b2c3"), (
+        "субагент зафиксировал работу, когда его вкладка ещё ничего не объявила"
+    )
+
+    monkeypatch.setenv("CLAUDE_CODE_SESSION_ID", "sess-tab")
+    claim(board, tab, "wave9", "4", "-StreamName", "Приём")
+    monkeypatch.delenv("CLAUDE_CODE_SESSION_ID")
+    before = read_registry(registry_dir(board))
+
+    for command in ('git commit -m "работа"', "git push -u origin HEAD", "gh pr create --fill"):
+        assert refusal(board, worker, command, session="sess-tab", agent="a1b2c3") == "", (
+            f"субагенту объявившейся вкладки отказали в команде {command!r} в его рабочем дереве"
+        )
+    assert read_registry(registry_dir(board)) == before, (
+        "пропуск субагента изменил реестр — заявка вкладки должна остаться такой, как её объявили"
+    )
+    assert refusal(board, worker, "git commit -m x", session="sess-tab"), (
+        "сама вкладка зафиксировала работу из папки, из которой не объявлялась, — так можно только её субагентам"
+    )
+
+
+@needs_pwsh
+def test_a_subagent_of_another_tab_is_refused_while_a_neighbour_runs_its_stream(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Считается только вкладка, запустившая субагента, — живой поток соседа ему ничего не даёт.
+
+    Две вкладки работают рядом, объявилась только одна. Субагенту другой нельзя фиксировать работу
+    под потоком соседа: его работа числилась бы за соседом, а находка о ней ушла бы во вкладку,
+    которая её не видела. Отказ говорит субагенту то, что помогает, — вернуть работу запустившей его
+    вкладке — и не предлагает строк, которыми лечится вкладка: объявляться или перехватывать адрес из
+    папки субагента — ровно то, чего быть не должно.
+    """
+    board = tmp_path / "board.jsonl"
+    monkeypatch.setenv("CLAUDE_CODE_SESSION_ID", "sess-neighbour")
+    claim(board, tmp_path / "wave9-neighbour", "wave9", "5", "-StreamName", "Витрины")
+    monkeypatch.delenv("CLAUDE_CODE_SESSION_ID")
+
+    said = refusal(
+        board,
+        tmp_path / "agent-d4e5f6",
+        'git commit -m "работа"',
+        session="sess-mine",
+        agent="d4e5f6",
+    )
+
+    assert said, "субагент зафиксировал работу под потоком вкладки, которая его не запускала"
+    assert "субагент" in said, f"отказ не говорит субагенту, что речь о нём: {said!r}"
+    assert "-TakeOver" not in said, (
+        f"отказ предлагает субагенту перехватить адрес из своей папки: {said!r}"
+    )
+    assert "PARALLEL_STREAMS_ALLOW_UNCLAIMED" in said, (
+        f"отказ не называет осознанный обход: {said!r}"
+    )
+
+
+@needs_pwsh
+@pytest.mark.parametrize("how", ["сдан", "без сессии"])
+def test_a_subagent_is_refused_when_its_tab_runs_no_open_stream(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, how: str
+) -> None:
+    """Поток вкладки сдан или объявлен без сессии — её субагенты тоже останавливаются.
+
+    Сданный поток никто не ведёт: работа, зафиксированная под ним, ни для кого не достижима — ровно
+    как и собственная фиксация вкладки. Объявленный без сессии (руками из терминала, из клиента,
+    который её не называет) — заявке не с чем сравнить вызов субагента, а угадывать, какая вкладка
+    его запустила, — та самая путаница, против которой правило и заведено.
+    """
+    board = tmp_path / "board.jsonl"
+    tab = tmp_path / "wave9-tab"
+    worker = tmp_path / "agent-0f9e8d"
+    if how == "сдан":
+        monkeypatch.setenv("CLAUDE_CODE_SESSION_ID", "sess-tab")
+    claim(board, tab, "wave9", "7", "-StreamName", "Завершение")
+    monkeypatch.delenv("CLAUDE_CODE_SESSION_ID", raising=False)
+    if how == "сдан":
+        assert (
+            refusal(board, worker, "git commit -m x", session="sess-tab", agent="0f9e8d") == ""
+        ), "субагенту отказали, пока поток его вкладки ещё был открыт"
+        done = release(board, tab)
+        assert done.returncode == 0, done.stderr
+
+    said = refusal(board, worker, 'git commit -m "ещё одно"', session="sess-tab", agent="0f9e8d")
+
+    assert said, f"субагент зафиксировал работу под вкладкой, чей поток {how}"
+    assert "субагент" in said, f"отказ не говорит субагенту, что речь о нём: {said!r}"
 
 
 # Проект, который принимает работу от участников из их собственных копий (форков), называет в
@@ -10881,6 +11010,67 @@ def test_every_worktree_of_the_project_gets_delivery_and_the_commit_guard(tmp_pa
     refused = run_hook(CLAIM_GUARD, tree, commit, home)
     assert "этот поток не объявлялся" in refused.stdout, (
         f"необъявленная фиксация в рабочем дереве проекта прошла: {refused.stdout!r}"
+    )
+
+
+@needs_pwsh
+@needs_git
+def test_a_subagent_in_a_worktree_of_the_project_reaches_its_tabs_claim(tmp_path: Path) -> None:
+    """Рабочий путь: из рабочего дерева субагента виден тот самый реестр, куда объявилась его вкладка.
+
+    Проверки выше дают сторожу свою доску. Здесь не дают ничего: вкладка объявляется из основной
+    папки, её субагент зовёт из рабочего дерева проекта — такого, какое делает среда, — и правило
+    держится, только если оба приходят к одному реестру: через служебный каталог git, общий у рабочего
+    дерева с основной папкой. Молчание двусмысленно, поэтому субагенту другой сессии в том же рабочем
+    дереве отказывают.
+    """
+    home = stub_project(tmp_path, "home", profile_text())
+    git(home, "config", "user.email", "test@example.com")
+    git(home, "config", "user.name", "probe")
+    git(home, "add", "-A")
+    git(home, "commit", "-m", "first")
+    tree = home / ".claude" / "worktrees" / "agent-a1b2c3"
+    git(home, "worktree", "add", "-b", "worktree-agent-a1b2c3", ".claude/worktrees/agent-a1b2c3")
+    assert pwsh
+    env = hook_env(home)
+    env["CLAUDE_CODE_SESSION_ID"] = "sess-tab"
+    announced = subprocess.run(
+        [
+            pwsh,
+            "-NoProfile",
+            "-File",
+            str(TOOL),
+            "-Mode",
+            "Claim",
+            "-Wave",
+            "wave9",
+            "-Stream",
+            "4",
+        ],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        cwd=str(home),
+        env=env,
+        timeout=120,
+    )
+    assert announced.returncode == 0, announced.stderr
+
+    def commit(session: str) -> str:
+        call = {
+            "session_id": session,
+            "agent_id": "a1b2c3",
+            "agent_type": "general-purpose",
+            "cwd": str(tree),
+            "tool_input": {"command": 'git commit -m "x"'},
+        }
+        done = run_hook(CLAIM_GUARD, tree, call, home)
+        assert done.returncode == 0, done.stderr
+        return done.stdout.strip()
+
+    assert commit("sess-tab") == "", "субагенту вкладки отказали в рабочем дереве проекта"
+    assert "субагент" in commit("sess-other"), (
+        "субагент другой сессии зафиксировал работу под потоком вкладки"
     )
 
 

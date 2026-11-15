@@ -8235,9 +8235,18 @@ CLAIM_GUARD = HOOKS_DIR / "guard-claim-before-publish.ps1"
 
 
 def guard_call(
-    board: Path, cwd: Path, command: str, session: str = "s-guard", valve: bool = False
+    board: Path,
+    cwd: Path,
+    command: str,
+    session: str = "s-guard",
+    valve: bool = False,
+    agent: str = "",
 ) -> subprocess.CompletedProcess[str]:
-    """Runs the commit guard the way the harness does: the call arrives as JSON on stdin."""
+    """Runs the commit guard the way the harness does: the call arrives as JSON on stdin.
+
+    `agent` — the call comes from a subagent: the host then adds the subagent's id to the call, and
+    `session` stays the id of the tab that launched it.
+    """
     assert pwsh
     env = dict(os.environ)
     # ‼️ The valve is cleared explicitly, not merely left unset: set in the environment of whoever
@@ -8247,11 +8256,17 @@ def guard_call(
     if valve:
         env["PARALLEL_STREAMS_ALLOW_UNCLAIMED"] = "1"
     cwd.mkdir(parents=True, exist_ok=True)
+    call: dict[str, object] = {
+        "session_id": session,
+        "cwd": str(cwd),
+        "tool_input": {"command": command},
+    }
+    if agent:
+        call["agent_id"] = agent
+        call["agent_type"] = "general-purpose"
     return subprocess.run(
         [pwsh, "-NoProfile", "-File", str(CLAIM_GUARD), "-BoardPath", str(board)],
-        input=json.dumps(
-            {"session_id": session, "cwd": str(cwd), "tool_input": {"command": command}}
-        ),
+        input=json.dumps(call),
         capture_output=True,
         text=True,
         encoding="utf-8",
@@ -8261,13 +8276,20 @@ def guard_call(
     )
 
 
-def refusal(board: Path, cwd: Path, command: str, valve: bool = False) -> str:
+def refusal(
+    board: Path,
+    cwd: Path,
+    command: str,
+    valve: bool = False,
+    session: str = "s-guard",
+    agent: str = "",
+) -> str:
     """The refusal text, or an empty string when the guard let the call through.
 
     A guard that trips must never turn into a project that cannot commit, so a non-zero exit code is
     a defect in itself — it is checked here rather than in each caller.
     """
-    done = guard_call(board, cwd, command, valve=valve)
+    done = guard_call(board, cwd, command, session=session, valve=valve, agent=agent)
     assert done.returncode == 0, (
         f"the guard exited non-zero — it would break the call: {done.stderr}"
     )
@@ -8406,6 +8428,116 @@ def test_the_guard_stays_out_of_the_way_when_it_cannot_answer(tmp_path: Path) ->
     assert done.stdout.strip() == "", (
         f"an unreadable registry turned into a refusal — the project cannot commit: {done.stdout!r}"
     )
+
+
+@needs_pwsh
+def test_a_subagent_commits_under_the_stream_of_the_tab_that_launched_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A subagent in a worktree of its own commits under the stream its tab announced.
+
+    A tab hands each task to an implementation subagent, and the host may give that subagent a
+    worktree of its own. Nothing was announced from that folder, and nothing should be: an
+    announcement there opens a second stream that nobody runs once the subagent is done, or — with
+    the stream's own address and `-TakeOver` — moves the tab's stream away from the tab. What ties
+    the subagent to its stream is the session: the host names the tab's session in every call the
+    subagent makes, and the tab's claim records the session it was announced from.
+
+    Silence is ambiguous, so the same folder is checked around it: before the tab announces, and on a
+    call that is not a subagent's at all, the guard still refuses. And letting the subagent through
+    leaves the registry exactly as it was: the tab's claim is neither moved nor touched.
+    """
+    board = tmp_path / "board.jsonl"
+    tab = tmp_path / "wave9-tab"
+    worker = tmp_path / "agent-a1b2c3"
+    assert refusal(board, worker, "git commit -m x", session="sess-tab", agent="a1b2c3"), (
+        "a subagent committed before its tab announced anything"
+    )
+
+    monkeypatch.setenv("CLAUDE_CODE_SESSION_ID", "sess-tab")
+    claim(board, tab, "wave9", "4", "-StreamName", "Intake")
+    monkeypatch.delenv("CLAUDE_CODE_SESSION_ID")
+    before = read_registry(registry_dir(board))
+
+    for command in ('git commit -m "the work"', "git push -u origin HEAD", "gh pr create --fill"):
+        assert refusal(board, worker, command, session="sess-tab", agent="a1b2c3") == "", (
+            f"a subagent of the announced tab was refused {command!r} in its own worktree"
+        )
+    assert read_registry(registry_dir(board)) == before, (
+        "letting the subagent through changed the registry — the tab's claim must stay as announced"
+    )
+    assert refusal(board, worker, "git commit -m x", session="sess-tab"), (
+        "the tab itself committed from a folder it never announced — only its subagents may"
+    )
+
+
+@needs_pwsh
+def test_a_subagent_of_another_tab_is_refused_while_a_neighbour_runs_its_stream(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Only the tab that launched the subagent counts — a live neighbour's stream lends it nothing.
+
+    Two tabs work side by side, and only one of them announced. A subagent of the other may not
+    commit under the neighbour's stream: its work would show as the neighbour's, and a finding about
+    it would go to a tab that never saw it. The refusal tells the subagent what helps — hand the work
+    back to the tab that launched it — and does not offer the lines that fix a tab: announcing, or
+    taking an address over, from the subagent's folder is exactly what must not happen.
+    """
+    board = tmp_path / "board.jsonl"
+    monkeypatch.setenv("CLAUDE_CODE_SESSION_ID", "sess-neighbour")
+    claim(board, tmp_path / "wave9-neighbour", "wave9", "5", "-StreamName", "Showcases")
+    monkeypatch.delenv("CLAUDE_CODE_SESSION_ID")
+
+    said = refusal(
+        board,
+        tmp_path / "agent-d4e5f6",
+        'git commit -m "the work"',
+        session="sess-mine",
+        agent="d4e5f6",
+    )
+
+    assert said, "a subagent committed under the stream of a tab that did not launch it"
+    assert "subagent" in said, f"the refusal does not tell the subagent it is the case: {said!r}"
+    assert "-TakeOver" not in said, (
+        f"the refusal offers a subagent to take the address over from its folder: {said!r}"
+    )
+    assert "PARALLEL_STREAMS_ALLOW_UNCLAIMED" in said, (
+        f"the refusal does not name the deliberate way past it: {said!r}"
+    )
+
+
+@needs_pwsh
+@pytest.mark.parametrize("how", ["released", "without a session"])
+def test_a_subagent_is_refused_when_its_tab_runs_no_open_stream(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, how: str
+) -> None:
+    """The tab's stream is released, or was announced without a session — its subagents stop too.
+
+    Released, the stream has nobody leading its address: work committed under it is out of anyone's
+    reach, the same as the tab's own commit would be. Announced without a session (by hand from a
+    terminal, by a client that does not name it), the claim has nothing to compare a subagent's call
+    with — and guessing which tab launched it is exactly the misattribution the rule exists to avoid.
+    """
+    board = tmp_path / "board.jsonl"
+    tab = tmp_path / "wave9-tab"
+    worker = tmp_path / "agent-0f9e8d"
+    if how == "released":
+        monkeypatch.setenv("CLAUDE_CODE_SESSION_ID", "sess-tab")
+    claim(board, tab, "wave9", "7", "-StreamName", "Wrapping up")
+    monkeypatch.delenv("CLAUDE_CODE_SESSION_ID", raising=False)
+    if how == "released":
+        assert (
+            refusal(board, worker, "git commit -m x", session="sess-tab", agent="0f9e8d") == ""
+        ), "the subagent was refused while its tab's stream was still open"
+        done = release(board, tab)
+        assert done.returncode == 0, done.stderr
+
+    said = refusal(
+        board, worker, 'git commit -m "one more thing"', session="sess-tab", agent="0f9e8d"
+    )
+
+    assert said, f"a subagent committed under a tab whose stream is {how}"
+    assert "subagent" in said, f"the refusal does not tell the subagent it is the case: {said!r}"
 
 
 # A project that takes contributions from people working in their own copy (a fork) names its home
@@ -11293,6 +11425,67 @@ def test_every_worktree_of_the_project_gets_delivery_and_the_commit_guard(tmp_pa
     refused = run_hook(CLAIM_GUARD, tree, commit, home)
     assert "never announced itself" in refused.stdout, (
         f"an unannounced commit in a worktree of the project went through: {refused.stdout!r}"
+    )
+
+
+@needs_pwsh
+@needs_git
+def test_a_subagent_in_a_worktree_of_the_project_reaches_its_tabs_claim(tmp_path: Path) -> None:
+    """The working path: the subagent's worktree reaches the very registry its tab announced into.
+
+    The checks above hand the guard a board of their own. Here nothing is handed: the tab announces
+    from the main folder, its subagent calls from a worktree of the project the way the host makes
+    one, and the rule stands only if both reach the same registry — through the git directory the
+    worktree shares with the main folder. Silence is ambiguous, so a subagent of another session is
+    refused in the same worktree.
+    """
+    home = stub_project(tmp_path, "home", profile_text())
+    git(home, "config", "user.email", "test@example.com")
+    git(home, "config", "user.name", "probe")
+    git(home, "add", "-A")
+    git(home, "commit", "-m", "first")
+    tree = home / ".claude" / "worktrees" / "agent-a1b2c3"
+    git(home, "worktree", "add", "-b", "worktree-agent-a1b2c3", ".claude/worktrees/agent-a1b2c3")
+    assert pwsh
+    env = hook_env(home)
+    env["CLAUDE_CODE_SESSION_ID"] = "sess-tab"
+    announced = subprocess.run(
+        [
+            pwsh,
+            "-NoProfile",
+            "-File",
+            str(TOOL),
+            "-Mode",
+            "Claim",
+            "-Wave",
+            "wave9",
+            "-Stream",
+            "4",
+        ],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        cwd=str(home),
+        env=env,
+        timeout=120,
+    )
+    assert announced.returncode == 0, announced.stderr
+
+    def commit(session: str) -> str:
+        call = {
+            "session_id": session,
+            "agent_id": "a1b2c3",
+            "agent_type": "general-purpose",
+            "cwd": str(tree),
+            "tool_input": {"command": 'git commit -m "x"'},
+        }
+        done = run_hook(CLAIM_GUARD, tree, call, home)
+        assert done.returncode == 0, done.stderr
+        return done.stdout.strip()
+
+    assert commit("sess-tab") == "", "the tab's subagent was refused in a worktree of the project"
+    assert "subagent" in commit("sess-other"), (
+        "a subagent of another session committed under the tab's stream"
     )
 
 
