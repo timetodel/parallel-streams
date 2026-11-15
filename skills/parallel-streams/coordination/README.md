@@ -61,7 +61,7 @@ names each of these.
 | `lib/hook-io.ps1` | Reads the data that reaches a hook |
 | `hooks/deliver-wave-board.ps1` | Delivery: brings a session the records addressed to it at session start and before every human turn; at session start it also says, in one line, when the commit guard stands aside in this clone |
 | `hooks/nudge-wave-plan-edit.ps1` | A nudge when the wave plan is edited: an addition to the plan doesn't catch up with a live neighbour |
-| `hooks/guard-claim-before-publish.ps1` | The one refusal in the kit: a commit from a stream that never announced itself is stopped, and handed the line that fixes it; a clone of a contributor's fork is left alone once the profile names its home repository |
+| `hooks/guard-claim-before-publish.ps1` | The one refusal in the kit: a commit from a stream that never announced itself is stopped, and handed the line that fixes it; a clone of a contributor's fork is left alone once the profile names its home repository; a subagent commits under the stream of the tab that launched it |
 | `hooks/wave-board-deliver.ps1`, `hooks/pretooluse-wave-board-nudge.ps1`, `hooks/pretooluse-claim-before-publish.ps1` | Transitional: the three hooks' names before 1.19.0. Each hands its call to the renamed hook, so settings written by an older installer keep working until the installer is run again |
 | `install.ps1` | Install, uninstall, and check wiring |
 | `templates/profile.md` | Profile scaffold for a new project |
@@ -183,6 +183,19 @@ forgetfulness is what actually happens. Where there is genuinely no stream to an
 from the repository's main folder, a fix to the channel itself, a bulk chore — the deliberate
 exception is the environment variable `PARALLEL_STREAMS_ALLOW_UNCLAIMED=1` for that session, and the
 refusal names it.
+
+A subagent commits under its tab's stream. A tab hands its tasks to subagents, and the host may give a
+subagent a worktree of its own. Nothing is announced from that folder, and nothing should be: an
+announcement there opens a second stream that nobody runs once the subagent is done, and taking the
+address over from there moves the stream away from the tab. The tie is the session: the host names
+the tab's session in every call a subagent makes, and a claim records the session it was announced
+from. So a subagent's commit goes through when an open claim of the project carries its tab's session
+— that tab's stream only, never a live neighbour's — and the registry is not touched. A subagent whose
+tab runs no open stream under its current session gets a refusal of its own that sends the work back
+to the tab. The tab announces from its own folder (or, after a context clear in a tab with no name of
+its own, announces again under the same address), and the commit goes through. A claim filed without
+a session (by hand from a terminal, or from a client that does not name it) lends its stream to no
+subagent.
 
 The guard asks the registry STRICTLY: an unreadable registry, a dropped drive, a claim file busy for
 a moment all mean "couldn't find out", never "the stream didn't announce". In every one of those it

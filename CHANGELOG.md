@@ -3,6 +3,32 @@
 All notable changes to this project are documented here.
 This project follows [Semantic Versioning](https://semver.org/).
 
+## [1.20.0] — 2026-11-16
+
+### Fixed
+
+- **A subagent commits from its own worktree under the stream of the tab that launched it.** A tab
+  hands each task to an implementation subagent, and the host may give that subagent a worktree of
+  its own. The commit guard knew a stream only by its folder, so every commit from such a worktree
+  was refused as "a stream that never announced itself", and the refusal told the subagent to
+  announce from there. Both ways out were wrong: an announcement from the subagent's folder opens a
+  second stream that nobody runs once the subagent is done (in the project this kit was built in,
+  open claims of finished subagents' worktrees piled up in the registry exactly this way), and
+  taking the address over from there moves the stream away from the tab, whose release then finds
+  nothing to release. The valve was the third way, and a subagent is rightly told not to use it — so
+  the tab ended up committing its subagents' work by hand.
+
+  The tie is now the session. The host names the tab's session in every call a subagent makes,
+  marking the call as a subagent's, and a claim already records the session it was announced from.
+  A subagent's commit goes through when an open claim of the project carries that session — that
+  tab's stream only, never a live neighbour's — and the guard writes nothing: the tab's claim stays
+  exactly as announced, and the tab's release works as before. A subagent whose tab runs no open
+  stream under its current session gets a refusal of its own: it sends the work back to the tab and
+  never tells the subagent to announce or take an address over from its folder. A call that is not a
+  subagent's — the tab itself in a folder it never announced — is refused exactly as before, and so
+  is a subagent whose tab announced without a session (by hand from a terminal, or from a client
+  that does not name it).
+
 ## [1.19.0] — 2026-11-14
 
 ### Added

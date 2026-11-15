@@ -27,6 +27,11 @@ cases the guard cannot tell apart from a stream — a person committing from the
 folder, a fix to the channel itself, a bulk chore. It is one variable, and it is visible in the
 refusal.
 
+A subagent commits under the stream of the tab that launched it, from whatever folder the host gave
+it: the host names the tab's session in the subagent's every call, and the tab's open claim records
+that session. A subagent whose tab runs no open stream gets a refusal of its own — it is sent back to
+the tab, never told to announce from its folder, which would open a second stream or move the tab's.
+
 A clone of a contributor's own copy (a fork) is not refused at all, once the project's profile names
 its home repository in `## Home`: the guard steps aside wherever `origin` points somewhere else. The
 board belongs to the home repository, and a contributor sending pull requests from a fork has no
@@ -156,6 +161,40 @@ try {
 
     $announce = 'pwsh scripts/wave-board.ps1 -Mode Claim -Wave <wave> -Stream <number> -StreamName "<name>" -Tasks "<tasks>"'
     $valve = 'Not a stream (committing from the main folder, fixing the channel itself, a bulk chore) — the deliberate exception is the environment variable PARALLEL_STREAMS_ALLOW_UNCLAIMED=1 for this session.'
+
+    # ‼️ A subagent, in a folder with no open claim of its own — typically the worktree the host gave
+    # it. Its work belongs to the stream of the tab that launched it, and the tie is the session, not
+    # the folder: the host names the tab's session in every call a subagent makes (`agent_id` marks
+    # the call as a subagent's), and the claim records the session it was announced from. So the
+    # commit goes through when an OPEN claim carries that session — exactly that tab's stream, never
+    # a live neighbour's, and without a byte of the registry changed.
+    #
+    # The subagent must not be sent to announce from its folder: an announcement there opens a second
+    # stream that nobody runs once the subagent is done, and taking the address over from there moves
+    # the stream away from the tab. Hence a refusal of its own, which sends the work back to the tab.
+    # A call that is not a subagent's — the tab itself in a folder it never announced — is refused
+    # exactly as before.
+    if ([string]$call.agent_id) {
+        $session = [string]$call.session_id
+        if (Test-SessionId $session) {
+            $led = @($claims | Where-Object {
+                    -not $_.Closed -and [string]$_.Record.session_id -ceq $session
+                })
+            if ($led.Count -gt 0) { exit 0 }
+        }
+        Send-Denial (@(
+                'Stopped before the commit: this call comes from a subagent, and the tab that launched it runs no open stream on the coordination channel.'
+                ''
+                'A subagent commits under the stream of the tab that launched it and announces nothing of its own. That tab has no open claim under its current session: it never announced, it announced without its session (by hand from a terminal, or from a client that does not name it), it released its stream, or its session changed since (a context clear in a tab with no name of its own).'
+                ''
+                'Do not announce from this folder: an announcement here opens a second stream that nobody runs once you are done, and taking the address over from here moves the stream away from the tab that runs it.'
+                ''
+                'Stop and hand the work back to the tab that launched you, together with this refusal. That tab announces from its own folder — or announces again under the same address, which records its current session — and then the commit goes through here:'
+                "  $announce"
+                ''
+                $valve
+            ) -join "`n")
+    }
 
     if ($claim) {
         # The stream is closed: released, or its address was taken over into another folder. Both
