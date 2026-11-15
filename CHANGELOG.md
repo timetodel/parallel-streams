@@ -3,6 +3,26 @@
 All notable changes to this project are documented here.
 This project follows [Semantic Versioning](https://semver.org/).
 
+## [1.20.1] — 2026-11-16
+
+### Fixed
+
+- **The commit guard no longer refuses `git merge --no-commit`.** The guard looked for the words
+  `commit` and `push` anywhere after `git` on the line, so a flag or an argument counted as the
+  command: `git merge --no-ff --no-commit origin/main`, `git log --grep commit`,
+  `git stash push -m x` and `git merge -m "... push ..."` were all refused as publishing, although
+  the guard's own comment leaves merges outside it on purpose. A session in a stream that had not
+  announced itself could not even start a merge, and was sent to the valve for a command that
+  publishes nothing.
+
+  Now `commit` and `push` count only as the git subcommand: after `git` and its global options
+  (`-C <path>`, `-c key=value`, `--git-dir`, `--work-tree`, `--no-pager`, and the like). Nothing
+  that was refused as real publishing is let through: chains (`&&`, `||`, `;`, `|`, newlines), a
+  shell wrapper (`pwsh -c "git commit"`, `bash -c '...'`, `sudo git push`), the plumbing
+  `git commit-tree`, an alias made on the spot (`-c alias.x=commit`) and `gh pr create` are refused
+  as before. One residue remains on the safe side: the text `git commit` or `git push` written
+  inside a quoted argument (a merge message that says "git push") still counts as a command.
+
 ## [1.20.0] — 2026-11-16
 
 ### Fixed

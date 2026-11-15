@@ -63,7 +63,24 @@ $ErrorActionPreference = 'Stop'
 # Merging and rebasing are deliberately NOT here: they move work that already exists, and a stream
 # that reached a merge has long since had its chance to be caught. Blocking them would only add
 # refusals at the end of the work, where they help nobody.
-$PublishingCommands = '(?i)(\bgit\b[^\r\n]*\b(commit|push)\b|\bgh\b\s+pr\s+create\b)'
+#
+# ‼️ `commit` and `push` count only as the git SUBCOMMAND: `git`, then any global options, then the
+# word itself. Matched anywhere after `git` on the line, the word also caught `git merge --no-commit`,
+# `git log --grep commit` and `git stash push` — merges, which the paragraph above leaves out on
+# purpose. The line needs no splitting into commands: the pattern demands the words to follow one
+# another, so `a && git commit`, `cd x; git push` and a newline-separated chain are found as they
+# were. A `git` that is only a word inside a wrapper (`pwsh -c "git commit"`, `bash -c '...'`,
+# `sudo git push`) is found the same way, and `git commit-tree` stays refused: matching has not
+# become any easier to slip past than the old one, only the flags and arguments no longer count.
+# Two forms are kept on purpose: `-c alias.x=commit` (an alias made on the spot) and the quoted
+# `git` of a full path. The `(?i)` makes `-C <path>` and `-c <key=value>` one alternative.
+$GitToken = '(?:"[^"]*"|''[^'']*''|[^\s"''|;&])+'
+$GitGlobalOption = '(?:-c\s+' + $GitToken +
+    '|--(?:git-dir|work-tree|namespace|super-prefix|config-env|attr-source)(?:=' + $GitToken + '|\s+' + $GitToken + ')' +
+    '|-{1,2}[A-Za-z][\w-]*(?:=' + $GitToken + ')?)'
+$PublishingCommands = '(?i)(?<!\w)git(?:\.exe)?["'']?(?:\s+' + $GitGlobalOption + ')*\s+(?:commit(?:-tree)?|push)(?![\w-])' +
+    '|\balias\.[\w-]+=["'']?\s*(?:commit|push)(?![\w-])' +
+    '|\bgh\b\s+pr\s+create\b'
 
 function Send-Denial {
     param([string]$Reason)
