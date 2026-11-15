@@ -3,7 +3,7 @@ name: parallel-streams
 description: Split an approved plan into parallel work streams that different agent sessions can run at the same time without merge conflicts or duplicated work. Produces a dependency map (table plus diagram) and one self-contained brief per stream, ready to paste into a fresh session. Use when asked to "split the plan into streams", "parallelize this plan", "what can I run in parallel", "hand this plan to several agents", or "show me the stream map".
 ---
 
-<!-- parallel-streams 1.18.1 — https://github.com/timetodel/parallel-streams
+<!-- parallel-streams 1.19.0 — https://github.com/timetodel/parallel-streams
      Shipped as a skill: this directory is the whole thing. Update by copying a newer
      copy of it over this one; changes are listed in the repository's CHANGELOG.md.
      Project rules come from the profile `.parallel-streams.md` in the repository root.
@@ -235,7 +235,10 @@ the exact shape is in *Output format* below. Fixed block order, nothing skipped,
    the trigger and the span it covers, and — at the end of that span — stop and ask to turn it
    **off**, because nothing turns it off on its own.
 7. **Review** — mandatory line: which review gate runs before the merge, or `none` with its reason
-   and the condition that brings the gate back.
+   and the condition that brings the gate back. If the profile sets up a review on the strongest
+   model that runs only on the person's yes, the block carries the numbers of the stream's tasks the
+   plan assigned it to (the mark in the plan is that yes), and tells the session to stop and ask
+   when a task without the mark turns out risky on the way.
 8. **Decide with me before implementing** — the real forks *from this plan* for this stream, plus
    any user-visible wording, in plain language, decision before code; and the standing invitation to
    object to the brief itself before starting, free of cost even when the objection overturns an
@@ -244,7 +247,9 @@ the exact shape is in *Output format* below. Fixed block order, nothing skipped,
    coordination channel, the stream released — releasing is what forces the question "is everything
    that arrived actually handled", which nothing else in the flow asks. Release happens as the VERY
    LAST step, once there is nothing left to commit in this folder: after it the guard blocks commit,
-   push, and pull-request creation alike.
+   push, and pull-request creation alike. Where the profile sets up a review on the strongest model,
+   the session advises before the final summary, in a line of its own, whether the stream as a whole
+   needs it — or writes one line in the summary saying why it does not.
 
 Template and the rules behind blocks 4 and 6-8: `references/brief-template.md`.
 
@@ -274,6 +279,9 @@ it here would give one requirement two wordings, and two wordings drift.
 - [ ] reporting line present, whole — including the two addresses a subagent's own brief must name?
 - [ ] escalation line explicit — `none` with a reason, or the span with both of its stops?
 - [ ] review line explicit — a gate, or `none` with its reason and what restores the gate?
+- [ ] profile sets up a review on the strongest model on the person's yes — block 7 names the
+      stream's tasks the plan marked, and block 9 the advice on reviewing the whole stream before
+      the summary?
 - [ ] forks are concrete, taken from the plan, not generic advice?
 - [ ] block 8 carries the invitation to object before starting — free even when it overturns an
       instruction — and the verified-apart-from-assumed line for reports?

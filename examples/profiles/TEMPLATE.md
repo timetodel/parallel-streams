@@ -21,7 +21,10 @@ apply — every line here is repeated into every brief, so keep it short.
 <!-- The review gate before the pull request, its depths, and whether a stream may answer `none`.
      Example: default depth high; mechanical work following an existing pattern, lighter; a diff
      that cannot change behaviour (docs, translated strings, a version bump), `none` with the
-     reason. Reviewing everything on principle? Say so here and `none` is never written. -->
+     reason. Reviewing everything on principle? Say so here and `none` is never written.
+     A review on the strongest model that runs only on the person's yes? Name the models, where
+     the session advises, on what signs and in what words; a task's mark in the plan already
+     carries that yes. -->
 
 ## Security review
 <!-- The extra pass and what triggers it.

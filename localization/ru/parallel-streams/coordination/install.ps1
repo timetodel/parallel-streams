@@ -25,8 +25,8 @@
 окажется в диффе целиком. Установщик про это ГОВОРИТ — сверяется с прежним текстом заранее и печатает
 предупреждение ровно тогда, когда переписывает стиль.
 
-Повторный прогон безопасен: он не плодит дублей, а переехавшую папку скилла подхватывает правкой
-уже стоящих записей. Разбор — в комментарии к Set-Guards.
+Повторный прогон безопасен: он не плодит дублей, а переехавшую папку скилла — или запись прежней
+формы — подхватывает правкой уже стоящих записей. Разбор — в комментарии к Set-Guards.
 
 Режимы: Install (по умолчанию), Uninstall (снять), Check (показать состояние).
 #>
@@ -54,13 +54,30 @@ $CoordDir = (Resolve-Path -LiteralPath $PSScriptRoot).Path
 # половины признака не хватает. По одной папке своим сочли бы чужой хук, случайно положенный в папку
 # с таким же именем, — и снятие унесло бы его вместе с нашими. По одному имени файла не узнали бы
 # СВОЮ прежнюю запись после переезда скилла, и рядом со старой (мёртвой) легла бы вторая.
-$OurHookFiles = @(
-    'wave-board-deliver.ps1',
-    'pretooluse-wave-board-nudge.ps1',
-    'pretooluse-claim-before-publish.ps1'
-)
+# Признак держится в каждой форме, какую установщик когда-либо писал, — `$PWD/<путь>`, полный путь и
+# нынешняя, ищущая в двух местах, — и под обоими именами, какие носил файл сторожа, поэтому запись
+# прежней формы переписывается на месте, а не получает вторую рядом.
+$OurHookFiles = [ordered]@{
+    deliver = 'deliver-wave-board.ps1'
+    nudge   = 'nudge-wave-plan-edit.ps1'
+    claim   = 'guard-claim-before-publish.ps1'
+}
+
+# Имена, которые файлы сторожей носили до 1.19.0. Их сменили, когда команда стала искать копию в двух
+# местах: под старыми именами запасной путь находил бы и СТАРУЮ копию в проекте, где началась сессия, —
+# копию, не знающую, что такое «не наш проект», — и запускал бы её из любой папки, в том числе в чужом
+# репозитории. Новое имя находится только в копии, которая знает, где стоит. Старые имена остаются
+# здесь навсегда: записи под ними узнаются и переписываются на новые имена, а снятие их убирает.
+# (В папке скилла под старыми именами лежат переходные пересыльщики, в `hooks/`, — для настроек, ещё
+# не переписанных.)
+$FormerHookFiles = [ordered]@{
+    deliver = 'wave-board-deliver.ps1'
+    nudge   = 'pretooluse-wave-board-nudge.ps1'
+    claim   = 'pretooluse-claim-before-publish.ps1'
+}
 $OurMark = 'coordination/hooks/(' +
-    (($OurHookFiles | ForEach-Object { [regex]::Escape($_) }) -join '|') + ')'
+    ((@($OurHookFiles.Values) + @($FormerHookFiles.Values) |
+        ForEach-Object { [regex]::Escape($_) }) -join '|') + ')'
 
 # Строка, по которой узнаётся наш переходник: чужой файл с тем же именем не трогаем.
 $BridgeMark = 'переехал в папку скилла'
@@ -288,9 +305,12 @@ function Get-HookWhat {
 function Get-HookKind {
     param($Hook)
     $command = Get-SlashPath ([string](Get-Prop $Hook 'command'))
-    if ($command -match 'wave-board-deliver\.ps1') { return 'deliver' }
-    if ($command -match 'pretooluse-wave-board-nudge\.ps1') { return 'nudge' }
-    if ($command -match 'pretooluse-claim-before-publish\.ps1') { return 'claim' }
+    # По любому из двух имён: запись под старым — тот же сторож, её переписывают на месте.
+    foreach ($kind in $OurHookFiles.Keys) {
+        foreach ($name in @($OurHookFiles[$kind], $FormerHookFiles[$kind])) {
+            if ($command -match ('coordination/hooks/' + [regex]::Escape($name))) { return $kind }
+        }
+    }
     return 'other'
 }
 
@@ -588,16 +608,33 @@ function Get-State {
     }
 }
 
+function Get-HookCommand {
+    param([string]$Inside, [string]$Name)
+    # Как записывается путь к сторожу. Внутри проекта — от проекта, никогда не полностью: тогда
+    # настройки переживают переезд папки и одинаково работают в каждом рабочем дереве. Но НЕ от голой
+    # рабочей папки (`$PWD/...`), как писалось раньше: хук запускается в ТЕКУЩЕЙ папке вкладки, и
+    # сессия, шагнувшая в подпапку или в другую папку, своего сторожа уже не находила — хук падал с
+    # неблокирующей ошибкой, а фиксация, которую он должен был остановить, проходила молча.
+    #
+    # Поэтому команда ищет копию дважды: в папке, где стоит вкладка (корень рабочего дерева со своей
+    # копией — запускается она, версия этого самого дерева), иначе в проекте, где началась сессия
+    # (`CLAUDE_PROJECT_DIR`, его среда задаёт каждому хуку). Если запущенная копия оказалась вне
+    # своего проекта, она сама молчит (`Test-ServedFolder` в библиотеке). Имена файлов, записанные
+    # здесь, есть только у копии с этой проверкой (см. `$FormerHookFiles`): в дереве со старой копией
+    # команда не находит ничего и не запускается, как и прежняя форма.
+    #
+    # Снаружи проекта — полным путём: он и так работает из любой папки, другого способа нет.
+    if (-not $Inside) { return "& `"$(Get-SlashPath $CoordDir)/hooks/$Name`"" }
+    $rel = "$Inside/hooks/$Name"
+    return "& `"`$(if (Test-Path -LiteralPath `"`$PWD/$rel`") { `"`$PWD`" } else { `$env:CLAUDE_PROJECT_DIR })/$rel`""
+}
+
 function Get-Wanted {
     param([string]$Root, [string]$Plans)
-    # Как записывается путь к сторожу. Внутри проекта — от рабочей папки (`$PWD`), ровно так же, как
-    # написаны остальные хуки проекта: тогда настройки переживают переезд папки и одинаково работают
-    # в каждом рабочем дереве. Снаружи — полным путём, другого способа нет.
     $inside = Get-InsidePath -Root $Root -Target $CoordDir
-    $base = if ($inside) { '$PWD/' + $inside } else { Get-SlashPath $CoordDir }
-    $deliver = "& `"$base/hooks/wave-board-deliver.ps1`""
-    $nudge = "& `"$base/hooks/pretooluse-wave-board-nudge.ps1`""
-    $beforePublish = "& `"$base/hooks/pretooluse-claim-before-publish.ps1`""
+    $deliver = Get-HookCommand -Inside $inside -Name $OurHookFiles.deliver
+    $nudge = Get-HookCommand -Inside $inside -Name $OurHookFiles.nudge
+    $beforePublish = Get-HookCommand -Inside $inside -Name $OurHookFiles.claim
 
     $wanted = @(
         [pscustomobject]@{
@@ -643,6 +680,13 @@ function Get-Wanted {
     )
     # Сторож-подсказка держится на папке планов: не зная её, он не отличит план волны от любого
     # другого файла и будет молчать всегда. Нет папки в профиле — записи не заводим вовсе.
+    #
+    # Условие привязано к корню файловой системы (`//**/<папка>/**`) и ловит папку на любой глубине.
+    # Без ведущей косой черты среда сверяет его с ТЕКУЩЕЙ папкой вкладки, и из подпапки оно не
+    # срабатывало вовсе; одна косая черта привязала бы его к папке, где началась сессия, и план в любом
+    # другом рабочем дереве прошёл бы мимо. Привязанное к корню, оно ловит и одноимённую папку в чужом
+    # репозитории, и такую же глубже внутри проекта — обе сторож отличает сам: он говорит только о
+    # папке в корне собственного дерева правимого файла, в репозитории, который он обслуживает.
     if (-not $Plans) { return $wanted }
     foreach ($tool in @('Edit', 'Write')) {
         $wanted += [pscustomobject]@{
@@ -653,7 +697,7 @@ function Get-Wanted {
             Command = $nudge
             Timeout = 20
             Status  = ''
-            If      = "$tool($Plans**)"
+            If      = "$tool(//**/$Plans**)"
             Title   = "подсказка при правке плана волны ($tool, папка $Plans)"
         }
     }

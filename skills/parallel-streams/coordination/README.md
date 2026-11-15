@@ -35,8 +35,20 @@ The installer does exactly three things and reports what it did:
 To remove it: `pwsh .claude/skills/parallel-streams/coordination/install.ps1 -Mode Uninstall`. To
 see what's wired in: `-Mode Check`.
 
+The hook commands find the skill from whatever folder the session stands in: the copy of the
+worktree the session stands in first (a copy of 1.19.0 or later — older ones carry other file
+names), otherwise the copy in the project the session started in. The
+plan-edit condition is anchored at the root of the file system, so it matches from any folder too;
+the nudge then speaks only for the plans folder at the root of the edited file's own tree, not for a
+same-named folder deeper inside it. Outside the project they serve — a session that stepped into
+another repository or a plain folder — the hooks say nothing and write nothing there.
+
 Updating the channel means replacing the skill's whole folder: both the settings and the bridge
-script point at the folder, not at its contents.
+script point at the folder, not at its contents. Then run the installer again: when a version writes
+its entries differently, the installer rewrites its own in place and leaves every other entry as it
+was — the changelog says when that is the case. The same run, as always, also appends the channel's
+profile sections if one is missing and rewrites the bridge script if it points elsewhere; the report
+names each of these.
 
 ## What lives where
 
@@ -47,9 +59,10 @@ script point at the folder, not at its contents.
 | `lib/tab-titles.ps1` | Which tab runs a stream: reading the tab's name from its session transcript, and the tab registry |
 | `lib/git-env-clean.ps1` | Strips git environment variables — otherwise the board would end up in someone else's repository |
 | `lib/hook-io.ps1` | Reads the data that reaches a hook |
-| `hooks/wave-board-deliver.ps1` | Delivery: brings a session the records addressed to it at session start and before every human turn; at session start it also says, in one line, when the commit guard stands aside in this clone |
-| `hooks/pretooluse-wave-board-nudge.ps1` | A nudge when the wave plan is edited: an addition to the plan doesn't catch up with a live neighbour |
-| `hooks/pretooluse-claim-before-publish.ps1` | The one refusal in the kit: a commit from a stream that never announced itself is stopped, and handed the line that fixes it; a clone of a contributor's fork is left alone once the profile names its home repository |
+| `hooks/deliver-wave-board.ps1` | Delivery: brings a session the records addressed to it at session start and before every human turn; at session start it also says, in one line, when the commit guard stands aside in this clone |
+| `hooks/nudge-wave-plan-edit.ps1` | A nudge when the wave plan is edited: an addition to the plan doesn't catch up with a live neighbour |
+| `hooks/guard-claim-before-publish.ps1` | The one refusal in the kit: a commit from a stream that never announced itself is stopped, and handed the line that fixes it; a clone of a contributor's fork is left alone once the profile names its home repository |
+| `hooks/wave-board-deliver.ps1`, `hooks/pretooluse-wave-board-nudge.ps1`, `hooks/pretooluse-claim-before-publish.ps1` | Transitional: the three hooks' names before 1.19.0. Each hands its call to the renamed hook, so settings written by an older installer keep working until the installer is run again |
 | `install.ps1` | Install, uninstall, and check wiring |
 | `templates/profile.md` | Profile scaffold for a new project |
 | `templates/profile-coordination.md` | Coordination sections — the ones the installer adds to a profile that already exists |

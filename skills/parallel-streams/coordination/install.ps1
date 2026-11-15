@@ -27,7 +27,8 @@ different style will show up whole in the diff after the first install. The inst
 checks against the prior text beforehand and prints a warning exactly when it rewrites the style.
 
 Running it again is safe: it does not pile up duplicates, and it picks up a skill folder that has
-moved by editing the entries already in place. The reasoning is in the comment on Set-Guards.
+moved — or an entry written in an older form — by editing the entries already in place. The
+reasoning is in the comment on Set-Guards.
 
 Modes: Install (default), Uninstall (remove), Check (show current state).
 #>
@@ -57,13 +58,30 @@ $CoordDir = (Resolve-Path -LiteralPath $PSScriptRoot).Path
 # a foreign hook as ours if it happened to sit in a folder with the same name — and uninstalling would
 # carry it away along with our own. Going by the file name alone would fail to recognize OUR prior
 # entry after the skill moved, and a second (dead) copy would end up sitting next to the old one.
-$OurHookFiles = @(
-    'wave-board-deliver.ps1',
-    'pretooluse-wave-board-nudge.ps1',
-    'pretooluse-claim-before-publish.ps1'
-)
+# The mark holds in every form the installer has ever written — `$PWD/<path>`, a full path, and the
+# current one that looks in two places — and under both names a guard file has carried, so an entry
+# of an older form is rewritten in place, not joined by a second one.
+$OurHookFiles = [ordered]@{
+    deliver = 'deliver-wave-board.ps1'
+    nudge   = 'nudge-wave-plan-edit.ps1'
+    claim   = 'guard-claim-before-publish.ps1'
+}
+
+# The names the guard files carried before 1.19.0. They were renamed when the command began to look
+# for the copy in two places: under the old names the fallback would also find an OLD copy in the
+# project the session started in — one with no notion of "not our project" — and run it from every
+# folder, in someone else's repository too. A new name is found only in a copy that knows where it
+# stands. The old names stay here for good: entries under them are recognized and rewritten to the
+# new names, and uninstall takes them away. (The skill folder keeps transitional forwarders under the
+# old names, in `hooks/`, for settings not yet rewritten.)
+$FormerHookFiles = [ordered]@{
+    deliver = 'wave-board-deliver.ps1'
+    nudge   = 'pretooluse-wave-board-nudge.ps1'
+    claim   = 'pretooluse-claim-before-publish.ps1'
+}
 $OurMark = 'coordination/hooks/(' +
-    (($OurHookFiles | ForEach-Object { [regex]::Escape($_) }) -join '|') + ')'
+    ((@($OurHookFiles.Values) + @($FormerHookFiles.Values) |
+        ForEach-Object { [regex]::Escape($_) }) -join '|') + ')'
 
 # The marker string that identifies our bridge script: a foreign file with the same name is left alone.
 $BridgeMark = 'moved to the skill folder'
@@ -298,9 +316,12 @@ function Get-HookWhat {
 function Get-HookKind {
     param($Hook)
     $command = Get-SlashPath ([string](Get-Prop $Hook 'command'))
-    if ($command -match 'wave-board-deliver\.ps1') { return 'deliver' }
-    if ($command -match 'pretooluse-wave-board-nudge\.ps1') { return 'nudge' }
-    if ($command -match 'pretooluse-claim-before-publish\.ps1') { return 'claim' }
+    # By either name: an entry under the old one is the same guard, to be rewritten in place.
+    foreach ($kind in $OurHookFiles.Keys) {
+        foreach ($name in @($OurHookFiles[$kind], $FormerHookFiles[$kind])) {
+            if ($command -match ('coordination/hooks/' + [regex]::Escape($name))) { return $kind }
+        }
+    }
     return 'other'
 }
 
@@ -602,17 +623,35 @@ function Get-State {
     }
 }
 
+function Get-HookCommand {
+    param([string]$Inside, [string]$Name)
+    # How a guard's path gets written. Inside the project — from the project, never in full: that way
+    # the settings survive the folder moving and work the same way in every worktree. But NOT from the
+    # bare working folder (`$PWD/...`), the way this used to be written: a hook runs in the tab's
+    # CURRENT folder, and a session that stepped into a subfolder or into another folder no longer
+    # found its guard at all — the hook failed with a non-blocking error, and the commit it was there
+    # to stop went through, silently.
+    #
+    # So the command looks for the copy twice: in the folder the tab stands in (the root of a worktree
+    # that carries its own copy — that copy, the version of this very tree, runs), otherwise in the
+    # project the session started in (`CLAUDE_PROJECT_DIR`, set by the host for every hook). Where the
+    # copy that runs then finds itself outside its own project, it stays silent by itself
+    # (`Test-ServedFolder` in the library). Only a copy that has that check carries the file names
+    # written here (see `$FormerHookFiles`): in a tree with an older copy the command finds nothing
+    # and fails to start, as the old form did.
+    #
+    # Outside the project — a full path: it works from any folder anyway, there is no other way.
+    if (-not $Inside) { return "& `"$(Get-SlashPath $CoordDir)/hooks/$Name`"" }
+    $rel = "$Inside/hooks/$Name"
+    return "& `"`$(if (Test-Path -LiteralPath `"`$PWD/$rel`") { `"`$PWD`" } else { `$env:CLAUDE_PROJECT_DIR })/$rel`""
+}
+
 function Get-Wanted {
     param([string]$Root, [string]$Plans)
-    # How the guard's path gets written. Inside the project — relative to the working folder (`$PWD`),
-    # exactly the way the project's other hooks are already written: that way the settings survive the
-    # folder moving and work the same way in every worktree. Outside the project — a full path, there
-    # is no other way.
     $inside = Get-InsidePath -Root $Root -Target $CoordDir
-    $base = if ($inside) { '$PWD/' + $inside } else { Get-SlashPath $CoordDir }
-    $deliver = "& `"$base/hooks/wave-board-deliver.ps1`""
-    $nudge = "& `"$base/hooks/pretooluse-wave-board-nudge.ps1`""
-    $beforePublish = "& `"$base/hooks/pretooluse-claim-before-publish.ps1`""
+    $deliver = Get-HookCommand -Inside $inside -Name $OurHookFiles.deliver
+    $nudge = Get-HookCommand -Inside $inside -Name $OurHookFiles.nudge
+    $beforePublish = Get-HookCommand -Inside $inside -Name $OurHookFiles.claim
 
     $wanted = @(
         [pscustomobject]@{
@@ -660,6 +699,14 @@ function Get-Wanted {
     # The nudge guard depends on the plans folder: without knowing it, it cannot tell a wave plan apart
     # from any other file and would stay silent forever. No folder in the profile — do not add these
     # entries at all.
+    #
+    # The condition is anchored at the root of the file system (`//**/<folder>/**`) and matches the
+    # folder at any depth. Without a leading slash the host matches it against the tab's CURRENT
+    # folder, and from a subfolder it never matched at all; a single slash would anchor it at the
+    # folder the session started in, and a plan in any other worktree would be missed. Anchored at
+    # the root it also matches a same-named folder in someone else's repository, and one deeper inside
+    # the project — the guard tells both apart itself: it speaks only for the folder at the root of
+    # the edited file's own tree, in a repository it serves.
     if (-not $Plans) { return $wanted }
     foreach ($tool in @('Edit', 'Write')) {
         $wanted += [pscustomobject]@{
@@ -670,7 +717,7 @@ function Get-Wanted {
             Command = $nudge
             Timeout = 20
             Status  = ''
-            If      = "$tool($Plans**)"
+            If      = "$tool(//**/$Plans**)"
             Title   = "nudge on wave-plan edits ($tool, folder $Plans)"
         }
     }

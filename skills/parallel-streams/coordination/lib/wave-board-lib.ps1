@@ -5,7 +5,7 @@ and whose session is alive.
 
 A separate file because there are two consumers, and they must understand the board IDENTICALLY:
 the tool (`../wave-board.ps1`, which writes and closes entries) and the delivery hook
-(`../hooks/wave-board-deliver.ps1`, which brings entries into a session). Let their addressing
+(`../hooks/deliver-wave-board.ps1`, which brings entries into a session). Let their addressing
 rules drift apart and a finding silently fails to arrive — and it looks exactly like "the neighbour
 has nothing to say."
 
@@ -759,6 +759,77 @@ function Get-FolderKey {
     # case means nothing; on systems where it does, two twin folders differing only in case would
     # count as one — a deliberate price for a session recognizing itself in its own claim.
     return (([string]$Path) -replace '\\', '/').TrimEnd('/').ToLowerInvariant()
+}
+
+function Get-RepositoryPlace {
+    param([string]$Path)
+    # Where a folder sits, in one git start: `Key` — the shared git directory of its repository, as a
+    # comparison key, one and the same for the main folder and for every worktree of that repository;
+    # `Prefix` — the folder's path inside its own tree (`docs/plans/`, empty at the tree's root).
+    # The key is empty when the folder does not exist, lies in no repository, or git does not answer
+    # — every caller reads empty as "not ours".
+    #
+    # The directory is asked for in its canonical form (`--path-format=absolute`, symlinks resolved):
+    # a worktree names it by its real path, and the main folder reached through a symlinked folder
+    # would otherwise name the same directory differently — and its own worktrees would count as
+    # someone else's. Git older than 2.31 does not know the switch and prints it back as a line of its
+    # own, so the directory is the LAST line and the prefix, asked first, the first; there git names
+    # the directory relative to the folder it was asked from (`.git`, `../../.git`), and a relative
+    # answer is completed from that folder.
+    $none = [pscustomobject]@{ Key = ''; Prefix = '' }
+    if (-not $Path) { return $none }
+    try {
+        if (-not (Test-Path -LiteralPath $Path -PathType Container)) { return $none }
+        $answer = @(& git -C $Path rev-parse --show-prefix --path-format=absolute --git-common-dir 2>$null)
+        if ($LASTEXITCODE -ne 0 -or $answer.Count -eq 0) { return $none }
+        $dir = "$($answer[-1])".Trim()
+        if (-not $dir) { return $none }
+        if (-not [System.IO.Path]::IsPathRooted($dir)) { $dir = Join-Path $Path $dir }
+        return [pscustomobject]@{
+            Key    = Get-FolderKey -Path ([System.IO.Path]::GetFullPath($dir))
+            Prefix = $(if ($answer.Count -ge 2) { "$($answer[0])" -replace '\\', '/' } else { '' })
+        }
+    } catch {
+        return $none
+    }
+}
+
+function Get-SharedGitDirKey {
+    param([string]$Path)
+    # The shared git directory of a folder's repository, as a comparison key (`Get-RepositoryPlace`).
+    return (Get-RepositoryPlace -Path $Path).Key
+}
+
+function Test-ServedFolder {
+    param([string]$Path)
+    # Does this folder belong to the project this copy of the kit serves? Asked by every hook before
+    # it reads or writes anything.
+    #
+    # Why. The hook command finds the kit from any folder the tab stands in: the copy of the tree the
+    # tab stands in, otherwise the copy of the project the session started in. So a hook now RUNS
+    # where it used to fail to start — the tab stepped into an unrelated repository or a plain folder.
+    # There everything it does would be done to someone else: read that repository's board, refuse
+    # its commits, leave a state folder in it. Outside its project a hook does nothing at all.
+    #
+    # Ours is one of two repositories, compared by the shared git directory so that every worktree of
+    # the project counts:
+    #   • the repository holding this copy — the kit installed inside the project; a tab at the root
+    #     of a tree with its own copy runs that copy, as it always did;
+    #   • the repository of the project the session started in (`CLAUDE_PROJECT_DIR`) — the kit
+    #     installed outside the project, where the settings carry a full path to it.
+    # Both, and not "the copy's repository when there is one": a copy installed outside the project
+    # may still lie inside SOME repository — a personal skills folder kept under git, a clone of the
+    # kit's own repository — and taking that one for ours would silence every hook in the very
+    # project the kit was installed into.
+    #
+    # A folder outside any repository is never ours: there is no board and no registry to serve.
+    $here = Get-SharedGitDirKey -Path $Path
+    if (-not $here) { return $false }
+    # `$PSScriptRoot` here is this library's own folder, inside the same copy as the hooks.
+    if ($here -eq (Get-SharedGitDirKey -Path $PSScriptRoot)) { return $true }
+    $project = [string]$env:CLAUDE_PROJECT_DIR
+    if ($project -and $here -eq (Get-SharedGitDirKey -Path $project)) { return $true }
+    return $false
 }
 
 function Get-PathKey {

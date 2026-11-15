@@ -30,7 +30,10 @@ One PR under 400 lines of diff, or a short chain of small PRs inside one branch.
 
 ## Review
 
-<what review runs before the PR and at what depth; can it answer "not needed", and under what condition>
+<what review runs before the PR and at what depth; can it answer "not needed", and under what condition;
+does the project set up a review on the strongest model that runs only on the person's yes — then
+which models, where the session advises, on what signs and in what words, and that a task's mark in
+the plan already carries that yes>
 
 ## Security review
 

@@ -18,6 +18,12 @@ The properties everything rests on, checked by name:
   • OUR entry that became unneeded gets removed, rather than left pointing at a dead spot;
   • a foreign hook from a folder with the same name is never counted as ours — neither at install nor
     at uninstall;
+  • the guards the installer wires are found from ANY folder the tab stands in — a subfolder, a plain
+    folder, someone else's repository — the copy of the tree the tab stands in first; outside the
+    project they serve they say nothing and leave nothing behind;
+  • an entry written in an older form is rewritten in place, and uninstall takes away every form;
+  • the guard files were renamed in 1.19.0, so the command never starts a copy from before that —
+    and settings written before it reach the renamed guards through the files under the old names;
   • only what is missing gets appended to the profile, not one prior byte moves;
   • without a plans folder the nudge guard does not get connected at all: connected, it would stay
     silent forever, and that would look exactly like "nothing to remind about";
@@ -36,8 +42,11 @@ genuinely needs to compare against the live file.
 from __future__ import annotations
 
 import json
+import os
+import re
 import shutil
 import subprocess
+from datetime import datetime
 from pathlib import Path
 
 import pytest
@@ -70,7 +79,7 @@ def _find_repo_root(start: Path) -> Path:
 
 REPO_ROOT = _find_repo_root(Path(__file__).resolve())
 INSTALLER = COORDINATION_DIR / "install.ps1"
-NUDGE = COORDINATION_DIR / "hooks" / "pretooluse-wave-board-nudge.ps1"
+NUDGE = COORDINATION_DIR / "hooks" / "nudge-wave-plan-edit.ps1"
 REAL_SETTINGS = REPO_ROOT / ".claude" / "settings.json"
 REAL_BRIDGE = REPO_ROOT / "scripts" / "wave-board.ps1"
 
@@ -79,16 +88,44 @@ REAL_BRIDGE = REPO_ROOT / "scripts" / "wave-board.ps1"
 # prefix — so COORDINATION_DIR and REPO_ROOT / SKILL_INSIDE are two different paths here.
 SKILL_INSIDE = Path(".claude") / "skills" / "parallel-streams" / "coordination"
 
+
+def wired(script: str) -> str:
+    """The command the installer writes for a guard of a skill INSIDE the project, up to its arguments.
+
+    The copy is looked for twice: in the folder the tab stands in, otherwise in the project the
+    session started in (`CLAUDE_PROJECT_DIR`, which the host sets for every hook). The old form was a
+    bare `$PWD/...`: a hook runs in the tab's CURRENT folder, and from a subfolder it found nothing.
+    """
+    rel = f"{SKILL_INSIDE.as_posix()}/hooks/{script}"
+    return (
+        f'& "$(if (Test-Path -LiteralPath "$PWD/{rel}") {{ "$PWD" }} '
+        f'else {{ $env:CLAUDE_PROJECT_DIR }})/{rel}"'
+    )
+
+
 # The stand-in project's plans folder — DELIBERATELY unlike this repository's own: the channel must
 # take it from the project's profile, not from however it happens to be set up here.
 PLANS = "wave-plans/"
 
-# The channel's guard files. An "our" entry is recognized by them — both in the installer and here.
-OUR_HOOK_FILES = (
-    "wave-board-deliver.ps1",
-    "pretooluse-wave-board-nudge.ps1",
-    "pretooluse-claim-before-publish.ps1",
+# The channel's guard files, the names the installer writes.
+HOOK_FILES = (
+    "deliver-wave-board.ps1",
+    "nudge-wave-plan-edit.ps1",
+    "guard-claim-before-publish.ps1",
 )
+
+# The names the same files carried before 1.19.0, by the current name. Renamed so that the command,
+# which falls back to the project the session started in, can never start an OLD copy there — one
+# that does not know where its project ends. Entries under the old names are still ours: the
+# installer rewrites them to the new names and uninstall takes them away.
+FORMER_NAME = {
+    "deliver-wave-board.ps1": "wave-board-deliver.ps1",
+    "nudge-wave-plan-edit.ps1": "pretooluse-wave-board-nudge.ps1",
+    "guard-claim-before-publish.ps1": "pretooluse-claim-before-publish.ps1",
+}
+
+# An "our" entry is recognized by any of these — both in the installer and here.
+OUR_HOOK_FILES = HOOK_FILES + tuple(FORMER_NAME.values())
 
 pwsh = shutil.which("pwsh")
 needs_pwsh = pytest.mark.skipif(not pwsh, reason="pwsh not found — nothing to run the scripts with")
@@ -190,7 +227,7 @@ def nudge_hooks(data: dict) -> list[dict]:
     return [
         hook
         for hook in ours(data, "PreToolUse")
-        if "pretooluse-wave-board-nudge.ps1" in hook.get("command", "")
+        if "nudge-wave-plan-edit.ps1" in hook.get("command", "")
     ]
 
 
@@ -198,7 +235,7 @@ def claim_hooks(data: dict) -> list[dict]:
     return [
         hook
         for hook in ours(data, "PreToolUse")
-        if "pretooluse-claim-before-publish.ps1" in hook.get("command", "")
+        if "guard-claim-before-publish.ps1" in hook.get("command", "")
     ]
 
 
@@ -354,6 +391,64 @@ def project_with_skill(tmp_path: Path) -> Path:
 
 def installer_in(project: Path) -> Path:
     return project / SKILL_INSIDE / "install.ps1"
+
+
+def hook_env(session_project: Path, scratch: Path) -> dict[str, str]:
+    """The environment the host gives a hook — and nothing of whoever runs the suite.
+
+    `CLAUDE_PROJECT_DIR` names the folder the session started in. The host's own session id and
+    config folder, and the commit guard's valve, are taken out: any of them left in place would make
+    a check pass or fail for a reason that is not in it.
+    """
+    env = dict(os.environ)
+    env["CLAUDE_PROJECT_DIR"] = str(session_project)
+    env["CLAUDE_CONFIG_DIR"] = str(scratch / "claude-config")
+    env.pop("CLAUDE_CODE_SESSION_ID", None)
+    env.pop("PARALLEL_STREAMS_ALLOW_UNCLAIMED", None)
+    return env
+
+
+def run_wired(
+    command: str, cwd: Path, call: dict[str, object], env: dict[str, str]
+) -> subprocess.CompletedProcess[str]:
+    """A command from the settings, run the way the host runs a `shell: powershell` hook.
+
+    PowerShell 7 in the tab's CURRENT folder, the call as JSON on stdin. A script the command fails
+    to find shows up as a non-zero exit and an error on stderr — the failure that used to pass for
+    "the guard had nothing to say".
+    """
+    assert pwsh
+    return subprocess.run(
+        [pwsh, "-NoProfile", "-Command", command],
+        input=json.dumps(call),
+        cwd=str(cwd),
+        env=env,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        timeout=180,
+    )
+
+
+def wired_commands(project: Path) -> dict[str, str]:
+    """The installed guard commands, by what each one does."""
+    data = settings_of(project)
+    found: dict[str, str] = {}
+    for event, what in (("SessionStart", "deliver Start"), ("UserPromptSubmit", "deliver Prompt")):
+        hooks = ours(data, event)
+        assert len(hooks) == 1, f"{event} does not carry exactly one delivery entry: {hooks}"
+        found[what] = hooks[0]["command"]
+    found["claim"] = claim_hooks(data)[0]["command"]
+    found["nudge"] = nudge_hooks(data)[0]["command"]
+    return found
+
+
+def every_entry(root: Path) -> dict[str, bytes | None]:
+    """Everything under a folder, its git directory included: a file with its bytes, a folder as None."""
+    return {
+        path.relative_to(root).as_posix(): (path.read_bytes() if path.is_file() else None)
+        for path in sorted(root.rglob("*"))
+    }
 
 
 @needs_pwsh
@@ -757,7 +852,7 @@ def test_the_section_heading_is_read_regardless_of_case(project: Path) -> None:
     out = install(project)
 
     filters = sorted(hook.get("if", "") for hook in nudge_hooks(settings_of(project)))
-    assert filters == [f"Edit({PLANS}**)", f"Write({PLANS}**)"], (
+    assert filters == [f"Edit(//**/{PLANS}**)", f"Write(//**/{PLANS}**)"], (
         f"a plans section written in a different case was not read: {filters}"
     )
     assert "already describes the channel" in out, (
@@ -808,6 +903,10 @@ def test_the_plans_folder_comes_from_the_profile(project: Path) -> None:
     Both sides are checked: the condition in the settings and the guard itself. Should they drift
     apart, the guard would end up connected to a folder it does not itself consider the plans folder,
     and stay silent.
+
+    The condition is anchored at the root of the file system and matches the folder at any depth:
+    without a leading slash the host matches it against the tab's CURRENT folder, and from a
+    subfolder it never matched at all.
     """
     (project / "waves").mkdir()
     (project / ".parallel-streams.md").write_text(
@@ -817,7 +916,7 @@ def test_the_plans_folder_comes_from_the_profile(project: Path) -> None:
     install(project)
 
     filters = sorted(hook.get("if", "") for hook in nudge_hooks(settings_of(project)))
-    assert filters == ["Edit(waves/**)", "Write(waves/**)"], (
+    assert filters == ["Edit(//**/waves/**)", "Write(//**/waves/**)"], (
         f"the nudge guard's conditions are not about the folder from the profile: {filters}"
     )
 
@@ -825,10 +924,13 @@ def test_the_plans_folder_comes_from_the_profile(project: Path) -> None:
     call = json.dumps(
         {"session_id": "s-plans", "tool_input": {"file_path": "waves/wave7-draft.md"}}
     )
+    # The guard run here lies outside the stand-in project — a kit installed outside, which knows its
+    # project from the folder the session started in.
     done = subprocess.run(
         [pwsh, "-NoProfile", "-File", str(NUDGE)],
         input=call,
         cwd=str(project),
+        env=hook_env(project, project.parent),
         capture_output=True,
         text=True,
         encoding="utf-8",
@@ -862,7 +964,7 @@ def test_the_commit_guard_watches_the_shell_with_no_condition(project: Path) -> 
         entry.get("matcher", "")
         for entry in settings_of(project)["hooks"]["PreToolUse"]
         for hook in entry.get("hooks", [])
-        if "pretooluse-claim-before-publish.ps1" in hook.get("command", "")
+        if "guard-claim-before-publish.ps1" in hook.get("command", "")
     ]
     assert matchers and "Bash" in matchers[0], (
         f"the commit guard is not wired to the shell tool: {matchers}"
@@ -871,26 +973,41 @@ def test_the_commit_guard_watches_the_shell_with_no_condition(project: Path) -> 
 
 @needs_pwsh
 def test_inside_project_paths_are_written_relative(project_with_skill: Path) -> None:
-    """The skill sits inside the project — the path is written from the working folder, not in full.
+    """The skill sits inside the project — the path is written from the project, not in full.
 
     A full path would tie the settings to one machine and one location of the project folder: in a
     neighbouring session's worktree, such a guard would point at someone else's copy of the skill.
+    And the copy is looked for in the tab's folder first, then in the project the session started in
+    — a bare `$PWD/...` found nothing once the tab stepped into a subfolder.
     """
     install_in(project_with_skill)
 
     data = settings_of(project_with_skill)
-    wired = (
-        ours(data, "SessionStart")
-        + ours(data, "UserPromptSubmit")
-        + nudge_hooks(data)
-        + claim_hooks(data)
-    )
-    assert len(wired) == 5, f"the number of connected entries is wrong: {len(wired)}"
-    for hook in wired:
-        command = hook["command"]
-        assert command.startswith('& "$PWD/.claude/skills/parallel-streams/coordination/hooks/'), (
-            f"the path is not written from the project's working folder: {command}"
+    commands = sorted(
+        hook["command"]
+        for hook in (
+            ours(data, "SessionStart")
+            + ours(data, "UserPromptSubmit")
+            + nudge_hooks(data)
+            + claim_hooks(data)
         )
+    )
+    expected = sorted(
+        [
+            wired("deliver-wave-board.ps1") + " -Stage Start",
+            wired("deliver-wave-board.ps1") + " -Stage Prompt",
+            wired("nudge-wave-plan-edit.ps1"),
+            wired("nudge-wave-plan-edit.ps1"),
+            wired("guard-claim-before-publish.ps1"),
+        ]
+    )
+    assert commands == expected, (
+        f"the guards are not written in the form that finds them from any folder: {commands}"
+    )
+    machine = (str(project_with_skill), project_with_skill.as_posix())
+    assert not any(path in command for path in machine for command in commands), (
+        "a path specific to this one machine leaked into the settings"
+    )
 
     bridge = (project_with_skill / "scripts" / "wave-board.ps1").read_text(encoding="utf-8")
     assert "$PSScriptRoot" in bridge, (
@@ -899,6 +1016,479 @@ def test_inside_project_paths_are_written_relative(project_with_skill: Path) -> 
     assert str(project_with_skill) not in bridge, (
         "a path specific to this one machine leaked into the bridge script"
     )
+
+
+@needs_pwsh
+def test_the_wired_guards_work_from_a_subfolder_of_the_project(
+    project_with_skill: Path, tmp_path: Path
+) -> None:
+    """A session that stepped into a subfolder keeps every guard.
+
+    The command used to be written from the bare working folder, and a hook runs in the tab's
+    CURRENT folder: from a subfolder the script was not found, the hook failed with a non-blocking
+    error, and the commit it was there to stop went through — with nothing to tell that apart from
+    "nothing to say". So each guard is checked by what it does from there, not by having started.
+    """
+    install_in(project_with_skill)
+    commands = wired_commands(project_with_skill)
+    deep = project_with_skill / "src" / "deep"
+    deep.mkdir(parents=True)
+    env = hook_env(project_with_skill, tmp_path)
+
+    commit = {
+        "session_id": "s-deep",
+        "cwd": str(deep),
+        "tool_input": {"command": 'git commit -m "the work"'},
+    }
+    refused = run_wired(commands["claim"], deep, commit, env)
+    assert refused.returncode == 0 and not refused.stderr.strip(), (
+        f"the commit guard was not found from a subfolder: {refused.stderr}"
+    )
+    assert "never announced itself" in refused.stdout, (
+        f"from a subfolder the commit of an unannounced stream went through: {refused.stdout!r}"
+    )
+
+    for stage in ("Start", "Prompt"):
+        call = {"session_id": f"s-deep-{stage.lower()}", "cwd": str(deep)}
+        delivered = run_wired(commands[f"deliver {stage}"], deep, call, env)
+        assert delivered.returncode == 0 and not delivered.stderr.strip(), (
+            f"the delivery guard ({stage}) was not found from a subfolder: {delivered.stderr}"
+        )
+    beacon = project_with_skill / ".claude" / ".cache" / "wave-board-alive.txt"
+    assert beacon.exists() and "s-deep-prompt" in beacon.read_text(encoding="utf-8"), (
+        "the delivery guard did not mark its tree alive from a subfolder — neighbours would take a "
+        "live session for an abandoned one"
+    )
+    assert not (deep / ".claude").exists(), "the guards left a state folder in the subfolder"
+
+    plan = project_with_skill / PLANS / "2026-01-01-wave3-draft.md"
+    edit = {"session_id": "s-deep-plan", "tool_input": {"file_path": str(plan)}}
+    nudged = run_wired(commands["nudge"], deep, edit, env)
+    assert nudged.returncode == 0 and not nudged.stderr.strip(), nudged.stderr
+    assert "The wave plan is being edited" in nudged.stdout, (
+        f"the nudge stayed silent on a plan edit made from a subfolder: {nudged.stdout!r}"
+    )
+
+
+@needs_pwsh
+@pytest.mark.parametrize("place", ["a plain folder", "a neighbouring repository"])
+def test_outside_the_project_the_wired_guards_are_found_and_say_nothing(
+    project_with_skill: Path, tmp_path: Path, place: str
+) -> None:
+    """The tab stepped out of the project: the guards are found — and do nothing there.
+
+    Found, because the command falls back to the project the session started in. Silent, because
+    what lies outside is someone else's: delivering its board, refusing its commits or leaving a
+    state folder in it would be the kit acting on a project it was never installed into. Silence is
+    ambiguous, so the nudge is asked about a plan of the project itself from the same folder — and
+    must speak.
+    """
+    install_in(project_with_skill)
+    commands = wired_commands(project_with_skill)
+    if place == "a plain folder":
+        outside = tmp_path / "plain-folder"
+        outside.mkdir()
+    else:
+        outside = new_repo(tmp_path, "neighbour")
+    env = hook_env(project_with_skill, tmp_path)
+    before = every_entry(outside)
+
+    calls: dict[str, dict[str, object]] = {
+        "deliver Start": {"session_id": "s-out-start", "cwd": str(outside)},
+        "deliver Prompt": {"session_id": "s-out-prompt", "cwd": str(outside)},
+        "claim": {
+            "session_id": "s-out-claim",
+            "cwd": str(outside),
+            "tool_input": {"command": 'git commit -m "their work"'},
+        },
+    }
+    for what, call in calls.items():
+        done = run_wired(commands[what], outside, call, env)
+        assert done.returncode == 0 and not done.stderr.strip(), (
+            f"{what}: the guard was not found from {place}: {done.stderr}"
+        )
+        assert done.stdout.strip() == "", f"{what}: the guard spoke up in {place}: {done.stdout!r}"
+
+    plan = project_with_skill / PLANS / "2026-01-01-wave3-draft.md"
+    edit = {"session_id": "s-out-plan", "tool_input": {"file_path": str(plan)}}
+    nudged = run_wired(commands["nudge"], outside, edit, env)
+    assert nudged.returncode == 0 and not nudged.stderr.strip(), nudged.stderr
+    assert "The wave plan is being edited" in nudged.stdout, (
+        f"from {place} the nudge stayed silent on a plan of its own project: {nudged.stdout!r}"
+    )
+
+    assert every_entry(outside) == before, (
+        f"the guards wrote into {place} — a folder of no project they serve"
+    )
+
+
+@needs_pwsh
+def test_the_tree_the_tab_stands_in_runs_its_own_copy(
+    project_with_skill: Path, tmp_path: Path
+) -> None:
+    """A tab at the root of a tree that carries its own copy runs THAT copy, not the session's.
+
+    Worktrees of one project carry their own copies of the kit, and the versions differ until every
+    tree is updated: a tree's guards must be the version of that tree. Only where the tab's folder
+    has no copy does the command fall back to the project the session started in.
+    """
+    install_in(project_with_skill)
+    commands = wired_commands(project_with_skill)
+    tree = tmp_path / "other-tree"
+    copy = tree / SKILL_INSIDE / "hooks"
+    copy.mkdir(parents=True)
+    for name in HOOK_FILES:
+        (copy / name).write_text(
+            "[Console]::OutputEncoding = [System.Text.Encoding]::UTF8\n"
+            '"the copy of the other tree, called with [$args]"\n',
+            encoding="utf-8",
+        )
+    env = hook_env(project_with_skill, tmp_path)
+
+    for what, command in commands.items():
+        done = run_wired(command, tree, {"session_id": "s-tree"}, env)
+        assert done.returncode == 0, done.stderr
+        assert "the copy of the other tree" in done.stdout, (
+            f"{what}: from the root of a tree with its own copy, another copy ran: {done.stdout!r}"
+        )
+    started = run_wired(commands["deliver Start"], tree, {"session_id": "s-tree"}, env)
+    assert "called with [-Stage Start]" in started.stdout, (
+        f"the tree's own copy did not get the guard's arguments: {started.stdout!r}"
+    )
+
+
+# The forms of our command that older versions of the kit wrote, each under the guards' names
+# before 1.19.0: from the working folder (up to 1.18.1), in full (a skill installed outside the
+# project), and the form that looks in two places, as it stood before the files were renamed.
+OLDER_FORMS = ("from the working folder", "a full path", "looked for in two places")
+
+
+def older_form(command: str, form: str, former: Path) -> str:
+    """Our command as an older version of the kit wrote it — under the guard's name before 1.19.0."""
+    found = re.match(r'.*/hooks/([\w.-]+\.ps1)"(.*)$', command)
+    assert found, f"not one of our guard commands: {command}"
+    name, tail = found.groups()
+    old = FORMER_NAME[name]
+    if form == "looked for in two places":
+        return wired(old) + tail
+    base = (
+        f"$PWD/{SKILL_INSIDE.as_posix()}"
+        if form == "from the working folder"
+        else former.as_posix()
+    )
+    return f'& "{base}/hooks/{old}"{tail}'
+
+
+@needs_pwsh
+@pytest.mark.parametrize("form", OLDER_FORMS)
+def test_an_entry_of_an_older_form_is_rewritten_in_place(
+    project_with_skill: Path, tmp_path: Path, form: str
+) -> None:
+    """Our entries in an older form are rewritten where they stand — and nothing else moves a byte.
+
+    Every project the kit was installed into carries an old form until the installer runs again:
+    from the working folder (the form that found nothing from a subfolder), a full path (a skill
+    once installed outside the project), or the two-place form under the old file names. Not
+    recognized as ours, any one of them would get a second entry beside it, and the guard would speak
+    twice. The older file is made from the current one by replacing only our commands and
+    conditions, so every foreign byte in it is the current file's own — and the run must give back
+    exactly the current file, under the new names.
+    """
+    write_settings(project_with_skill, FOREIGN_SETTINGS)
+    install_in(project_with_skill)
+    current = settings_path(project_with_skill).read_bytes()
+
+    older = current.decode("utf-8")
+    data = json.loads(older)
+    former = tmp_path / "former-place" / "coordination"
+    ours_now = [
+        hook
+        for event in ("SessionStart", "UserPromptSubmit", "PreToolUse")
+        for hook in ours(data, event)
+    ]
+    assert len(ours_now) == 5, f"the install did not wire all five entries: {ours_now}"
+    # The two nudge entries share one command: each value is replaced once, everywhere it stands.
+    replaced: dict[str, str] = {}
+    # The two-place form was written with the root-anchored conditions; the older ones were not.
+    anchored = form == "looked for in two places"
+    for hook in ours_now:
+        replaced[hook["command"]] = older_form(hook["command"], form, former)
+        if hook.get("if") and not anchored:
+            replaced[hook["if"]] = hook["if"].replace("//**/", "")
+    for new, old in replaced.items():
+        new_text = json.dumps(new, ensure_ascii=False)
+        assert new_text in older, f"our value is not where the check expects it: {new_text}"
+        older = older.replace(new_text, json.dumps(old, ensure_ascii=False))
+    assert not any(name in older for name in HOOK_FILES), (
+        "the older file still names a guard by its current name — this case checks nothing"
+    )
+    assert anchored or ("CLAUDE_PROJECT_DIR" not in older and "//**/" not in older), (
+        "the older file still carries the current form — this case checks nothing"
+    )
+    settings_path(project_with_skill).write_bytes(older.encode("utf-8"))
+
+    out = install_in(project_with_skill)
+
+    assert settings_path(project_with_skill).read_bytes() == current, (
+        "the run did not give back exactly what a fresh install writes: our entries were not "
+        "rewritten in place (a second copy beside the old one, or the old one left), or a foreign byte moved"
+    )
+    assert "fixed up" in out, "rewriting our entries in place happened silently"
+
+
+@needs_pwsh
+def test_uninstall_takes_away_our_entries_in_every_form(
+    project_with_skill: Path, tmp_path: Path
+) -> None:
+    """Uninstalling removes our entries whatever form they were written in — and only them.
+
+    A settings file that lived through several versions of the kit can carry the same guard in more
+    than one form, under either of its names. Left behind, an old form would go on failing from
+    every subfolder long after the human was told the channel is gone.
+    """
+    write_settings(project_with_skill, FOREIGN_HOOK)
+    before = settings_path(project_with_skill).read_bytes()
+    install_in(project_with_skill)
+
+    data = settings_of(project_with_skill)
+    former = tmp_path / "former-place" / "coordination"
+    for event in ("SessionStart", "UserPromptSubmit", "PreToolUse"):
+        for entry in data["hooks"][event]:
+            older = [
+                {**hook, "command": older_form(hook["command"], form, former)}
+                for hook in entry["hooks"]
+                if is_ours(hook)
+                for form in OLDER_FORMS
+            ]
+            for hook in older:
+                if hook.get("if") and "CLAUDE_PROJECT_DIR" not in hook["command"]:
+                    hook["if"] = hook["if"].replace("//**/", "")
+            entry["hooks"].extend(older)
+    write_settings(project_with_skill, data)
+    assert len(ours(settings_of(project_with_skill), "SessionStart")) == 1 + len(OLDER_FORMS)
+
+    install_in(project_with_skill, "-Mode", "Uninstall")
+
+    assert settings_path(project_with_skill).read_bytes() == before, (
+        "after uninstalling, the settings differ from the original — an entry of ours in some form "
+        "was left behind, or something foreign was rewritten"
+    )
+
+
+def place_older_copy(folder: Path) -> None:
+    """A copy of the kit from before 1.19.0 at the consumer path of `folder`: the old names only.
+
+    Stand-ins, not the old scripts: a stand-in that runs prints a mark and leaves a file where it
+    ran, so it cannot run unnoticed. A copy of 1.18.1 or older has no file under the new names.
+    """
+    hooks = folder / SKILL_INSIDE / "hooks"
+    hooks.mkdir(parents=True)
+    for name in FORMER_NAME.values():
+        (hooks / name).write_text(
+            "[Console]::OutputEncoding = [System.Text.Encoding]::UTF8\n"
+            "Set-Content -LiteralPath (Join-Path $PWD.Path 'older-copy-ran.txt') -Value 'ran'\n"
+            '"the older copy ran"\n',
+            encoding="utf-8",
+        )
+
+
+def calls_from(folder: Path, session: str, plan: Path) -> dict[str, dict[str, object]]:
+    """One call per installed command, made from `folder`: the commit guard is given a commit."""
+    return {
+        "deliver Start": {"session_id": f"{session}-start", "cwd": str(folder)},
+        "deliver Prompt": {"session_id": f"{session}-prompt", "cwd": str(folder)},
+        "claim": {
+            "session_id": f"{session}-claim",
+            "cwd": str(folder),
+            "tool_input": {"command": 'git commit -m "the work"'},
+        },
+        "nudge": {"session_id": f"{session}-plan", "tool_input": {"file_path": str(plan)}},
+    }
+
+
+@needs_pwsh
+@pytest.mark.parametrize("place", ["a neighbouring repository", "a plain folder"])
+def test_the_command_never_starts_an_older_copy_in_the_session_project(
+    project_with_skill: Path, tmp_path: Path, place: str
+) -> None:
+    """The project the session started in still holds a copy from before 1.19.0: none of it runs.
+
+    The command falls back to that project when the tab's folder has no copy. Under the old file
+    names it would find the OLD copy there and run it from any folder — and an old copy has no notion
+    of "not our project": in someone else's repository it delivered that repository's board, left
+    its state there and refused its commits. Under the new names it finds nothing, and the hook fails
+    to start, exactly as the old command did from such a folder.
+    """
+    install_in(project_with_skill)
+    commands = wired_commands(project_with_skill)
+    still_old = new_repo(tmp_path, "still-old")
+    place_older_copy(still_old)
+    if place == "a plain folder":
+        outside = tmp_path / "plain-folder"
+        outside.mkdir()
+    else:
+        outside = new_repo(tmp_path, "neighbour")
+    env = hook_env(still_old, tmp_path)
+    watched = {folder: every_entry(folder) for folder in (outside, still_old)}
+
+    calls = calls_from(outside, "s-old", still_old / PLANS / "2026-01-01-wave3-draft.md")
+    for what, command in commands.items():
+        done = run_wired(command, outside, calls[what], env)
+        assert "the older copy ran" not in done.stdout, (
+            f"{what}: from {place} the command started the old copy of the session's project"
+        )
+        assert done.stdout.strip() == "", (
+            f"{what}: something answered from {place}: {done.stdout!r}"
+        )
+    for folder, before in watched.items():
+        assert every_entry(folder) == before, f"a hook wrote into {folder.name}"
+
+
+@needs_pwsh
+def test_a_worktree_with_an_older_copy_is_served_by_the_session_project(
+    project_with_skill: Path, tmp_path: Path
+) -> None:
+    """A tab at the root of a worktree whose copy is from before 1.19.0 runs the project's new copy.
+
+    That worktree has no file under the new names, so the command falls back to the project the
+    session started in — and that copy counts the worktree as its own, because every worktree of the
+    project shares its git directory. The worktree is guarded as before, by the new code, until it
+    takes the new copy itself. Each guard is checked by what it does there.
+    """
+    install_in(project_with_skill)
+    commands = wired_commands(project_with_skill)
+    # A worktree sees only what is committed: the profile has to be there for the nudge to read it.
+    git(project_with_skill, "add", ".parallel-streams.md")
+    git(
+        project_with_skill,
+        "-c",
+        "user.email=test@example.com",
+        "-c",
+        "user.name=probe",
+        "commit",
+        "-m",
+        "profile",
+    )
+    tree = project_with_skill / ".claude" / "worktrees" / "older-tree"
+    git(project_with_skill, "worktree", "add", "-b", "feat/older-tree", str(tree))
+    place_older_copy(tree)
+    env = hook_env(project_with_skill, tmp_path)
+
+    calls = calls_from(tree, "s-tree", tree / PLANS / "2026-01-01-wave3-draft.md")
+    answers = {
+        what: run_wired(command, tree, calls[what], env) for what, command in commands.items()
+    }
+    for what, done in answers.items():
+        assert done.returncode == 0 and not done.stderr.strip(), f"{what}: {done.stderr}"
+        assert "the older copy ran" not in done.stdout, (
+            f"{what}: the worktree's old copy ran instead of the project's"
+        )
+    assert "never announced itself" in answers["claim"].stdout, (
+        f"the commit of an unannounced stream went through in a worktree: {answers['claim'].stdout!r}"
+    )
+    beacon = tree / ".claude" / ".cache" / "wave-board-alive.txt"
+    assert beacon.exists() and "s-tree-prompt" in beacon.read_text(encoding="utf-8"), (
+        "delivery did not mark the worktree alive — the project's copy did not count it as its own"
+    )
+    assert "The wave plan is being edited" in answers["nudge"].stdout, (
+        f"the nudge stayed silent on the worktree's own plan: {answers['nudge'].stdout!r}"
+    )
+    assert not (tree / "older-copy-ran.txt").exists(), "the worktree's old copy ran"
+
+
+# TRANSITIONAL: checks the forwarders under the old names; remove together with them.
+@needs_pwsh
+def test_settings_of_an_older_version_reach_the_renamed_guards(
+    project_with_skill: Path, tmp_path: Path
+) -> None:
+    """Settings written before 1.19.0 still reach every guard, through the files under the old names.
+
+    Before 1.19.0 an update was "copy the new folder over the old one", with no installer run, so
+    such a project still calls the guards by their old names, from the working folder. Each guard is
+    checked by what it does: delivery delivers (it got `-Stage`), the commit guard refuses (it got the
+    call on standard input, and its answer and exit code came back), the nudge speaks.
+    """
+    install_in(project_with_skill)
+    commands = {
+        what: older_form(command, "from the working folder", tmp_path)
+        for what, command in wired_commands(project_with_skill).items()
+    }
+    board = project_with_skill / ".git" / "wave-board" / "board.jsonl"
+    board.parent.mkdir(parents=True)
+    record = {
+        "id": "aaaa0001",
+        "at": datetime.now().isoformat(timespec="seconds"),
+        "wave": "",
+        "to": "*",
+        "title": "a finding for everyone",
+        "where": "",
+        "from": "wave9-author",
+    }
+    board.write_text(json.dumps(record, ensure_ascii=False) + "\n", encoding="utf-8")
+    env = hook_env(project_with_skill, tmp_path)
+
+    plan = project_with_skill / PLANS / "2026-01-01-wave3-draft.md"
+    calls = calls_from(project_with_skill, "s-older", plan)
+    answers = {
+        what: run_wired(command, project_with_skill, calls[what], env)
+        for what, command in commands.items()
+    }
+    for what, done in answers.items():
+        assert done.returncode == 0 and not done.stderr.strip(), (
+            f"{what}: the old name did not reach the guard: {done.stderr}"
+        )
+    assert "a finding for everyone" in answers["deliver Start"].stdout, (
+        f"delivery under the old name delivered nothing: {answers['deliver Start'].stdout!r}"
+    )
+    assert "never announced itself" in answers["claim"].stdout, (
+        f"the commit guard under the old name let an unannounced commit through: {answers['claim'].stdout!r}"
+    )
+    assert "The wave plan is being edited" in answers["nudge"].stdout, (
+        f"the nudge under the old name stayed silent: {answers['nudge'].stdout!r}"
+    )
+
+
+# TRANSITIONAL: checks the forwarders under the old names; remove together with them.
+@needs_pwsh
+@pytest.mark.parametrize("name", HOOK_FILES)
+def test_a_forwarder_hands_over_the_whole_call(tmp_path: Path, name: str) -> None:
+    """The file under a guard's old name hands the WHOLE call to the renamed guard.
+
+    Arguments, standard input, output and exit code. Checked against a stand-in for the guard,
+    because the real guards always end with zero: a code the guard exits with comes back as it is,
+    and a guard that ends without `exit` after a failed git call still comes back as a success — the
+    code git left behind is not the guard's answer.
+    """
+    assert pwsh
+    hooks = tmp_path / "hooks"
+    hooks.mkdir()
+    forwarder = hooks / FORMER_NAME[name]
+    shutil.copy2(COORDINATION_DIR / "hooks" / FORMER_NAME[name], forwarder)
+    (hooks / name).write_text(
+        "param([string]$Stage)\n"
+        "$reader = [System.IO.StreamReader]::new(\n"
+        "    [Console]::OpenStandardInput(), [System.Text.UTF8Encoding]::new($false))\n"
+        "$call = $reader.ReadToEnd() | ConvertFrom-Json\n"
+        '"stage [$Stage], rest [$args], call [$($call.probe)]"\n'
+        "& git --no-such-switch 2>$null\n"
+        "if ($null -ne $call.code) { exit $call.code }\n",
+        encoding="utf-8",
+    )
+    for code, expected in ((3, 3), (None, 0)):
+        done = subprocess.run(
+            [pwsh, "-NoProfile", "-File", str(forwarder), "-Stage", "Start", "more"],
+            input=json.dumps({"probe": "through", "code": code}),
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            timeout=120,
+        )
+        assert "stage [Start], rest [more], call [through]" in done.stdout, (
+            f"the forwarder lost the arguments or the input: {done.stdout!r} {done.stderr!r}"
+        )
+        assert done.returncode == expected, (
+            f"the guard ended with {code!r}, the forwarder with {done.returncode}"
+        )
 
 
 @needs_pwsh
@@ -990,7 +1580,7 @@ def test_check_only_reports(project: Path) -> None:
 
     out = install(project, "-Mode", "Check")
     assert snapshot(project) == before, "showing status changed the project's files"
-    assert "SessionStart" in out and "wave-board-deliver.ps1" in out, (
+    assert "SessionStart" in out and "deliver-wave-board.ps1" in out, (
         "the status view does not say which guards are connected or where they point"
     )
     assert PLANS in out, "the status view does not name the wave-plan folder"
