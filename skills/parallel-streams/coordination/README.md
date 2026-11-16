@@ -43,6 +43,18 @@ the nudge then speaks only for the plans folder at the root of the edited file's
 same-named folder deeper inside it. Outside the project they serve — a session that stepped into
 another repository or a plain folder — the hooks say nothing and write nothing there.
 
+The commit guard runs before every shell call, and most of those publish nothing. By default it is
+wired in PowerShell, which starts on every one of them. `-HookShell Bash` puts a check made of bash
+built-ins in front of it instead: PowerShell starts only when the call mentions `git` with `commit`
+or `push`, an alias with them, or `gh pr create` (or holds a JSON `\uXXXX` escape or the letter
+`İ`); every other call ends there, in about a tenth of a second instead of half a second or more.
+**The bash form requires that every Windows teammate has Git Bash that Claude Code can find:**
+without it, that teammate's commit guard does not run, and they see a hook error on every shell
+call. The choice is the team's, and the project's settings keep it: a later run of the installer
+without `-HookShell`, on any machine, keeps the form the entry already has, and
+`-HookShell PowerShell` switches back. Either way the entry carries `"onFailure": "continue"`: a
+guard that fails or runs out of time never counts as a refusal of the call.
+
 Updating the channel means replacing the skill's whole folder: both the settings and the bridge
 script point at the folder, not at its contents. Then run the installer again: when a version writes
 its entries differently, the installer rewrites its own in place and leaves every other entry as it
