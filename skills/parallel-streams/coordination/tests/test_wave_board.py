@@ -8397,33 +8397,35 @@ def test_a_word_in_a_flag_or_an_argument_is_not_a_publishing_command(
     )
 
 
+# Every shape of a publishing command the guard must refuse. The installer's tests take the same list:
+# the bash check the installer puts in front of the guard has to hand every one of them to the guard.
+PUBLISHING_SHAPES = [
+    "git commit -m x",
+    "git commit -F message.txt",
+    'git -C "D:\\path with spaces" commit -F x',
+    "git -C D:/some/repo commit -m x",
+    'git -c user.name="A B" commit -m x',
+    "git --no-pager commit -m x",
+    "git --git-dir=.git --work-tree . commit -m x",
+    "git --git-dir .git push",
+    "git push",
+    "git push -u origin feat/next",
+    "git add a && git commit -m b",
+    "cd x; git push",
+    "git add .\ngit commit -m x",
+    "git status | git push",
+    'pwsh -c "git commit -m x"',
+    "bash -c 'git push'",
+    "sudo git push",
+    '"C:\\Program Files\\Git\\bin\\git.exe" commit -m x',
+    "git commit-tree abc123",
+    "git -c alias.ship=push ship",
+    "gh pr create --fill",
+]
+
+
 @needs_pwsh
-@pytest.mark.parametrize(
-    "command",
-    [
-        "git commit -m x",
-        "git commit -F message.txt",
-        'git -C "D:\\path with spaces" commit -F x',
-        "git -C D:/some/repo commit -m x",
-        'git -c user.name="A B" commit -m x',
-        "git --no-pager commit -m x",
-        "git --git-dir=.git --work-tree . commit -m x",
-        "git --git-dir .git push",
-        "git push",
-        "git push -u origin feat/next",
-        "git add a && git commit -m b",
-        "cd x; git push",
-        "git add .\ngit commit -m x",
-        "git status | git push",
-        'pwsh -c "git commit -m x"',
-        "bash -c 'git push'",
-        "sudo git push",
-        '"C:\\Program Files\\Git\\bin\\git.exe" commit -m x',
-        "git commit-tree abc123",
-        "git -c alias.ship=push ship",
-        "gh pr create --fill",
-    ],
-)
+@pytest.mark.parametrize("command", PUBLISHING_SHAPES)
 def test_every_shape_of_a_publishing_command_is_still_refused(tmp_path: Path, command: str) -> None:
     """Tightening the match to the subcommand lets none of the old catches through.
 

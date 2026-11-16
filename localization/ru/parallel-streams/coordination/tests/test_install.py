@@ -45,6 +45,10 @@ from pathlib import Path
 
 import pytest
 
+# Все виды публикующей команды, на которые обязан отказать сам сторож: проверка на bash перед ним
+# обязана отдать ему каждую.
+from test_wave_board import PUBLISHING_SHAPES
+
 # Комплект лежит не только здесь: ещё в пяти копиях, и у каждой своя приставка пути до папки
 # coordination (например, в публичном репозитории — localization/ru/parallel-streams/coordination
 # и skills/parallel-streams/coordination, вовсе без .claude/skills/ этого проекта). Прежний счёт
@@ -118,6 +122,37 @@ OUR_HOOK_FILES = HOOK_FILES + tuple(FORMER_NAME.values())
 
 pwsh = shutil.which("pwsh")
 needs_pwsh = pytest.mark.skipif(not pwsh, reason="pwsh не найден — запускать скрипты нечем")
+
+
+def _host_bash() -> str:
+    """bash, которым среда запустит хук с `"shell": "bash"`, — найденный так, как ищет его среда.
+
+    На Windows это Git Bash, в собственном порядке среды: CLAUDE_CODE_GIT_BASH_PATH, две папки Git по
+    умолчанию, затем двумя уровнями выше `git` из PATH. `bash` из PATH там не годится: это может быть
+    запускатель подсистемы Linux, а не то, чем запускает среда.
+    """
+    if os.name != "nt":
+        return shutil.which("bash") or ""
+    named = os.environ.get("CLAUDE_CODE_GIT_BASH_PATH", "")
+    candidates = []
+    if named and Path(named).name.lower() in ("bash.exe", "sh.exe", "bash", "sh"):
+        candidates.append(Path(named))
+    candidates += [
+        Path(r"C:\Program Files\Git\bin\bash.exe"),
+        Path(r"C:\Program Files (x86)\Git\bin\bash.exe"),
+    ]
+    git_exe = shutil.which("git")
+    if git_exe:
+        candidates.append(Path(git_exe).parent.parent / "bin" / "bash.exe")
+    return next((str(path) for path in candidates if path.exists()), "")
+
+
+bash = _host_bash()
+needs_bash = pytest.mark.skipif(not bash, reason="нет bash, которым среда запустила бы хуки")
+
+# Обе формы записи сторожа фиксации — для проверок, которые обязаны держаться в каждой. Называются
+# установщику явно: его собственный выбор зависит от машины, а проверка зависеть не должна.
+CLAIM_SHELLS = ["PowerShell", pytest.param("Bash", marks=needs_bash)]
 
 
 def git(repo: Path, *args: str) -> None:
@@ -396,18 +431,30 @@ def hook_env(session_project: Path, scratch: Path) -> dict[str, str]:
 
 
 def run_wired(
-    command: str, cwd: Path, call: dict[str, object], env: dict[str, str]
+    hook: dict[str, object], cwd: Path, call: dict[str, object] | str, env: dict[str, str]
 ) -> subprocess.CompletedProcess[str]:
-    """Команда из настроек — так, как среда запускает хук с `shell: powershell`.
+    """Запись из настроек — так, как её запускает среда: собственной оболочкой записи.
 
-    PowerShell 7 в ТЕКУЩЕЙ папке вкладки, вызов — JSON на стандартный ввод. Скрипт, которого команда
-    не нашла, виден как ненулевой код и ошибка в потоке ошибок — тот самый сбой, что раньше сходил за
-    «сторожу нечего сказать».
+    В ТЕКУЩЕЙ папке вкладки, вызов — JSON на стандартный ввод. `shell: powershell` — PowerShell 7 с
+    командой. `shell: bash` — `bash -c` с командой, как её запускает среда (на Windows — Git Bash
+    среды, его папка первой в PATH, а `CLAUDE_PROJECT_DIR` — с прямыми косыми, как их отдаёт среда).
+    Скрипт, которого команда не нашла, виден как ненулевой код и ошибка в потоке ошибок — тот самый
+    сбой, что раньше сходил за «сторожу нечего сказать».
     """
-    assert pwsh
+    command = str(hook["command"])
+    if hook.get("shell") == "bash":
+        assert bash
+        env = dict(env)
+        if os.name == "nt":
+            env["PATH"] = str(Path(bash).parent) + os.pathsep + env.get("PATH", "")
+            env["CLAUDE_PROJECT_DIR"] = env.get("CLAUDE_PROJECT_DIR", "").replace("\\", "/")
+        argv = [bash, "-c", command]
+    else:
+        assert pwsh
+        argv = [pwsh, "-NoProfile", "-Command", command]
     return subprocess.run(
-        [pwsh, "-NoProfile", "-Command", command],
-        input=json.dumps(call),
+        argv,
+        input=call if isinstance(call, str) else json.dumps(call),
         cwd=str(cwd),
         env=env,
         capture_output=True,
@@ -417,17 +464,58 @@ def run_wired(
     )
 
 
-def wired_commands(project: Path) -> dict[str, str]:
-    """Подключённые команды сторожей — по тому, что каждая делает."""
+def wired_commands(project: Path) -> dict[str, dict[str, object]]:
+    """Подключённые записи сторожей — по тому, что каждая делает."""
     data = settings_of(project)
-    found: dict[str, str] = {}
+    found: dict[str, dict[str, object]] = {}
     for event, what in (("SessionStart", "deliver Start"), ("UserPromptSubmit", "deliver Prompt")):
         hooks = ours(data, event)
         assert len(hooks) == 1, f"на {event} не ровно одна запись доставки: {hooks}"
-        found[what] = hooks[0]["command"]
-    found["claim"] = claim_hooks(data)[0]["command"]
-    found["nudge"] = nudge_hooks(data)[0]["command"]
+        found[what] = hooks[0]
+    found["claim"] = claim_hooks(data)[0]
+    found["nudge"] = nudge_hooks(data)[0]
     return found
+
+
+def pwsh_stand_in(folder: Path, env: dict[str, str]) -> tuple[dict[str, str], Path]:
+    """`pwsh`, который отмечает свой запуск: первый в PATH, он записывает, что пришло на его ввод.
+
+    Проверка на bash перед сторожем фиксации существует ради того, чтобы PowerShell НЕ запускался
+    на вызовах, которые ничего не публикуют, — поэтому видно должно быть именно то, запустился ли
+    он. Возвращает окружение для запуска записи и файл, который появляется только при запуске
+    PowerShell.
+    """
+    shim = folder / "shim"
+    shim.mkdir(parents=True, exist_ok=True)
+    started = folder / "pwsh-started.txt"
+    stand_in = shim / "pwsh"
+    stand_in.write_text(
+        f"#!/bin/sh\ncat > '{started.as_posix()}'\n", encoding="utf-8", newline="\n"
+    )
+    stand_in.chmod(0o755)
+    env = dict(env)
+    env["PATH"] = str(shim) + os.pathsep + env.get("PATH", "")
+    return env, started
+
+
+def front_call(command: str) -> str:
+    """Вызов оболочки, как его пишет среда для хука: сжатый JSON, вокруг — собственные пути машины.
+
+    Пути нарочно виндовые — с сегментом со строчной буквы после обратной косой (`C:\\Users\\user`):
+    этот случай проверка не должна принять за экранированную букву.
+    """
+    return json.dumps(
+        {
+            "session_id": "s-front",
+            "transcript_path": "C:\\Users\\user\\.claude\\projects\\p\\s-front.jsonl",
+            "cwd": "D:\\work\\project",
+            "hook_event_name": "PreToolUse",
+            "tool_name": "Bash",
+            "tool_input": {"command": command, "description": "a call"},
+        },
+        ensure_ascii=False,
+        separators=(",", ":"),
+    )
 
 
 def every_entry(root: Path) -> dict[str, bytes | None]:
@@ -482,17 +570,18 @@ def test_fresh_install_gives_a_working_channel(project: Path) -> None:
 
 
 @needs_pwsh
-def test_second_run_changes_nothing(project: Path) -> None:
+@pytest.mark.parametrize("shell", CLAIM_SHELLS)
+def test_second_run_changes_nothing(project: Path, shell: str) -> None:
     """Повторный прогон обязан быть пустым действием — байт в байт.
 
     Установку зовут заново после каждого обновления скилла. Клади она вторую такую же запись —
     сторож заговорил бы дважды, а находка пришла бы во вкладку дублем.
     """
     with_plans(project)
-    install(project)
+    install(project, "-HookShell", shell)
     before = snapshot(project)
 
-    out = install(project)
+    out = install(project, "-HookShell", shell)
     assert snapshot(project) == before, (
         "повторная установка изменила файлы, хотя менять было нечего"
     )
@@ -906,41 +995,218 @@ def test_the_commit_guard_watches_the_shell_with_no_condition(project: Path) -> 
     )
 
 
+def _plain_sh() -> str:
+    """POSIX sh, который не bash, — чем среда может запустить запись формы bash вне Windows."""
+    for name in ("dash", "sh"):
+        found = shutil.which(name)
+        if not found:
+            continue
+        probe = subprocess.run(
+            [found, "-c", 'printf %s "$BASH_VERSION"'], capture_output=True, text=True
+        )
+        if probe.returncode == 0 and not probe.stdout:
+            return found
+    return ""
+
+
+plain_sh = _plain_sh()
+
+
 @needs_pwsh
-def test_inside_project_paths_are_written_relative(project_with_skill: Path) -> None:
+def test_the_commit_guard_runs_where_the_host_runs_hooks(project: Path) -> None:
+    """Предоставленный сам себе, установщик пишет форму bash ровно там, где среда запустит её в Git Bash.
+
+    На Windows среда запускает хук с `"shell": "bash"` тем Git Bash, который находит, а где не
+    находит — ничем; вне Windows — оболочкой на выбор системы. Поэтому форма bash пишется на Windows,
+    где найдены Git Bash среды и `pwsh`, а везде остальное — форма PowerShell. В обеих формах запись
+    говорит среде, что сбой сторожа — не отказ.
+    """
+    out = install(project)
+
+    wired = claim_hooks(settings_of(project))
+    assert len(wired) == 1, wired
+    expected = "bash" if os.name == "nt" and bash and shutil.which("pwsh") else "powershell"
+    assert wired[0]["shell"] == expected, f"установщик выбрал {wired[0]['shell']}: {out}"
+    assert wired[0].get("onFailure") == "continue", (
+        f"сбой сторожа на машине без Git Bash считался бы отказом: {wired[0]}"
+    )
+    runs = "через Git Bash" if expected == "bash" else "через PowerShell"
+    assert f"сторож фиксации — {runs}" in out, out
+
+
+@needs_pwsh
+@needs_bash
+def test_the_bash_front_hands_every_publishing_command_to_the_guard(
+    project_with_skill: Path, tmp_path: Path
+) -> None:
+    """Каждая команда, на которую сторож отказывает как на публикующую, доходит до сторожа — байт в байт.
+
+    Проверка на bash перед сторожем сличает с сырым вызовом НАДМНОЖЕСТВО образца сторожа: каждый вид,
+    на который обязан отказать сам сторож по его собственным проверкам, проходит здесь через
+    установленную запись, с подставным PowerShell, который отмечает свой запуск и то, что ему отдали.
+    Так же проходит команда, чьи буквы записаны экранированием JSON (`\\u0067it`), сами по себе
+    невидимые проверке, и вызов, который проверка не смогла дочитать.
+    """
+    install_in(project_with_skill, "-HookShell", "Bash")
+    claim = claim_hooks(settings_of(project_with_skill))[0]
+    env, started = pwsh_stand_in(tmp_path, hook_env(project_with_skill, tmp_path))
+
+    calls = {command: front_call(command) for command in PUBLISHING_SHAPES}
+    calls["GIT COMMIT -m x"] = front_call("GIT COMMIT -m x")
+    calls["экранировано: \\u0067it push"] = front_call("git push").replace(
+        "git push", "\\u0067it push"
+    )
+    missed = []
+    for what, call in calls.items():
+        if started.exists():
+            started.unlink()
+        done = run_wired(claim, project_with_skill, call, env)
+        handed = started.read_text(encoding="utf-8") if started.exists() else None
+        if done.returncode != 0 or handed != call + "\n":
+            missed.append(f"{what!r}: код {done.returncode}, отдано {handed!r}, {done.stderr!r}")
+    assert not missed, "проверка на bash не отдала сторожу:\n" + "\n".join(missed)
+
+    # Нулевой байт останавливает `read`, не дав дочитать: прочитанное уходит сторожу без суждения.
+    if started.exists():
+        started.unlink()
+    cut = run_wired(claim, project_with_skill, front_call("echo hi") + "\0rest", env)
+    assert cut.returncode == 0 and started.exists(), (
+        f"недочитанный вызов отпущен мимо сторожа: {cut.stderr!r}"
+    )
+
+
+@needs_pwsh
+@needs_bash
+def test_the_bash_front_starts_no_powershell_for_other_calls(
+    project_with_skill: Path, tmp_path: Path
+) -> None:
+    """Вызов, который ничего не публикует, кончается в bash: PowerShell не запускается, слов нет.
+
+    Ради этого форма bash и есть — запуск PowerShell и есть вся цена сторожа на вызовах, до которых
+    ему нет дела. Пути вокруг команды — собственные пути машины с Windows, среди них `C:\\Users\\user`:
+    обратная косая и строчная `u`, которые не экранирование JSON.
+    """
+    install_in(project_with_skill, "-HookShell", "Bash")
+    claim = claim_hooks(settings_of(project_with_skill))[0]
+    env, started = pwsh_stand_in(tmp_path, hook_env(project_with_skill, tmp_path))
+
+    for command in (
+        "echo hi",
+        "git status",
+        "git log --oneline -5",
+        "ls C:\\Users\\user\\work",
+        "gh pr view 3",
+        "pwsh -NoProfile -File build.ps1",
+    ):
+        done = run_wired(claim, project_with_skill, front_call(command), env)
+        assert not started.exists(), f"PowerShell запустился на {command!r}"
+        assert done.returncode == 0, f"{command!r}: {done.stderr!r}"
+        assert done.stdout == "" and done.stderr == "", (
+            f"{command!r}: {done.stdout!r} {done.stderr!r}"
+        )
+
+
+@needs_pwsh
+@pytest.mark.skipif(not plain_sh, reason="нет POSIX sh, кроме bash, чтобы запустить запись")
+def test_outside_bash_the_front_hands_every_call_to_the_guard(
+    project_with_skill: Path, tmp_path: Path
+) -> None:
+    """Запущенная не в bash, форма bash отдаёт сторожу КАЖДЫЙ вызов, нетронутым.
+
+    Настройки проекта общие, и вне Windows среда может запустить запись в sh. Проверке нужен bash;
+    без него запись откатывается к тому, что всегда делала форма PowerShell, — сторож видит каждый
+    вызов, — и ничего не читает заранее, так что вызов доходит до него целым.
+    """
+    install_in(project_with_skill, "-HookShell", "Bash")
+    claim = claim_hooks(settings_of(project_with_skill))[0]
+    env, started = pwsh_stand_in(tmp_path, hook_env(project_with_skill, tmp_path))
+
+    call = front_call("echo hi")
+    done = subprocess.run(
+        [plain_sh, "-c", str(claim["command"])],
+        input=call,
+        cwd=str(project_with_skill),
+        env=env,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        timeout=60,
+    )
+    assert done.returncode == 0, done.stderr
+    assert started.exists() and started.read_text(encoding="utf-8") == call, (
+        "вне bash вызов не дошёл до сторожа целым"
+    )
+
+
+@needs_pwsh
+@needs_bash
+def test_switching_the_form_rewrites_the_one_entry(project: Path) -> None:
+    """Прогнанный с другой формой, установщик переписывает запись сторожа фиксации там, где она стоит.
+
+    Форма выбирается по машине (или называется явно), а настройки общие: один и тот же файл ходит из
+    одной формы в другую и обратно. Каждый раз он обязан выйти ровно таким, каким его пишет свежая
+    установка этой формы, — одна запись, ничего от другой формы, каждый чужой байт на месте.
+    """
+    second = new_repo(project.parent, "второй")
+    for folder in (project, second):
+        write_settings(folder, FOREIGN_SETTINGS)
+    install(second, "-HookShell", "Bash")
+    fresh_bash = settings_path(second).read_bytes()
+    install(project, "-HookShell", "PowerShell")
+    fresh_powershell = settings_path(project).read_bytes()
+    assert fresh_bash != fresh_powershell
+
+    out = install(project, "-HookShell", "Bash")
+    assert settings_path(project).read_bytes() == fresh_bash, (
+        "переход на форму bash оставил не тот файл, что пишет её свежая установка"
+    )
+    assert "поправлена запись" in out, "переписка записи на месте прошла молча"
+    install(project, "-HookShell", "PowerShell")
+    assert settings_path(project).read_bytes() == fresh_powershell, (
+        "возврат к форме PowerShell оставил не тот файл, что пишет её свежая установка"
+    )
+
+
+@needs_pwsh
+@pytest.mark.parametrize("shell", CLAIM_SHELLS)
+def test_inside_project_paths_are_written_relative(project_with_skill: Path, shell: str) -> None:
     """Скилл лежит внутри проекта — путь пишется от проекта, а не полным.
 
     Полный путь привязал бы настройки к одной машине и к одному месту папки проекта: в рабочем
     дереве соседней вкладки такой сторож ведёт в чужую копию скилла. А копия ищется сначала в папке
     вкладки, потом в проекте, где началась сессия, — голый `$PWD/...` не находил ничего, стоило
-    вкладке шагнуть в подпапку.
+    вкладке шагнуть в подпапку. Форма bash сторожа фиксации ищет в тех же двух местах.
     """
-    install_in(project_with_skill)
+    install_in(project_with_skill, "-HookShell", shell)
 
     data = settings_of(project_with_skill)
-    commands = sorted(
-        hook["command"]
-        for hook in (
-            ours(data, "SessionStart")
-            + ours(data, "UserPromptSubmit")
-            + nudge_hooks(data)
-            + claim_hooks(data)
-        )
+    entries = (
+        ours(data, "SessionStart")
+        + ours(data, "UserPromptSubmit")
+        + nudge_hooks(data)
+        + claim_hooks(data)
     )
+    claim = claim_hooks(data)[0]
+    commands = sorted(hook["command"] for hook in entries if hook is not claim)
     expected = sorted(
         [
             wired("deliver-wave-board.ps1") + " -Stage Start",
             wired("deliver-wave-board.ps1") + " -Stage Prompt",
             wired("nudge-wave-plan-edit.ps1"),
             wired("nudge-wave-plan-edit.ps1"),
-            wired("guard-claim-before-publish.ps1"),
         ]
     )
     assert commands == expected, (
         f"сторожа записаны не в той форме, что находит их из любой папки: {commands}"
     )
+    rel = f"{SKILL_INSIDE.as_posix()}/hooks/guard-claim-before-publish.ps1"
+    if shell == "PowerShell":
+        assert claim["command"] == wired("guard-claim-before-publish.ps1"), claim
+    else:
+        assert claim["command"].startswith(f'if [ -f "{rel}" ]; then g="{rel}"; '), claim
+        assert f'elif [ -f "$CLAUDE_PROJECT_DIR/{rel}" ]' in claim["command"], claim
     machine = (str(project_with_skill), project_with_skill.as_posix())
-    assert not any(path in command for path in machine for command in commands), (
+    assert not any(path in hook["command"] for path in machine for hook in entries), (
         "в настройки попал путь этой конкретной машины"
     )
 
@@ -950,8 +1216,9 @@ def test_inside_project_paths_are_written_relative(project_with_skill: Path) -> 
 
 
 @needs_pwsh
+@pytest.mark.parametrize("shell", CLAIM_SHELLS)
 def test_the_wired_guards_work_from_a_subfolder_of_the_project(
-    project_with_skill: Path, tmp_path: Path
+    project_with_skill: Path, tmp_path: Path, shell: str
 ) -> None:
     """Сессия, шагнувшая в подпапку, сохраняет всех своих сторожей.
 
@@ -960,7 +1227,7 @@ def test_the_wired_guards_work_from_a_subfolder_of_the_project(
     остановить, проходила — и отличить это от «сказать нечего» было нечем. Поэтому каждый сторож
     проверяется по тому, что он оттуда делает, а не по тому, что запустился.
     """
-    install_in(project_with_skill)
+    install_in(project_with_skill, "-HookShell", shell)
     commands = wired_commands(project_with_skill)
     deep = project_with_skill / "src" / "deep"
     deep.mkdir(parents=True)
@@ -1002,9 +1269,10 @@ def test_the_wired_guards_work_from_a_subfolder_of_the_project(
 
 
 @needs_pwsh
+@pytest.mark.parametrize("shell", CLAIM_SHELLS)
 @pytest.mark.parametrize("place", ["простая папка", "соседний репозиторий"])
 def test_outside_the_project_the_wired_guards_are_found_and_say_nothing(
-    project_with_skill: Path, tmp_path: Path, place: str
+    project_with_skill: Path, tmp_path: Path, place: str, shell: str
 ) -> None:
     """Вкладка вышла из проекта: сторожа находятся — и ничего там не делают.
 
@@ -1013,7 +1281,7 @@ def test_outside_the_project_the_wired_guards_are_found_and_say_nothing(
     значило бы, что набор хозяйничает в проекте, куда его не ставили. Молчание двусмысленно, поэтому
     подсказку из той же папки спрашивают о плане самого проекта — и она обязана заговорить.
     """
-    install_in(project_with_skill)
+    install_in(project_with_skill, "-HookShell", shell)
     commands = wired_commands(project_with_skill)
     if place == "простая папка":
         outside = tmp_path / "простая-папка"
@@ -1055,16 +1323,18 @@ def test_outside_the_project_the_wired_guards_are_found_and_say_nothing(
 
 
 @needs_pwsh
+@pytest.mark.parametrize("shell", CLAIM_SHELLS)
 def test_the_tree_the_tab_stands_in_runs_its_own_copy(
-    project_with_skill: Path, tmp_path: Path
+    project_with_skill: Path, tmp_path: Path, shell: str
 ) -> None:
     """Вкладка в корне дерева со своей копией запускает ЕЁ, а не копию проекта сессии.
 
     Рабочие деревья одного проекта несут свои копии набора, и версии их расходятся, пока не обновлены
     все деревья: сторожа дерева обязаны быть версии этого дерева. Только если в папке вкладки копии
-    нет, команда отступает к проекту, где началась сессия.
+    нет, команда отступает к проекту, где началась сессия. Вызов несёт фиксацию: форма bash сторожа
+    фиксации запускает сторожа только на публикующей команде.
     """
-    install_in(project_with_skill)
+    install_in(project_with_skill, "-HookShell", shell)
     commands = wired_commands(project_with_skill)
     tree = tmp_path / "другое-дерево"
     copy = tree / SKILL_INSIDE / "hooks"
@@ -1076,9 +1346,10 @@ def test_the_tree_the_tab_stands_in_runs_its_own_copy(
             encoding="utf-8",
         )
     env = hook_env(project_with_skill, tmp_path)
+    call = {"session_id": "s-tree", "tool_input": {"command": "git commit -m x"}}
 
     for what, command in commands.items():
-        done = run_wired(command, tree, {"session_id": "s-tree"}, env)
+        done = run_wired(command, tree, call, env)
         assert done.returncode == 0, done.stderr
         assert "копия другого дерева" in done.stdout, (
             f"{what}: из корня дерева со своей копией запустилась чужая: {done.stdout!r}"
@@ -1096,10 +1367,16 @@ OLDER_FORMS = ("от рабочей папки", "полный путь", "ищ�
 
 
 def older_form(command: str, form: str, former: Path) -> str:
-    """Наша команда так, как её писала прежняя версия набора, — под именем сторожа до 1.19.0."""
-    found = re.match(r'.*/hooks/([\w.-]+\.ps1)"(.*)$', command)
+    """Наша команда так, как её писала прежняя версия набора, — под именем сторожа до 1.19.0.
+
+    Прежние версии писали каждую запись в PowerShell; нынешняя команда может быть формой bash
+    сторожа фиксации, поэтому имя сторожа и стадия берутся из неё, а не её вид.
+    """
+    found = re.search(r"/hooks/([\w.-]+\.ps1)", command)
     assert found, f"это не команда нашего сторожа: {command}"
-    name, tail = found.groups()
+    name = found.group(1)
+    stage = re.search(r" -Stage \w+$", command)
+    tail = stage.group(0) if stage else ""
     old = FORMER_NAME[name]
     if form == "ищет в двух местах":
         return wired(old) + tail
@@ -1108,9 +1385,10 @@ def older_form(command: str, form: str, former: Path) -> str:
 
 
 @needs_pwsh
+@pytest.mark.parametrize("shell", CLAIM_SHELLS)
 @pytest.mark.parametrize("form", OLDER_FORMS)
 def test_an_entry_of_an_older_form_is_rewritten_in_place(
-    project_with_skill: Path, tmp_path: Path, form: str
+    project_with_skill: Path, tmp_path: Path, form: str, shell: str
 ) -> None:
     """Наши записи прежней формы переписываются там, где стоят, — и больше ни байт не двигается.
 
@@ -1119,10 +1397,12 @@ def test_an_entry_of_an_older_form_is_rewritten_in_place(
     проекта) или форму, ищущую в двух местах, под старыми именами файлов. Не узнай установщик любую
     из них своей — рядом легла бы вторая запись, и сторож заговорил бы дважды. Прежний файл делается
     из нынешнего заменой только наших команд и условий, так что каждый чужой байт в нём — байт
-    нынешнего файла, и прогон обязан вернуть ровно нынешний, под новыми именами.
+    нынешнего файла, и прогон обязан вернуть ровно нынешний, под новыми именами. Прежние версии
+    писали сторожа фиксации в PowerShell и без `onFailure`, так что прогон обязан ещё и сменить его
+    оболочку и дописать поле.
     """
     write_settings(project_with_skill, FOREIGN_SETTINGS)
-    install_in(project_with_skill)
+    install_in(project_with_skill, "-HookShell", shell)
     current = settings_path(project_with_skill).read_bytes()
 
     older = current.decode("utf-8")
@@ -1152,9 +1432,14 @@ def test_an_entry_of_an_older_form_is_rewritten_in_place(
     assert anchored or ("CLAUDE_PROJECT_DIR" not in older and "//**/" not in older), (
         "в прежнем файле осталась нынешняя форма — этот случай ничего не проверяет"
     )
+    older, dropped = re.subn(r',\r?\n\s*"onFailure": "continue"', "", older)
+    assert dropped == 1, "запись сторожа фиксации не кончается на `onFailure: continue`"
+    if shell == "Bash":
+        older, switched = re.subn(r'"shell": "bash"', '"shell": "powershell"', older)
+        assert switched == 1, "запись сторожа фиксации — не единственная в bash"
     settings_path(project_with_skill).write_bytes(older.encode("utf-8"))
 
-    out = install_in(project_with_skill)
+    out = install_in(project_with_skill, "-HookShell", shell)
 
     assert settings_path(project_with_skill).read_bytes() == current, (
         "прогон вернул не ровно то, что пишет свежая установка: наши записи не переписаны на месте "
@@ -1164,8 +1449,9 @@ def test_an_entry_of_an_older_form_is_rewritten_in_place(
 
 
 @needs_pwsh
+@pytest.mark.parametrize("shell", CLAIM_SHELLS)
 def test_uninstall_takes_away_our_entries_in_every_form(
-    project_with_skill: Path, tmp_path: Path
+    project_with_skill: Path, tmp_path: Path, shell: str
 ) -> None:
     """Снятие убирает наши записи, в какой бы форме они ни были написаны, — и только их.
 
@@ -1175,7 +1461,7 @@ def test_uninstall_takes_away_our_entries_in_every_form(
     """
     write_settings(project_with_skill, FOREIGN_HOOK)
     before = settings_path(project_with_skill).read_bytes()
-    install_in(project_with_skill)
+    install_in(project_with_skill, "-HookShell", shell)
 
     data = settings_of(project_with_skill)
     former = tmp_path / "прежнее-место" / "coordination"
@@ -1234,9 +1520,10 @@ def calls_from(folder: Path, session: str, plan: Path) -> dict[str, dict[str, ob
 
 
 @needs_pwsh
+@pytest.mark.parametrize("shell", CLAIM_SHELLS)
 @pytest.mark.parametrize("place", ["соседний репозиторий", "простая папка"])
 def test_the_command_never_starts_an_older_copy_in_the_session_project(
-    project_with_skill: Path, tmp_path: Path, place: str
+    project_with_skill: Path, tmp_path: Path, place: str, shell: str
 ) -> None:
     """В проекте, где началась сессия, всё ещё копия до 1.19.0: ничего из неё не запускается.
 
@@ -1246,7 +1533,7 @@ def test_the_command_never_starts_an_older_copy_in_the_session_project(
     состояние и отказывала в его фиксациях. Под новыми именами команда не находит ничего, и хук не
     запускается — ровно как прежняя команда из такой папки.
     """
-    install_in(project_with_skill)
+    install_in(project_with_skill, "-HookShell", shell)
     commands = wired_commands(project_with_skill)
     still_old = new_repo(tmp_path, "всё-ещё-старый")
     place_older_copy(still_old)
@@ -1270,8 +1557,9 @@ def test_the_command_never_starts_an_older_copy_in_the_session_project(
 
 
 @needs_pwsh
+@pytest.mark.parametrize("shell", CLAIM_SHELLS)
 def test_a_worktree_with_an_older_copy_is_served_by_the_session_project(
-    project_with_skill: Path, tmp_path: Path
+    project_with_skill: Path, tmp_path: Path, shell: str
 ) -> None:
     """Вкладка в корне рабочего дерева с копией до 1.19.0 запускает новую копию проекта.
 
@@ -1280,7 +1568,7 @@ def test_a_worktree_with_an_older_copy_is_served_by_the_session_project(
     каталог git. Дерево охраняется как прежде, новым кодом, пока само не возьмёт новую копию. Каждый
     сторож проверяется по тому, что он там делает.
     """
-    install_in(project_with_skill)
+    install_in(project_with_skill, "-HookShell", shell)
     commands = wired_commands(project_with_skill)
     # Рабочее дерево видит только зафиксированное: профиль должен быть там, чтобы подсказка его
     # прочла.
@@ -1337,8 +1625,11 @@ def test_settings_of_an_older_version_reach_the_renamed_guards(
     """
     install_in(project_with_skill)
     commands = {
-        what: older_form(command, "от рабочей папки", tmp_path)
-        for what, command in wired_commands(project_with_skill).items()
+        what: {
+            "shell": "powershell",
+            "command": older_form(hook["command"], "от рабочей папки", tmp_path),
+        }
+        for what, hook in wired_commands(project_with_skill).items()
     }
     board = project_with_skill / ".git" / "wave-board" / "board.jsonl"
     board.parent.mkdir(parents=True)

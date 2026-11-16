@@ -51,6 +51,10 @@ from pathlib import Path
 
 import pytest
 
+# Every shape the guard's own tests require it to refuse: the bash check in front of the guard must
+# hand each of them to it.
+from test_wave_board import PUBLISHING_SHAPES
+
 # The bundle does not live only here: it also exists in five other copies, and each has its own
 # prefix to the coordination folder's path (for example, in the public repository —
 # localization/ru/parallel-streams/coordination and skills/parallel-streams/coordination, with no
@@ -129,6 +133,37 @@ OUR_HOOK_FILES = HOOK_FILES + tuple(FORMER_NAME.values())
 
 pwsh = shutil.which("pwsh")
 needs_pwsh = pytest.mark.skipif(not pwsh, reason="pwsh not found — nothing to run the scripts with")
+
+
+def _host_bash() -> str:
+    """The bash a host runs a `"shell": "bash"` hook with, looked for the way the host looks for it.
+
+    On Windows that is Git Bash, in the host's own order: CLAUDE_CODE_GIT_BASH_PATH, the two default
+    Git folders, then two levels above `git` from PATH. `bash` from PATH would not do there: it can be
+    the launcher of another Linux subsystem, which is not what the host runs.
+    """
+    if os.name != "nt":
+        return shutil.which("bash") or ""
+    named = os.environ.get("CLAUDE_CODE_GIT_BASH_PATH", "")
+    candidates = []
+    if named and Path(named).name.lower() in ("bash.exe", "sh.exe", "bash", "sh"):
+        candidates.append(Path(named))
+    candidates += [
+        Path(r"C:\Program Files\Git\bin\bash.exe"),
+        Path(r"C:\Program Files (x86)\Git\bin\bash.exe"),
+    ]
+    git_exe = shutil.which("git")
+    if git_exe:
+        candidates.append(Path(git_exe).parent.parent / "bin" / "bash.exe")
+    return next((str(path) for path in candidates if path.exists()), "")
+
+
+bash = _host_bash()
+needs_bash = pytest.mark.skipif(not bash, reason="no bash the host would run hooks with")
+
+# Both forms of the commit guard's entry, for the checks that must hold in each. Named to the
+# installer explicitly: its own choice depends on the machine, and a check must not.
+CLAIM_SHELLS = ["PowerShell", pytest.param("Bash", marks=needs_bash)]
 
 
 def git(repo: Path, *args: str) -> None:
@@ -409,18 +444,30 @@ def hook_env(session_project: Path, scratch: Path) -> dict[str, str]:
 
 
 def run_wired(
-    command: str, cwd: Path, call: dict[str, object], env: dict[str, str]
+    hook: dict[str, object], cwd: Path, call: dict[str, object] | str, env: dict[str, str]
 ) -> subprocess.CompletedProcess[str]:
-    """A command from the settings, run the way the host runs a `shell: powershell` hook.
+    """An entry from the settings, run the way the host runs it — by the entry's own shell.
 
-    PowerShell 7 in the tab's CURRENT folder, the call as JSON on stdin. A script the command fails
-    to find shows up as a non-zero exit and an error on stderr — the failure that used to pass for
-    "the guard had nothing to say".
+    In the tab's CURRENT folder, the call as JSON on stdin. `shell: powershell` — PowerShell 7 with
+    the command. `shell: bash` — `bash -c` with the command, as the host spawns it (on Windows the
+    host's Git Bash, with its folder first on PATH and `CLAUDE_PROJECT_DIR` in forward slashes, the
+    way the host hands them over). A script the command fails to find shows up as a non-zero exit and
+    an error on stderr — the failure that used to pass for "the guard had nothing to say".
     """
-    assert pwsh
+    command = str(hook["command"])
+    if hook.get("shell") == "bash":
+        assert bash
+        env = dict(env)
+        if os.name == "nt":
+            env["PATH"] = str(Path(bash).parent) + os.pathsep + env.get("PATH", "")
+            env["CLAUDE_PROJECT_DIR"] = env.get("CLAUDE_PROJECT_DIR", "").replace("\\", "/")
+        argv = [bash, "-c", command]
+    else:
+        assert pwsh
+        argv = [pwsh, "-NoProfile", "-Command", command]
     return subprocess.run(
-        [pwsh, "-NoProfile", "-Command", command],
-        input=json.dumps(call),
+        argv,
+        input=call if isinstance(call, str) else json.dumps(call),
         cwd=str(cwd),
         env=env,
         capture_output=True,
@@ -430,17 +477,57 @@ def run_wired(
     )
 
 
-def wired_commands(project: Path) -> dict[str, str]:
-    """The installed guard commands, by what each one does."""
+def wired_commands(project: Path) -> dict[str, dict[str, object]]:
+    """The installed guard entries, by what each one does."""
     data = settings_of(project)
-    found: dict[str, str] = {}
+    found: dict[str, dict[str, object]] = {}
     for event, what in (("SessionStart", "deliver Start"), ("UserPromptSubmit", "deliver Prompt")):
         hooks = ours(data, event)
         assert len(hooks) == 1, f"{event} does not carry exactly one delivery entry: {hooks}"
-        found[what] = hooks[0]["command"]
-    found["claim"] = claim_hooks(data)[0]["command"]
-    found["nudge"] = nudge_hooks(data)[0]["command"]
+        found[what] = hooks[0]
+    found["claim"] = claim_hooks(data)[0]
+    found["nudge"] = nudge_hooks(data)[0]
     return found
+
+
+def pwsh_stand_in(folder: Path, env: dict[str, str]) -> tuple[dict[str, str], Path]:
+    """A `pwsh` that records its own start: first on PATH, it writes down what came on its stdin.
+
+    The bash check in front of the commit guard exists so that PowerShell does NOT start on calls
+    that publish nothing — so whether it started is exactly what has to be seen. Returns the
+    environment to run the entry in and the file that appears only when PowerShell was started.
+    """
+    shim = folder / "shim"
+    shim.mkdir(parents=True, exist_ok=True)
+    started = folder / "pwsh-started.txt"
+    stand_in = shim / "pwsh"
+    stand_in.write_text(
+        f"#!/bin/sh\ncat > '{started.as_posix()}'\n", encoding="utf-8", newline="\n"
+    )
+    stand_in.chmod(0o755)
+    env = dict(env)
+    env["PATH"] = str(shim) + os.pathsep + env.get("PATH", "")
+    return env, started
+
+
+def front_call(command: str) -> str:
+    """A shell call as the host writes it for a hook: compact JSON, the machine's own paths around it.
+
+    The paths are Windows paths on purpose — with a lowercase segment after a backslash
+    (`C:\\Users\\user`), the case the check must not take for an escaped letter.
+    """
+    return json.dumps(
+        {
+            "session_id": "s-front",
+            "transcript_path": "C:\\Users\\user\\.claude\\projects\\p\\s-front.jsonl",
+            "cwd": "D:\\work\\project",
+            "hook_event_name": "PreToolUse",
+            "tool_name": "Bash",
+            "tool_input": {"command": command, "description": "a call"},
+        },
+        ensure_ascii=False,
+        separators=(",", ":"),
+    )
 
 
 def every_entry(root: Path) -> dict[str, bytes | None]:
@@ -503,17 +590,18 @@ def test_fresh_install_gives_a_working_channel(project: Path) -> None:
 
 
 @needs_pwsh
-def test_second_run_changes_nothing(project: Path) -> None:
+@pytest.mark.parametrize("shell", CLAIM_SHELLS)
+def test_second_run_changes_nothing(project: Path, shell: str) -> None:
     """Running it again must be a no-op — byte for byte.
 
     The install is called again after every skill update. Were it to place a second, identical entry,
     a guard would speak twice, and a finding would arrive at the session as a duplicate.
     """
     with_plans(project)
-    install(project)
+    install(project, "-HookShell", shell)
     before = snapshot(project)
 
-    out = install(project)
+    out = install(project, "-HookShell", shell)
     assert snapshot(project) == before, (
         "installing again changed the files, though there was nothing to change"
     )
@@ -971,41 +1059,217 @@ def test_the_commit_guard_watches_the_shell_with_no_condition(project: Path) -> 
     )
 
 
+def _plain_sh() -> str:
+    """A POSIX sh that is not bash — what a host may run a bash-form entry with outside Windows."""
+    for name in ("dash", "sh"):
+        found = shutil.which(name)
+        if not found:
+            continue
+        probe = subprocess.run(
+            [found, "-c", 'printf %s "$BASH_VERSION"'], capture_output=True, text=True
+        )
+        if probe.returncode == 0 and not probe.stdout:
+            return found
+    return ""
+
+
+plain_sh = _plain_sh()
+
+
 @needs_pwsh
-def test_inside_project_paths_are_written_relative(project_with_skill: Path) -> None:
+def test_the_commit_guard_runs_where_the_host_runs_hooks(project: Path) -> None:
+    """Left to itself, the installer writes the bash form exactly where the host runs it in Git Bash.
+
+    On Windows the host runs a `"shell": "bash"` hook with the Git Bash it finds, and with nothing
+    where it finds none; outside Windows, with a shell of the system's choosing. So the bash form is
+    written on Windows with the host's Git Bash and `pwsh` found, and the PowerShell form everywhere
+    else. Either way the entry tells the host that a failure of the guard is not a refusal.
+    """
+    out = install(project)
+
+    wired = claim_hooks(settings_of(project))
+    assert len(wired) == 1, wired
+    expected = "bash" if os.name == "nt" and bash and shutil.which("pwsh") else "powershell"
+    assert wired[0]["shell"] == expected, f"the installer chose {wired[0]['shell']}: {out}"
+    assert wired[0].get("onFailure") == "continue", (
+        f"a failure of the guard would count as a refusal on a machine without Git Bash: {wired[0]}"
+    )
+    runs = "Git Bash" if expected == "bash" else "PowerShell"
+    assert f"the commit guard runs through {runs}" in out, out
+
+
+@needs_pwsh
+@needs_bash
+def test_the_bash_front_hands_every_publishing_command_to_the_guard(
+    project_with_skill: Path, tmp_path: Path
+) -> None:
+    """Every command the guard refuses as publishing reaches the guard, the call byte for byte.
+
+    The bash check in front of the guard matches a SUPERSET of the guard's pattern on the raw call:
+    every shape the guard's own tests require it to refuse goes through the installed entry here,
+    with a stand-in PowerShell that records its start and what it was handed. So does a command
+    whose letters are written as JSON escapes (`\\u0067it`), invisible to the check by themselves,
+    and a call the check could not read to the end.
+    """
+    install_in(project_with_skill, "-HookShell", "Bash")
+    claim = claim_hooks(settings_of(project_with_skill))[0]
+    env, started = pwsh_stand_in(tmp_path, hook_env(project_with_skill, tmp_path))
+
+    calls = {command: front_call(command) for command in PUBLISHING_SHAPES}
+    calls["GIT COMMIT -m x"] = front_call("GIT COMMIT -m x")
+    calls["escaped: \\u0067it push"] = front_call("git push").replace("git push", "\\u0067it push")
+    missed = []
+    for what, call in calls.items():
+        if started.exists():
+            started.unlink()
+        done = run_wired(claim, project_with_skill, call, env)
+        handed = started.read_text(encoding="utf-8") if started.exists() else None
+        if done.returncode != 0 or handed != call + "\n":
+            missed.append(f"{what!r}: code {done.returncode}, handed {handed!r}, {done.stderr!r}")
+    assert not missed, "the bash check kept from the guard:\n" + "\n".join(missed)
+
+    # A zero byte stops `read` short of the end: what was read goes to the guard, unjudged.
+    if started.exists():
+        started.unlink()
+    cut = run_wired(claim, project_with_skill, front_call("echo hi") + "\0rest", env)
+    assert cut.returncode == 0 and started.exists(), (
+        f"a call the check could not read to the end was let go without the guard: {cut.stderr!r}"
+    )
+
+
+@needs_pwsh
+@needs_bash
+def test_the_bash_front_starts_no_powershell_for_other_calls(
+    project_with_skill: Path, tmp_path: Path
+) -> None:
+    """A call that publishes nothing ends in bash: PowerShell never starts, and nothing is said.
+
+    That is what the bash form is for — PowerShell's start is the whole cost of the guard on the
+    calls it has no business with. The paths around the command are a Windows machine's own,
+    `C:\\Users\\user` among them: a backslash and a lowercase `u` that are not a JSON escape.
+    """
+    install_in(project_with_skill, "-HookShell", "Bash")
+    claim = claim_hooks(settings_of(project_with_skill))[0]
+    env, started = pwsh_stand_in(tmp_path, hook_env(project_with_skill, tmp_path))
+
+    for command in (
+        "echo hi",
+        "git status",
+        "git log --oneline -5",
+        "ls C:\\Users\\user\\work",
+        "gh pr view 3",
+        "pwsh -NoProfile -File build.ps1",
+    ):
+        done = run_wired(claim, project_with_skill, front_call(command), env)
+        assert not started.exists(), f"PowerShell started for {command!r}"
+        assert done.returncode == 0, f"{command!r}: {done.stderr!r}"
+        assert done.stdout == "" and done.stderr == "", (
+            f"{command!r}: {done.stdout!r} {done.stderr!r}"
+        )
+
+
+@needs_pwsh
+@pytest.mark.skipif(not plain_sh, reason="no POSIX sh other than bash to run the entry with")
+def test_outside_bash_the_front_hands_every_call_to_the_guard(
+    project_with_skill: Path, tmp_path: Path
+) -> None:
+    """Run by a shell that is not bash, the bash form hands EVERY call to the guard, untouched.
+
+    The project's settings are shared, and outside Windows the host may run the entry with sh. The
+    check needs bash; without it, the entry falls back to what the PowerShell form always did —
+    the guard sees every call — and reads nothing first, so the call reaches it whole.
+    """
+    install_in(project_with_skill, "-HookShell", "Bash")
+    claim = claim_hooks(settings_of(project_with_skill))[0]
+    env, started = pwsh_stand_in(tmp_path, hook_env(project_with_skill, tmp_path))
+
+    call = front_call("echo hi")
+    done = subprocess.run(
+        [plain_sh, "-c", str(claim["command"])],
+        input=call,
+        cwd=str(project_with_skill),
+        env=env,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        timeout=60,
+    )
+    assert done.returncode == 0, done.stderr
+    assert started.exists() and started.read_text(encoding="utf-8") == call, (
+        "outside bash the call did not reach the guard whole"
+    )
+
+
+@needs_pwsh
+@needs_bash
+def test_switching_the_form_rewrites_the_one_entry(project: Path) -> None:
+    """Run with the other form, the installer rewrites the commit guard's entry where it stands.
+
+    The form is chosen per machine (or named), and the settings are shared: the same file goes from
+    one form to the other and back. Each time it must come out exactly as a fresh install of that
+    form writes it — one entry, nothing left of the other form, every foreign byte in place.
+    """
+    second = new_repo(project.parent, "second")
+    for folder in (project, second):
+        write_settings(folder, FOREIGN_SETTINGS)
+    install(second, "-HookShell", "Bash")
+    fresh_bash = settings_path(second).read_bytes()
+    install(project, "-HookShell", "PowerShell")
+    fresh_powershell = settings_path(project).read_bytes()
+    assert fresh_bash != fresh_powershell
+
+    out = install(project, "-HookShell", "Bash")
+    assert settings_path(project).read_bytes() == fresh_bash, (
+        "going over to the bash form left a different file than a fresh install of it"
+    )
+    assert "fixed up" in out, "rewriting the entry in place happened silently"
+    install(project, "-HookShell", "PowerShell")
+    assert settings_path(project).read_bytes() == fresh_powershell, (
+        "going back to the PowerShell form left a different file than a fresh install of it"
+    )
+
+
+@needs_pwsh
+@pytest.mark.parametrize("shell", CLAIM_SHELLS)
+def test_inside_project_paths_are_written_relative(project_with_skill: Path, shell: str) -> None:
     """The skill sits inside the project — the path is written from the project, not in full.
 
     A full path would tie the settings to one machine and one location of the project folder: in a
     neighbouring session's worktree, such a guard would point at someone else's copy of the skill.
     And the copy is looked for in the tab's folder first, then in the project the session started in
-    — a bare `$PWD/...` found nothing once the tab stepped into a subfolder.
+    — a bare `$PWD/...` found nothing once the tab stepped into a subfolder. The commit guard's bash
+    form looks in the same two places.
     """
-    install_in(project_with_skill)
+    install_in(project_with_skill, "-HookShell", shell)
 
     data = settings_of(project_with_skill)
-    commands = sorted(
-        hook["command"]
-        for hook in (
-            ours(data, "SessionStart")
-            + ours(data, "UserPromptSubmit")
-            + nudge_hooks(data)
-            + claim_hooks(data)
-        )
+    entries = (
+        ours(data, "SessionStart")
+        + ours(data, "UserPromptSubmit")
+        + nudge_hooks(data)
+        + claim_hooks(data)
     )
+    claim = claim_hooks(data)[0]
+    commands = sorted(hook["command"] for hook in entries if hook is not claim)
     expected = sorted(
         [
             wired("deliver-wave-board.ps1") + " -Stage Start",
             wired("deliver-wave-board.ps1") + " -Stage Prompt",
             wired("nudge-wave-plan-edit.ps1"),
             wired("nudge-wave-plan-edit.ps1"),
-            wired("guard-claim-before-publish.ps1"),
         ]
     )
     assert commands == expected, (
         f"the guards are not written in the form that finds them from any folder: {commands}"
     )
+    rel = f"{SKILL_INSIDE.as_posix()}/hooks/guard-claim-before-publish.ps1"
+    if shell == "PowerShell":
+        assert claim["command"] == wired("guard-claim-before-publish.ps1"), claim
+    else:
+        assert claim["command"].startswith(f'if [ -f "{rel}" ]; then g="{rel}"; '), claim
+        assert f'elif [ -f "$CLAUDE_PROJECT_DIR/{rel}" ]' in claim["command"], claim
     machine = (str(project_with_skill), project_with_skill.as_posix())
-    assert not any(path in command for path in machine for command in commands), (
+    assert not any(path in hook["command"] for path in machine for hook in entries), (
         "a path specific to this one machine leaked into the settings"
     )
 
@@ -1019,8 +1283,9 @@ def test_inside_project_paths_are_written_relative(project_with_skill: Path) -> 
 
 
 @needs_pwsh
+@pytest.mark.parametrize("shell", CLAIM_SHELLS)
 def test_the_wired_guards_work_from_a_subfolder_of_the_project(
-    project_with_skill: Path, tmp_path: Path
+    project_with_skill: Path, tmp_path: Path, shell: str
 ) -> None:
     """A session that stepped into a subfolder keeps every guard.
 
@@ -1029,7 +1294,7 @@ def test_the_wired_guards_work_from_a_subfolder_of_the_project(
     error, and the commit it was there to stop went through — with nothing to tell that apart from
     "nothing to say". So each guard is checked by what it does from there, not by having started.
     """
-    install_in(project_with_skill)
+    install_in(project_with_skill, "-HookShell", shell)
     commands = wired_commands(project_with_skill)
     deep = project_with_skill / "src" / "deep"
     deep.mkdir(parents=True)
@@ -1071,9 +1336,10 @@ def test_the_wired_guards_work_from_a_subfolder_of_the_project(
 
 
 @needs_pwsh
+@pytest.mark.parametrize("shell", CLAIM_SHELLS)
 @pytest.mark.parametrize("place", ["a plain folder", "a neighbouring repository"])
 def test_outside_the_project_the_wired_guards_are_found_and_say_nothing(
-    project_with_skill: Path, tmp_path: Path, place: str
+    project_with_skill: Path, tmp_path: Path, place: str, shell: str
 ) -> None:
     """The tab stepped out of the project: the guards are found — and do nothing there.
 
@@ -1083,7 +1349,7 @@ def test_outside_the_project_the_wired_guards_are_found_and_say_nothing(
     ambiguous, so the nudge is asked about a plan of the project itself from the same folder — and
     must speak.
     """
-    install_in(project_with_skill)
+    install_in(project_with_skill, "-HookShell", shell)
     commands = wired_commands(project_with_skill)
     if place == "a plain folder":
         outside = tmp_path / "plain-folder"
@@ -1123,16 +1389,18 @@ def test_outside_the_project_the_wired_guards_are_found_and_say_nothing(
 
 
 @needs_pwsh
+@pytest.mark.parametrize("shell", CLAIM_SHELLS)
 def test_the_tree_the_tab_stands_in_runs_its_own_copy(
-    project_with_skill: Path, tmp_path: Path
+    project_with_skill: Path, tmp_path: Path, shell: str
 ) -> None:
     """A tab at the root of a tree that carries its own copy runs THAT copy, not the session's.
 
     Worktrees of one project carry their own copies of the kit, and the versions differ until every
     tree is updated: a tree's guards must be the version of that tree. Only where the tab's folder
-    has no copy does the command fall back to the project the session started in.
+    has no copy does the command fall back to the project the session started in. The call carries
+    a commit: the commit guard's bash form starts the guard only for a command that publishes.
     """
-    install_in(project_with_skill)
+    install_in(project_with_skill, "-HookShell", shell)
     commands = wired_commands(project_with_skill)
     tree = tmp_path / "other-tree"
     copy = tree / SKILL_INSIDE / "hooks"
@@ -1144,9 +1412,10 @@ def test_the_tree_the_tab_stands_in_runs_its_own_copy(
             encoding="utf-8",
         )
     env = hook_env(project_with_skill, tmp_path)
+    call = {"session_id": "s-tree", "tool_input": {"command": "git commit -m x"}}
 
     for what, command in commands.items():
-        done = run_wired(command, tree, {"session_id": "s-tree"}, env)
+        done = run_wired(command, tree, call, env)
         assert done.returncode == 0, done.stderr
         assert "the copy of the other tree" in done.stdout, (
             f"{what}: from the root of a tree with its own copy, another copy ran: {done.stdout!r}"
@@ -1164,10 +1433,16 @@ OLDER_FORMS = ("from the working folder", "a full path", "looked for in two plac
 
 
 def older_form(command: str, form: str, former: Path) -> str:
-    """Our command as an older version of the kit wrote it — under the guard's name before 1.19.0."""
-    found = re.match(r'.*/hooks/([\w.-]+\.ps1)"(.*)$', command)
+    """Our command as an older version of the kit wrote it — under the guard's name before 1.19.0.
+
+    Older versions wrote every entry in PowerShell; the current command may be the commit guard's
+    bash form, so the guard's name and the stage are taken from it, not its shape.
+    """
+    found = re.search(r"/hooks/([\w.-]+\.ps1)", command)
     assert found, f"not one of our guard commands: {command}"
-    name, tail = found.groups()
+    name = found.group(1)
+    stage = re.search(r" -Stage \w+$", command)
+    tail = stage.group(0) if stage else ""
     old = FORMER_NAME[name]
     if form == "looked for in two places":
         return wired(old) + tail
@@ -1180,9 +1455,10 @@ def older_form(command: str, form: str, former: Path) -> str:
 
 
 @needs_pwsh
+@pytest.mark.parametrize("shell", CLAIM_SHELLS)
 @pytest.mark.parametrize("form", OLDER_FORMS)
 def test_an_entry_of_an_older_form_is_rewritten_in_place(
-    project_with_skill: Path, tmp_path: Path, form: str
+    project_with_skill: Path, tmp_path: Path, form: str, shell: str
 ) -> None:
     """Our entries in an older form are rewritten where they stand — and nothing else moves a byte.
 
@@ -1192,10 +1468,11 @@ def test_an_entry_of_an_older_form_is_rewritten_in_place(
     recognized as ours, any one of them would get a second entry beside it, and the guard would speak
     twice. The older file is made from the current one by replacing only our commands and
     conditions, so every foreign byte in it is the current file's own — and the run must give back
-    exactly the current file, under the new names.
+    exactly the current file, under the new names. Older versions wrote the commit guard in
+    PowerShell and without `onFailure`, so the run must also switch its shell and add the field.
     """
     write_settings(project_with_skill, FOREIGN_SETTINGS)
-    install_in(project_with_skill)
+    install_in(project_with_skill, "-HookShell", shell)
     current = settings_path(project_with_skill).read_bytes()
 
     older = current.decode("utf-8")
@@ -1225,9 +1502,14 @@ def test_an_entry_of_an_older_form_is_rewritten_in_place(
     assert anchored or ("CLAUDE_PROJECT_DIR" not in older and "//**/" not in older), (
         "the older file still carries the current form — this case checks nothing"
     )
+    older, dropped = re.subn(r',\r?\n\s*"onFailure": "continue"', "", older)
+    assert dropped == 1, "the commit guard's entry does not end with `onFailure: continue`"
+    if shell == "Bash":
+        older, switched = re.subn(r'"shell": "bash"', '"shell": "powershell"', older)
+        assert switched == 1, "the commit guard's entry is not the only one in bash"
     settings_path(project_with_skill).write_bytes(older.encode("utf-8"))
 
-    out = install_in(project_with_skill)
+    out = install_in(project_with_skill, "-HookShell", shell)
 
     assert settings_path(project_with_skill).read_bytes() == current, (
         "the run did not give back exactly what a fresh install writes: our entries were not "
@@ -1237,8 +1519,9 @@ def test_an_entry_of_an_older_form_is_rewritten_in_place(
 
 
 @needs_pwsh
+@pytest.mark.parametrize("shell", CLAIM_SHELLS)
 def test_uninstall_takes_away_our_entries_in_every_form(
-    project_with_skill: Path, tmp_path: Path
+    project_with_skill: Path, tmp_path: Path, shell: str
 ) -> None:
     """Uninstalling removes our entries whatever form they were written in — and only them.
 
@@ -1248,7 +1531,7 @@ def test_uninstall_takes_away_our_entries_in_every_form(
     """
     write_settings(project_with_skill, FOREIGN_HOOK)
     before = settings_path(project_with_skill).read_bytes()
-    install_in(project_with_skill)
+    install_in(project_with_skill, "-HookShell", shell)
 
     data = settings_of(project_with_skill)
     former = tmp_path / "former-place" / "coordination"
@@ -1307,9 +1590,10 @@ def calls_from(folder: Path, session: str, plan: Path) -> dict[str, dict[str, ob
 
 
 @needs_pwsh
+@pytest.mark.parametrize("shell", CLAIM_SHELLS)
 @pytest.mark.parametrize("place", ["a neighbouring repository", "a plain folder"])
 def test_the_command_never_starts_an_older_copy_in_the_session_project(
-    project_with_skill: Path, tmp_path: Path, place: str
+    project_with_skill: Path, tmp_path: Path, place: str, shell: str
 ) -> None:
     """The project the session started in still holds a copy from before 1.19.0: none of it runs.
 
@@ -1319,7 +1603,7 @@ def test_the_command_never_starts_an_older_copy_in_the_session_project(
     its state there and refused its commits. Under the new names it finds nothing, and the hook fails
     to start, exactly as the old command did from such a folder.
     """
-    install_in(project_with_skill)
+    install_in(project_with_skill, "-HookShell", shell)
     commands = wired_commands(project_with_skill)
     still_old = new_repo(tmp_path, "still-old")
     place_older_copy(still_old)
@@ -1345,8 +1629,9 @@ def test_the_command_never_starts_an_older_copy_in_the_session_project(
 
 
 @needs_pwsh
+@pytest.mark.parametrize("shell", CLAIM_SHELLS)
 def test_a_worktree_with_an_older_copy_is_served_by_the_session_project(
-    project_with_skill: Path, tmp_path: Path
+    project_with_skill: Path, tmp_path: Path, shell: str
 ) -> None:
     """A tab at the root of a worktree whose copy is from before 1.19.0 runs the project's new copy.
 
@@ -1355,7 +1640,7 @@ def test_a_worktree_with_an_older_copy_is_served_by_the_session_project(
     project shares its git directory. The worktree is guarded as before, by the new code, until it
     takes the new copy itself. Each guard is checked by what it does there.
     """
-    install_in(project_with_skill)
+    install_in(project_with_skill, "-HookShell", shell)
     commands = wired_commands(project_with_skill)
     # A worktree sees only what is committed: the profile has to be there for the nudge to read it.
     git(project_with_skill, "add", ".parallel-streams.md")
@@ -1410,8 +1695,11 @@ def test_settings_of_an_older_version_reach_the_renamed_guards(
     """
     install_in(project_with_skill)
     commands = {
-        what: older_form(command, "from the working folder", tmp_path)
-        for what, command in wired_commands(project_with_skill).items()
+        what: {
+            "shell": "powershell",
+            "command": older_form(hook["command"], "from the working folder", tmp_path),
+        }
+        for what, hook in wired_commands(project_with_skill).items()
     }
     board = project_with_skill / ".git" / "wave-board" / "board.jsonl"
     board.parent.mkdir(parents=True)

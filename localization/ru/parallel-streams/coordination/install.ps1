@@ -37,7 +37,13 @@ param(
     [string]$Mode = 'Install',
 
     # Корень проекта, куда ставим. По умолчанию — корень репозитория, из которого запущен скрипт.
-    [string]$ProjectRoot
+    [string]$ProjectRoot,
+
+    # Чем запускать сторож фиксации. Auto — решает установщик (см. Get-ClaimGuardShell); Bash и
+    # PowerShell — когда выбор надо назвать явно, например если среда находит Git Bash иначе, чем
+    # окружение, из которого запущена установка.
+    [ValidateSet('Auto', 'Bash', 'PowerShell')]
+    [string]$HookShell = 'Auto'
 )
 
 $ErrorActionPreference = 'Stop'
@@ -338,11 +344,13 @@ function Get-HookMark {
 function New-HookRecord {
     param($Wanted)
     # Порядок полей ровно тот, что в уже написанных руками настройках: так запись читается глазами
-    # одинаково, где бы она ни стояла.
-    $record = [ordered]@{ type = 'command'; shell = 'powershell'; command = $Wanted.Command }
+    # одинаково, где бы она ни стояла. `onFailure` — последним: правка записи прежней формы
+    # дописывает недостающее поле в конец, и обе дороги должны давать один и тот же файл.
+    $record = [ordered]@{ type = 'command'; shell = $Wanted.Shell; command = $Wanted.Command }
     if ($Wanted.If) { $record['if'] = $Wanted.If }
     $record['timeout'] = $Wanted.Timeout
     if ($Wanted.Status) { $record['statusMessage'] = $Wanted.Status }
+    if ($Wanted.Failure) { $record['onFailure'] = $Wanted.Failure }
     return [pscustomobject]$record
 }
 
@@ -350,11 +358,12 @@ function Update-HookRecord {
     param($Hook, $Wanted)
     # Правим НА МЕСТЕ: существующие поля сохраняют свой порядок, дописывается только недостающее.
     Set-Prop $Hook 'type' 'command'
-    Set-Prop $Hook 'shell' 'powershell'
+    Set-Prop $Hook 'shell' $Wanted.Shell
     Set-Prop $Hook 'command' $Wanted.Command
     if ($Wanted.If) { Set-Prop $Hook 'if' $Wanted.If }
     Set-Prop $Hook 'timeout' $Wanted.Timeout
     if ($Wanted.Status) { Set-Prop $Hook 'statusMessage' $Wanted.Status }
+    if ($Wanted.Failure) { Set-Prop $Hook 'onFailure' $Wanted.Failure }
 }
 
 function Get-EventEntries {
@@ -629,12 +638,131 @@ function Get-HookCommand {
     return "& `"`$(if (Test-Path -LiteralPath `"`$PWD/$rel`") { `"`$PWD`" } else { `$env:CLAUDE_PROJECT_DIR })/$rel`""
 }
 
+function Find-HookGitBash {
+    # Git Bash, которым среда запустит хук с `"shell": "bash"` на Windows, — найденный ТЕМ ЖЕ порядком,
+    # каким его ищет сама среда (Claude Code 2.1.325): переменная CLAUDE_CODE_GIT_BASH_PATH, если она
+    # называет bash или sh и файл есть; затем две папки установки Git по умолчанию; затем `git` из PATH
+    # и `bin\bash.exe` двумя уровнями выше него. Не нашла среда — она не запустит хук в bash вовсе, а
+    # хук, упавший перед вызовом инструмента, на такой машине отказывает в самом вызове, если его
+    # запись не говорит `onFailure: continue`. Поэтому установщик ищет ровно там же, а не «где bash
+    # обычно лежит».
+    $candidates = [System.Collections.Generic.List[string]]::new()
+    $named = [string]$env:CLAUDE_CODE_GIT_BASH_PATH
+    if ($named -and (@('bash.exe', 'sh.exe', 'bash', 'sh') -contains ([System.IO.Path]::GetFileName($named).ToLowerInvariant()))) {
+        $candidates.Add($named)
+    }
+    $candidates.Add('C:\Program Files\Git\bin\bash.exe')
+    $candidates.Add('C:\Program Files (x86)\Git\bin\bash.exe')
+    $git = Get-Command git -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
+    if ($git) {
+        $candidates.Add([System.IO.Path]::GetFullPath((Join-Path $git.Source '..\..\bin\bash.exe')))
+    }
+    foreach ($path in $candidates) {
+        if (Test-Path -LiteralPath $path) { return $path }
+    }
+    return ''
+}
+
+function Get-ClaimGuardShell {
+    # Чем запускать сторож фиксации и почему — причина идёт в отчёт.
+    #
+    # Сторож стоит перед КАЖДЫМ вызовом оболочки, а делает что-то только на публикующей команде (в
+    # живом проекте — около 4 % вызовов). В форме PowerShell каждый вызов платит запуск `pwsh` —
+    # полсекунды и больше, а под нагрузкой больше секунды, — чтобы на остальных 96 % тут же выйти.
+    # В форме bash перед сторожем стоит проверка встроенными средствами Git Bash, без единого
+    # нового процесса, и PowerShell стартует только на команде, похожей на публикацию.
+    #
+    # Форма bash пишется только там, где её точно запустят в bash:
+    #   • на Windows — если найден Git Bash, которым среда запускает хуки (Find-HookGitBash), и `pwsh`
+    #     находится по PATH: из bash сторожа больше нечем запустить;
+    #   • вне Windows — никогда сама: там среда запускает такой хук оболочкой системы или человека
+    #     (bash, zsh или sh), а проверке нужен именно bash. Назвать `-HookShell Bash` можно.
+    switch ($HookShell) {
+        'Bash' { return [pscustomobject]@{ Shell = 'bash'; Why = 'названо явно (-HookShell Bash)' } }
+        'PowerShell' { return [pscustomobject]@{ Shell = 'powershell'; Why = 'названо явно (-HookShell PowerShell)' } }
+    }
+    if (-not $IsWindows) {
+        return [pscustomobject]@{ Shell = 'powershell'; Why = 'вне Windows среда запускает такой хук не обязательно в bash' }
+    }
+    if (-not (Find-HookGitBash)) {
+        return [pscustomobject]@{ Shell = 'powershell'; Why = 'Git Bash, которым среда запускает хуки, не найден' }
+    }
+    if (-not (Get-Command pwsh -CommandType Application -ErrorAction SilentlyContinue)) {
+        return [pscustomobject]@{ Shell = 'powershell'; Why = 'pwsh не находится по PATH — из Git Bash сторожа нечем запустить' }
+    }
+    return [pscustomobject]@{ Shell = 'bash'; Why = 'найден Git Bash, которым среда запускает хуки' }
+}
+
+function Get-ClaimFrontCommand {
+    param([string]$Inside, [string]$Name)
+    # Запись сторожа фиксации в форме bash: проверка перед сторожем, которая работает в процессе Git
+    # Bash самого хука и не порождает НИ ОДНОГО нового процесса — только встроенные средства bash, без
+    # `$(…)` и без конвейера: в Git Bash каждое из них стоит запуска процесса.
+    #
+    # По строкам:
+    #   1. найти сторожа там же, где его ищет форма PowerShell: копия рабочего дерева, где стоит
+    #      вкладка, иначе копия проекта, где началась сессия. Нет ни там, ни там — сообщение и код 1
+    #      (видимая ошибка хука, работа идёт дальше), НИКОГДА не 2: код 2 перед вызовом инструмента
+    #      значит «отказ», и тогда отказом стал бы каждый вызов оболочки. Копия в папке вкладки названа
+    #      путём от этой папки, а не через `$PWD/...`: `$PWD` в Git Bash — это `/d/...`, и до
+    #      PowerShell такой путь доходит только через преобразование путей Git Bash, а его человек мог
+    #      выключить (MSYS_NO_PATHCONV) — тогда сторож не запустился бы вовсе;
+    #   2. запущены не в bash (общие настройки проекта открыли на машине, где хук идёт в sh или zsh) —
+    #      сразу отдать вызов сторожу, ничего не читая: стандартный ввод цел, сторож решает как раньше.
+    #      Строка отдельная нарочно: sh разбирает команду построчно, и до строк с конструкциями bash
+    #      он так не доходит;
+    #   3. прочитать вызов целиком в переменную. `read` возвращает 1, дочитав до конца; любой другой
+    #      код (встретился нулевой байт — прочитано не всё) отдаёт вызов сторожу;
+    #   4. отпустить вызов (код 0), если в СЫРОМ JSON нет ни одной из пар `git`…`commit`, `git`…`push`,
+    #      `alias.`…`commit`, `alias.`…`push`, `gh`…`pr`…`create`, без учёта регистра. Это
+    #      НАДМНОЖЕСТВО образца сторожа: всё, на что сторож отказывает, содержит одну из пар, и слова
+    #      идут в том же порядке, в каком стоят в команде, — поля вокруг команды могут только добавить
+    #      совпадение, но не отнять. Буквы, записанные в JSON экранированием `\uXXXX`, проверка не
+    #      видит, поэтому обратная косая, `u` и четыре шестнадцатеричные цифры где угодно в вызове
+    #      отдают его сторожу. Экранированная обратная косая перед таким текстом (путь вроде
+    #      `D:\uface`) тоже попадается — лишний запуск PowerShell, но не пропущенный отказ; простое
+    #      `\u` (`C:\Users\user`, во многих машинах — в собственных путях вызова) — нет. Отличить
+    #      экранированную косую точно можно, только убрав сначала все пары косых, а bash делает это
+    #      за время, растущее как квадрат длины: вызов с несколькими сотнями тысяч косых шёл больше
+    #      минуты, далеко за пределом хука;
+    #   5. остальное — сторожу в PowerShell, с прочитанным вызовом на стандартном вводе.
+    #
+    # ‼️ В тексте команды нет ни одной пары обратных косых подряд: на Windows среда передаёт команду
+    # Git Bash строкой запуска, и при её разборе каждая пара `\\` превращается в одну. Одна косая,
+    # нужная проверке, записана как `'\'`.
+    if ($Inside) {
+        $rel = "$Inside/hooks/$Name"
+        $find = "if [ -f `"$rel`" ]; then g=`"$rel`"; " +
+            "elif [ -f `"`$CLAUDE_PROJECT_DIR/$rel`" ]; then g=`"`$CLAUDE_PROJECT_DIR/$rel`"; " +
+            "else echo `"сторож фиксации $rel не найден ни в текущей папке, ни в папке сессии — поставьте канал заново`" >&2; exit 1; fi"
+    } else {
+        # Скилл вне проекта — полный путь, в одинарных кавычках: в двойных bash раскрыл бы `$` и
+        # обратную кавычку в имени папки.
+        $full = "'" + ((Get-SlashPath $CoordDir) + "/hooks/$Name").Replace("'", "'`"'`"'") + "'"
+        $find = "if [ -f $full ]; then g=$full; " +
+            "else echo `"сторож фиксации не найден: `"$full >&2; exit 1; fi"
+    }
+    $run = 'exec pwsh -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "$g"'
+    $lines = @(
+        $find
+        '[ -n "$BASH_VERSION" ] || ' + $run
+        'IFS= read -r -d '''' p; r=$?; h=[0-9a-fA-F]'
+        'if [ $r -eq 1 ] && [[ $p != *''\''u$h$h$h$h* ]]; then shopt -s nocasematch; [[ $p == *git*commit* || $p == *git*push* || $p == *alias.*commit* || $p == *alias.*push* || $p == *gh*pr*create* ]] || exit 0; fi'
+        $run + ' <<< "$p"'
+    )
+    return ($lines -join "`n")
+}
+
 function Get-Wanted {
-    param([string]$Root, [string]$Plans)
+    param([string]$Root, [string]$Plans, [string]$ClaimShell)
     $inside = Get-InsidePath -Root $Root -Target $CoordDir
     $deliver = Get-HookCommand -Inside $inside -Name $OurHookFiles.deliver
     $nudge = Get-HookCommand -Inside $inside -Name $OurHookFiles.nudge
-    $beforePublish = Get-HookCommand -Inside $inside -Name $OurHookFiles.claim
+    $beforePublish = if ($ClaimShell -eq 'bash') {
+        Get-ClaimFrontCommand -Inside $inside -Name $OurHookFiles.claim
+    } else {
+        Get-HookCommand -Inside $inside -Name $OurHookFiles.claim
+    }
 
     $wanted = @(
         [pscustomobject]@{
@@ -642,10 +770,12 @@ function Get-Wanted {
             Matcher = ''
             Kind    = 'deliver'
             Mark    = 'deliver:Start'
+            Shell   = 'powershell'
             Command = "$deliver -Stage Start"
             Timeout = 20
             Status  = 'Смотрю доску волны'
             If      = ''
+            Failure = ''
             Title   = 'доставка находок в начале сессии'
         }
         [pscustomobject]@{
@@ -653,10 +783,12 @@ function Get-Wanted {
             Matcher = ''
             Kind    = 'deliver'
             Mark    = 'deliver:Prompt'
+            Shell   = 'powershell'
             Command = "$deliver -Stage Prompt"
             Timeout = 15
             Status  = ''
             If      = ''
+            Failure = ''
             Title   = 'доставка находок перед каждым обращением человека'
         }
         # Сторож фиксации подключается безусловно: в отличие от подсказки, папка планов ему не
@@ -666,15 +798,26 @@ function Get-Wanted {
         # Без условия `if`: команду разбирает сам сторож. Условие пришлось бы расписать на все виды
         # публикующей команды (`git -C … commit`, цепочка команд, `gh pr create`), и каждый
         # пропущенный вид — это сторож, который выглядит подключённым и молчит ровно там, где нужен.
+        #
+        # `onFailure: continue` — в обеих формах: собственное правило сторожа (его беда никогда не
+        # останавливает работу проекта), сказанное и среде. На Windows без Git Bash среда считает
+        # упавший или не уложившийся во время хук перед вызовом инструмента ОТКАЗОМ в этом вызове,
+        # если запись не говорит `continue` (Claude Code 2.1.325). Без этого поля форма bash там — она
+        # не может запуститься — отказывала бы в каждом вызове оболочки в проекте, а форма PowerShell —
+        # в каждом, на котором не уложилась во время под нагрузкой. Настройки проекта общие, поэтому
+        # такая машина — не обязательно та, где запускали установку. В остальных местах `continue` —
+        # и так то, что делает среда.
         [pscustomobject]@{
             Event   = 'PreToolUse'
             Matcher = 'Bash|PowerShell'
             Kind    = 'claim'
             Mark    = 'claim:'
+            Shell   = $ClaimShell
             Command = $beforePublish
             Timeout = 15
             Status  = ''
             If      = ''
+            Failure = 'continue'
             Title   = 'отказ фиксировать работу из необъявленного потока'
         }
     )
@@ -694,10 +837,12 @@ function Get-Wanted {
             Matcher = 'Write|Edit'
             Kind    = 'nudge'
             Mark    = "nudge:$tool"
+            Shell   = 'powershell'
             Command = $nudge
             Timeout = 20
             Status  = ''
             If      = "$tool(//**/$Plans**)"
+            Failure = ''
             Title   = "подсказка при правке плана волны ($tool, папка $Plans)"
         }
     }
@@ -785,7 +930,13 @@ function Invoke-Install {
         $restyle = -not (Test-SameText `
                 -Left (ConvertTo-FileJson -Data $data -Original $settings.Raw) -Right $settings.Raw)
     }
-    Set-Guards -Settings $data -Wanted (Get-Wanted -Root $Root -Plans $plans)
+    $claimShell = Get-ClaimGuardShell
+    Set-Guards -Settings $data -Wanted (Get-Wanted -Root $Root -Plans $plans -ClaimShell $claimShell.Shell)
+    if ($claimShell.Shell -eq 'bash') {
+        Report "  сторож фиксации — через Git Bash: PowerShell запускается только на команде, похожей на публикацию ($($claimShell.Why))"
+    } else {
+        Report "  сторож фиксации — через PowerShell, он запускается на каждом вызове оболочки ($($claimShell.Why))"
+    }
     $text = ConvertTo-FileJson -Data $data -Original $settings.Raw
     if (Test-SameText -Left $text -Right $settings.Raw) {
         Report '  настройки не изменились'
@@ -888,7 +1039,7 @@ function Invoke-Check {
                     $what = Get-HookWhat $hook
                     $cond = [string](Get-Prop $hook 'if')
                     $tail = if ($cond) { ", условие $cond" } else { '' }
-                    Report "  ${eventName}: $what$tail"
+                    Report "  ${eventName}: $what$tail, оболочка $(Get-Prop $hook 'shell')"
                     Report "    ведёт в: $(Get-Prop $hook 'command')"
                 }
             }

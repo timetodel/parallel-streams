@@ -39,7 +39,13 @@ param(
     [string]$Mode = 'Install',
 
     # Project root to install into. Defaults to the repository root the script was run from.
-    [string]$ProjectRoot
+    [string]$ProjectRoot,
+
+    # What runs the commit guard. Auto — the installer decides (see Get-ClaimGuardShell); Bash and
+    # PowerShell — when the choice has to be named, for example when the host finds Git Bash
+    # differently from the environment the install is run from.
+    [ValidateSet('Auto', 'Bash', 'PowerShell')]
+    [string]$HookShell = 'Auto'
 )
 
 $ErrorActionPreference = 'Stop'
@@ -350,11 +356,13 @@ function Get-HookMark {
 function New-HookRecord {
     param($Wanted)
     # Field order matches exactly what is already written by hand in the settings: so the entry reads
-    # the same to the eye wherever it sits.
-    $record = [ordered]@{ type = 'command'; shell = 'powershell'; command = $Wanted.Command }
+    # the same to the eye wherever it sits. `onFailure` goes last: fixing up an entry of an older form
+    # appends the missing field at the end, and both roads must give the same file.
+    $record = [ordered]@{ type = 'command'; shell = $Wanted.Shell; command = $Wanted.Command }
     if ($Wanted.If) { $record['if'] = $Wanted.If }
     $record['timeout'] = $Wanted.Timeout
     if ($Wanted.Status) { $record['statusMessage'] = $Wanted.Status }
+    if ($Wanted.Failure) { $record['onFailure'] = $Wanted.Failure }
     return [pscustomobject]$record
 }
 
@@ -362,11 +370,12 @@ function Update-HookRecord {
     param($Hook, $Wanted)
     # Fix IN PLACE: existing fields keep their order, only what is missing gets added.
     Set-Prop $Hook 'type' 'command'
-    Set-Prop $Hook 'shell' 'powershell'
+    Set-Prop $Hook 'shell' $Wanted.Shell
     Set-Prop $Hook 'command' $Wanted.Command
     if ($Wanted.If) { Set-Prop $Hook 'if' $Wanted.If }
     Set-Prop $Hook 'timeout' $Wanted.Timeout
     if ($Wanted.Status) { Set-Prop $Hook 'statusMessage' $Wanted.Status }
+    if ($Wanted.Failure) { Set-Prop $Hook 'onFailure' $Wanted.Failure }
 }
 
 function Get-EventEntries {
@@ -646,12 +655,131 @@ function Get-HookCommand {
     return "& `"`$(if (Test-Path -LiteralPath `"`$PWD/$rel`") { `"`$PWD`" } else { `$env:CLAUDE_PROJECT_DIR })/$rel`""
 }
 
+function Find-HookGitBash {
+    # The Git Bash the host will run a `"shell": "bash"` hook with on Windows — found in the SAME order
+    # the host itself looks for it (Claude Code 2.1.325): the CLAUDE_CODE_GIT_BASH_PATH variable, if it
+    # names bash or sh and the file exists; then the two default Git install folders; then `git` from
+    # PATH and `bin\bash.exe` two levels above it. Where the host finds nothing, it does not run the
+    # hook in bash at all, and on such a machine a hook that fails before a tool call refuses the
+    # call unless its entry says `onFailure: continue`. So the installer looks exactly where the host
+    # does, not "where bash usually lives".
+    $candidates = [System.Collections.Generic.List[string]]::new()
+    $named = [string]$env:CLAUDE_CODE_GIT_BASH_PATH
+    if ($named -and (@('bash.exe', 'sh.exe', 'bash', 'sh') -contains ([System.IO.Path]::GetFileName($named).ToLowerInvariant()))) {
+        $candidates.Add($named)
+    }
+    $candidates.Add('C:\Program Files\Git\bin\bash.exe')
+    $candidates.Add('C:\Program Files (x86)\Git\bin\bash.exe')
+    $git = Get-Command git -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
+    if ($git) {
+        $candidates.Add([System.IO.Path]::GetFullPath((Join-Path $git.Source '..\..\bin\bash.exe')))
+    }
+    foreach ($path in $candidates) {
+        if (Test-Path -LiteralPath $path) { return $path }
+    }
+    return ''
+}
+
+function Get-ClaimGuardShell {
+    # What runs the commit guard, and why — the reason goes into the report.
+    #
+    # The guard sits in front of EVERY shell call, yet does something only on a publishing command
+    # (about 4 % of calls in a live project). In the PowerShell form every call pays a `pwsh` start —
+    # half a second and more, over a second under load — only to exit at once on the other 96 %. In
+    # the bash form a check made of Git Bash built-ins, starting not a single new process, stands in
+    # front of the guard, and PowerShell starts only on a command that looks like publishing.
+    #
+    # The bash form is written only where it is sure to run in bash:
+    #   • on Windows — when the Git Bash the host runs hooks with is found (Find-HookGitBash) and
+    #     `pwsh` is found on PATH: from bash there is nothing else to start the guard with;
+    #   • outside Windows — never on its own: there the host runs such a hook with the system's or the
+    #     person's shell (bash, zsh or sh), and the check needs bash itself. `-HookShell Bash` can name it.
+    switch ($HookShell) {
+        'Bash' { return [pscustomobject]@{ Shell = 'bash'; Why = 'named explicitly (-HookShell Bash)' } }
+        'PowerShell' { return [pscustomobject]@{ Shell = 'powershell'; Why = 'named explicitly (-HookShell PowerShell)' } }
+    }
+    if (-not $IsWindows) {
+        return [pscustomobject]@{ Shell = 'powershell'; Why = 'outside Windows the host does not necessarily run such a hook in bash' }
+    }
+    if (-not (Find-HookGitBash)) {
+        return [pscustomobject]@{ Shell = 'powershell'; Why = 'the Git Bash the host runs hooks with was not found' }
+    }
+    if (-not (Get-Command pwsh -CommandType Application -ErrorAction SilentlyContinue)) {
+        return [pscustomobject]@{ Shell = 'powershell'; Why = 'pwsh is not found on PATH — from Git Bash there is nothing to start the guard with' }
+    }
+    return [pscustomobject]@{ Shell = 'bash'; Why = 'found the Git Bash the host runs hooks with' }
+}
+
+function Get-ClaimFrontCommand {
+    param([string]$Inside, [string]$Name)
+    # The commit guard's entry in the bash form: a check in front of the guard that runs inside the
+    # hook's own Git Bash process and starts NOT ONE new process — bash built-ins only, no `$(…)` and
+    # no pipe: in Git Bash each of them costs a process start.
+    #
+    # Line by line:
+    #   1. find the guard where the PowerShell form looks for it: the copy of the worktree the tab
+    #      stands in, otherwise the copy of the project the session started in. In neither — a message
+    #      and code 1 (a visible hook error, the work goes on), NEVER 2: code 2 before a tool call means
+    #      "deny", and every shell call would then be denied. The copy in the tab's folder is named by
+    #      a path from that folder, not by `$PWD/...`: `$PWD` in Git Bash is `/d/...`, which reaches
+    #      PowerShell only through Git Bash's path conversion, and a person may have that turned off
+    #      (MSYS_NO_PATHCONV) — the guard would then not start at all;
+    #   2. not running in bash (the project's shared settings opened on a machine where the hook runs
+    #      in sh or zsh) — hand the call to the guard at once, reading nothing: standard input is
+    #      intact, and the guard decides as before. A line of its own on purpose: sh parses the command
+    #      line by line, and this way it never reaches the lines with bash constructs;
+    #   3. read the whole call into a variable. `read` returns 1 once it has read to the end; any other
+    #      code (a zero byte met — not everything was read) hands the call to the guard;
+    #   4. let the call go (code 0) when the RAW JSON holds none of the pairs `git`…`commit`,
+    #      `git`…`push`, `alias.`…`commit`, `alias.`…`push`, `gh`…`pr`…`create`, case-insensitively.
+    #      This is a SUPERSET of the guard's pattern: everything the guard refuses contains one of the
+    #      pairs, and the words come in the order they stand in the command — the fields around the
+    #      command can only add a match, never take one away. Letters written in JSON through a
+    #      `\uXXXX` escape are invisible to the check, so a backslash, `u` and four hex digits anywhere
+    #      in the call hand it to the guard. An escaped backslash before such text (a path like
+    #      `D:\uface`) is caught too — a needless start of PowerShell, never a missed refusal; a plain
+    #      `\u` (`C:\Users\user`, in the call's own paths on many machines) is not. Telling an escaped
+    #      backslash apart exactly would take removing every pair of backslashes first, and bash does
+    #      that in time that grows with the square of the length: a call with a few hundred thousand
+    #      backslashes took over a minute, far past the hook's limit;
+    #   5. the rest goes to the guard in PowerShell, with the call that was read on standard input.
+    #
+    # ‼️ The command text holds not one pair of backslashes in a row: on Windows the host hands the
+    # command to Git Bash as a command line, and parsing it turns every `\\` pair into one. The single
+    # backslash the check needs is written as `'\'`.
+    if ($Inside) {
+        $rel = "$Inside/hooks/$Name"
+        $find = "if [ -f `"$rel`" ]; then g=`"$rel`"; " +
+            "elif [ -f `"`$CLAUDE_PROJECT_DIR/$rel`" ]; then g=`"`$CLAUDE_PROJECT_DIR/$rel`"; " +
+            "else echo `"the commit guard $rel was found neither in the current folder nor in the session folder — install the channel again`" >&2; exit 1; fi"
+    } else {
+        # The skill outside the project — a full path, in single quotes: in double quotes bash would
+        # expand a `$` or a backquote in a folder name.
+        $full = "'" + ((Get-SlashPath $CoordDir) + "/hooks/$Name").Replace("'", "'`"'`"'") + "'"
+        $find = "if [ -f $full ]; then g=$full; " +
+            "else echo `"the commit guard was not found: `"$full >&2; exit 1; fi"
+    }
+    $run = 'exec pwsh -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "$g"'
+    $lines = @(
+        $find
+        '[ -n "$BASH_VERSION" ] || ' + $run
+        'IFS= read -r -d '''' p; r=$?; h=[0-9a-fA-F]'
+        'if [ $r -eq 1 ] && [[ $p != *''\''u$h$h$h$h* ]]; then shopt -s nocasematch; [[ $p == *git*commit* || $p == *git*push* || $p == *alias.*commit* || $p == *alias.*push* || $p == *gh*pr*create* ]] || exit 0; fi'
+        $run + ' <<< "$p"'
+    )
+    return ($lines -join "`n")
+}
+
 function Get-Wanted {
-    param([string]$Root, [string]$Plans)
+    param([string]$Root, [string]$Plans, [string]$ClaimShell)
     $inside = Get-InsidePath -Root $Root -Target $CoordDir
     $deliver = Get-HookCommand -Inside $inside -Name $OurHookFiles.deliver
     $nudge = Get-HookCommand -Inside $inside -Name $OurHookFiles.nudge
-    $beforePublish = Get-HookCommand -Inside $inside -Name $OurHookFiles.claim
+    $beforePublish = if ($ClaimShell -eq 'bash') {
+        Get-ClaimFrontCommand -Inside $inside -Name $OurHookFiles.claim
+    } else {
+        Get-HookCommand -Inside $inside -Name $OurHookFiles.claim
+    }
 
     $wanted = @(
         [pscustomobject]@{
@@ -659,10 +787,12 @@ function Get-Wanted {
             Matcher = ''
             Kind    = 'deliver'
             Mark    = 'deliver:Start'
+            Shell   = 'powershell'
             Command = "$deliver -Stage Start"
             Timeout = 20
             Status  = 'Checking the wave board'
             If      = ''
+            Failure = ''
             Title   = 'delivering findings at session start'
         }
         [pscustomobject]@{
@@ -670,10 +800,12 @@ function Get-Wanted {
             Matcher = ''
             Kind    = 'deliver'
             Mark    = 'deliver:Prompt'
+            Shell   = 'powershell'
             Command = "$deliver -Stage Prompt"
             Timeout = 15
             Status  = ''
             If      = ''
+            Failure = ''
             Title   = 'delivering findings before every human prompt'
         }
         # The commit guard is connected unconditionally: unlike the nudge, it needs no plans folder —
@@ -684,15 +816,25 @@ function Get-Wanted {
         # have to spell out every shape a publishing command comes in (`git -C … commit`, a chain of
         # commands, `gh pr create`), and every shape missed would be a guard that looks connected and
         # is silent exactly where it is needed.
+        #
+        # `onFailure: continue`, in both forms: the guard's own rule — its trouble never stops the
+        # project's work — said to the host as well. On Windows without Git Bash the host counts a
+        # failed or timed-out hook before a tool call as a REFUSAL of that call, unless the entry says
+        # `continue` (Claude Code 2.1.325). Without the field, the bash form there — it cannot start —
+        # would refuse every shell call in the project, and the PowerShell form every call it timed
+        # out on under load. The project's settings are shared, so such a machine need not be the one
+        # the installer ran on. Elsewhere `continue` is what the host does anyway.
         [pscustomobject]@{
             Event   = 'PreToolUse'
             Matcher = 'Bash|PowerShell'
             Kind    = 'claim'
             Mark    = 'claim:'
+            Shell   = $ClaimShell
             Command = $beforePublish
             Timeout = 15
             Status  = ''
             If      = ''
+            Failure = 'continue'
             Title   = 'refusal to commit from an unannounced stream'
         }
     )
@@ -714,10 +856,12 @@ function Get-Wanted {
             Matcher = 'Write|Edit'
             Kind    = 'nudge'
             Mark    = "nudge:$tool"
+            Shell   = 'powershell'
             Command = $nudge
             Timeout = 20
             Status  = ''
             If      = "$tool(//**/$Plans**)"
+            Failure = ''
             Title   = "nudge on wave-plan edits ($tool, folder $Plans)"
         }
     }
@@ -807,7 +951,13 @@ function Invoke-Install {
         $restyle = -not (Test-SameText `
                 -Left (ConvertTo-FileJson -Data $data -Original $settings.Raw) -Right $settings.Raw)
     }
-    Set-Guards -Settings $data -Wanted (Get-Wanted -Root $Root -Plans $plans)
+    $claimShell = Get-ClaimGuardShell
+    Set-Guards -Settings $data -Wanted (Get-Wanted -Root $Root -Plans $plans -ClaimShell $claimShell.Shell)
+    if ($claimShell.Shell -eq 'bash') {
+        Report "  the commit guard runs through Git Bash: PowerShell starts only on a command that looks like publishing ($($claimShell.Why))"
+    } else {
+        Report "  the commit guard runs through PowerShell, which starts on every shell call ($($claimShell.Why))"
+    }
     $text = ConvertTo-FileJson -Data $data -Original $settings.Raw
     if (Test-SameText -Left $text -Right $settings.Raw) {
         Report '  settings unchanged'
@@ -910,7 +1060,7 @@ function Invoke-Check {
                     $what = Get-HookWhat $hook
                     $cond = [string](Get-Prop $hook 'if')
                     $tail = if ($cond) { ", condition $cond" } else { '' }
-                    Report "  ${eventName}: $what$tail"
+                    Report "  ${eventName}: $what$tail, shell $(Get-Prop $hook 'shell')"
                     Report "    points at: $(Get-Prop $hook 'command')"
                 }
             }
