@@ -3,6 +3,14 @@
 All notable changes to this project are documented here.
 This project follows [Semantic Versioning](https://semver.org/).
 
+## [1.20.3] — 2026-11-16
+
+### Fixed
+
+- **A test helper no longer passes a needless explicit UTF-8 argument.** In the installer tests, one
+  helper wrote its stand-in script with `.encode("utf-8")`; `str.encode` already defaults to UTF-8,
+  so a project that lints the vendored kit with ruff's `UP012` failed on it. No behaviour change.
+
 ## [1.20.2] — 2026-11-16
 
 ### Changed
