@@ -151,7 +151,7 @@ bash = _host_bash()
 needs_bash = pytest.mark.skipif(not bash, reason="нет bash, которым среда запустила бы хуки")
 
 # Обе формы записи сторожа фиксации — для проверок, которые обязаны держаться в каждой. Называются
-# установщику явно: его собственный выбор зависит от машины, а проверка зависеть не должна.
+# установщику явно: сам по себе он пишет форму bash, только если настройки уже её несут.
 CLAIM_SHELLS = ["PowerShell", pytest.param("Bash", marks=needs_bash)]
 
 
@@ -489,9 +489,9 @@ def pwsh_stand_in(folder: Path, env: dict[str, str]) -> tuple[dict[str, str], Pa
     shim.mkdir(parents=True, exist_ok=True)
     started = folder / "pwsh-started.txt"
     stand_in = shim / "pwsh"
-    stand_in.write_text(
-        f"#!/bin/sh\ncat > '{started.as_posix()}'\n", encoding="utf-8", newline="\n"
-    )
+    # Байты, а не текст: сценарий с концами строк `\r\n` в sh не идёт, а `newline` у `write_text`
+    # есть только с Python 3.10.
+    stand_in.write_bytes(f"#!/bin/sh\ncat > '{started.as_posix()}'\n".encode("utf-8"))
     stand_in.chmod(0o755)
     env = dict(env)
     env["PATH"] = str(shim) + os.pathsep + env.get("PATH", "")
@@ -1013,25 +1013,86 @@ plain_sh = _plain_sh()
 
 
 @needs_pwsh
-def test_the_commit_guard_runs_where_the_host_runs_hooks(project: Path) -> None:
-    """Предоставленный сам себе, установщик пишет форму bash ровно там, где среда запустит её в Git Bash.
+def test_left_to_itself_the_installer_wires_the_commit_guard_in_powershell(project: Path) -> None:
+    """Без `-HookShell` проект, где записи ещё нет, получает форму PowerShell — на любой машине.
 
-    На Windows среда запускает хук с `"shell": "bash"` тем Git Bash, который находит, а где не
-    находит — ничем; вне Windows — оболочкой на выбор системы. Поэтому форма bash пишется на Windows,
-    где найдены Git Bash среды и `pwsh`, а везде остальное — форма PowerShell. В обеих формах запись
-    говорит среде, что сбой сторожа — не отказ.
+    Форма bash работает только там, где среда находит Git Bash, а настройки общие: есть ли он у
+    каждого участника на Windows, решать команде, а не машине, на которой случилось запустить
+    установщик. Поэтому сам установщик форму bash не выбирает никогда, найден здесь Git Bash или нет.
+    Запись говорит среде, что сбой сторожа — не отказ.
     """
     out = install(project)
 
     wired = claim_hooks(settings_of(project))
     assert len(wired) == 1, wired
-    expected = "bash" if os.name == "nt" and bash and shutil.which("pwsh") else "powershell"
-    assert wired[0]["shell"] == expected, f"установщик выбрал {wired[0]['shell']}: {out}"
+    assert wired[0]["shell"] == "powershell", f"установщик сам выбрал {wired[0]['shell']}: {out}"
     assert wired[0].get("onFailure") == "continue", (
         f"сбой сторожа на машине без Git Bash считался бы отказом: {wired[0]}"
     )
-    runs = "через Git Bash" if expected == "bash" else "через PowerShell"
-    assert f"сторож фиксации — {runs}" in out, out
+    assert "сторож фиксации — через PowerShell" in out, out
+
+
+BASH_FORM_REQUIREMENT = "у каждого участника на Windows был Git Bash, который находит Claude Code"
+
+
+@needs_pwsh
+def test_a_named_form_is_kept_by_a_run_without_the_parameter(project: Path) -> None:
+    """Форма, названная командой, остаётся в настройках проекта: прогон без `-HookShell` её сохраняет.
+
+    Установщик запускают заново после каждого обновления — кто обновляет и на какой угодно машине.
+    Выбирай он форму каждый раз заново, общий файл переключался бы вместе с машиной: команда, выбравшая
+    форму bash, теряла бы её, а участник без Git Bash — сторожа. Запись сама и есть отметка выбора:
+    прогон без параметра оставляет файл ровно таким, каким он был, в любой из форм, а каждый прогон,
+    который пишет форму bash, говорит, что эта форма требует.
+    """
+    write_settings(project, FOREIGN_SETTINGS)
+    out = install(project, "-HookShell", "Bash")
+    assert BASH_FORM_REQUIREMENT in out, f"отчёт умалчивает, что требует форма bash: {out}"
+    named_bash = settings_path(project).read_bytes()
+
+    out = install(project)
+    assert settings_path(project).read_bytes() == named_bash, (
+        "прогон без -HookShell не сохранил форму bash, названную командой"
+    )
+    assert "сторож фиксации — через Git Bash" in out, out
+    assert BASH_FORM_REQUIREMENT in out, f"отчёт умалчивает, что требует форма bash: {out}"
+
+    install(project, "-HookShell", "PowerShell")
+    assert claim_hooks(settings_of(project))[0]["shell"] == "powershell"
+    named_powershell = settings_path(project).read_bytes()
+    out = install(project)
+    assert settings_path(project).read_bytes() == named_powershell, (
+        "прогон без -HookShell не сохранил форму PowerShell, названную, чтобы вернуться"
+    )
+    assert "сторож фиксации — через PowerShell" in out, out
+    assert BASH_FORM_REQUIREMENT not in out, out
+
+
+def hand_over_misses(
+    claim: dict[str, object],
+    project: Path,
+    calls: dict[str, str],
+    env: dict[str, str],
+    started: Path,
+) -> list[str]:
+    """Каждый вызов — через форму bash, с подставным PowerShell: те, что не отданы целыми.
+
+    Каждый вызов идёт дважды: в окружении прогона и в локали C, где bash не сводит регистр ни одной
+    буквы за пределами ASCII, — окружение хука не обязано называть локаль UTF-8.
+    """
+    missed = []
+    for locale, run_env in (("прогона", env), ("C", {**env, "LC_ALL": "C"})):
+        for what, call in calls.items():
+            if started.exists():
+                started.unlink()
+            done = run_wired(claim, project, call, run_env)
+            handed = started.read_text(encoding="utf-8") if started.exists() else None
+            if done.returncode != 0 or handed != call + "\n":
+                missed.append(
+                    f"{what!r} (локаль {locale}): код {done.returncode}, отдано {handed!r}, "
+                    f"{done.stderr!r}"
+                )
+    return missed
 
 
 @needs_pwsh
@@ -1039,13 +1100,15 @@ def test_the_commit_guard_runs_where_the_host_runs_hooks(project: Path) -> None:
 def test_the_bash_front_hands_every_publishing_command_to_the_guard(
     project_with_skill: Path, tmp_path: Path
 ) -> None:
-    """Каждая команда, на которую сторож отказывает как на публикующую, доходит до сторожа — байт в байт.
+    """Каждая команда здесь, на которую сторож отказывает как на публикующую, доходит до него байт в байт.
 
-    Проверка на bash перед сторожем сличает с сырым вызовом НАДМНОЖЕСТВО образца сторожа: каждый вид,
-    на который обязан отказать сам сторож по его собственным проверкам, проходит здесь через
-    установленную запись, с подставным PowerShell, который отмечает свой запуск и то, что ему отдали.
-    Так же проходит команда, чьи буквы записаны экранированием JSON (`\\u0067it`), сами по себе
-    невидимые проверке, и вызов, который проверка не смогла дочитать.
+    Проверка на bash перед сторожем построена так, чтобы сличать с сырым вызовом НАДМНОЖЕСТВО образца
+    сторожа; здесь — доказательство для видов, которые названы. Каждый вид, на который обязан
+    отказать сам сторож по его собственным проверкам, проходит через установленную запись, с
+    подставным PowerShell, который отмечает свой запуск и то, что ему отдали. Так же проходят команда
+    заглавными буквами, команда, чьи буквы записаны экранированием JSON (`\\u0067it`), сами по себе
+    невидимые проверке, и команды, написанные через заглавную I с точкой (`İ`, U+0130), которую
+    сравнение сторожа принимает за `i`.
     """
     install_in(project_with_skill, "-HookShell", "Bash")
     claim = claim_hooks(settings_of(project_with_skill))[0]
@@ -1056,23 +1119,86 @@ def test_the_bash_front_hands_every_publishing_command_to_the_guard(
     calls["экранировано: \\u0067it push"] = front_call("git push").replace(
         "git push", "\\u0067it push"
     )
-    missed = []
-    for what, call in calls.items():
-        if started.exists():
-            started.unlink()
-        done = run_wired(claim, project_with_skill, call, env)
-        handed = started.read_text(encoding="utf-8") if started.exists() else None
-        if done.returncode != 0 or handed != call + "\n":
-            missed.append(f"{what!r}: код {done.returncode}, отдано {handed!r}, {done.stderr!r}")
+    calls["заглавная I с точкой: git commİt -m x"] = front_call("git commİt -m x")
+    calls["заглавная I с точкой: gİt push"] = front_call("gİt push")
+    missed = hand_over_misses(claim, project_with_skill, calls, env, started)
     assert not missed, "проверка на bash не отдала сторожу:\n" + "\n".join(missed)
 
-    # Нулевой байт останавливает `read`, не дав дочитать: прочитанное уходит сторожу без суждения.
+    # Сырой нулевой байт останавливает `read`, не дав дочитать. Среда такого не пишет никогда — JSON
+    # его экранирует, а экранирование выше отдаётся целым, — так что здесь видно лишь, что проверка
+    # не обрывает такой вызов сама: PowerShell запускается, с частью до этого байта.
     if started.exists():
         started.unlink()
     cut = run_wired(claim, project_with_skill, front_call("echo hi") + "\0rest", env)
     assert cut.returncode == 0 and started.exists(), (
-        f"недочитанный вызов отпущен мимо сторожа: {cut.stderr!r}"
+        f"вызов, остановленный нулевым байтом, кончился в проверке, сторож не запущен: {cut.stderr!r}"
     )
+    assert started.read_text(encoding="utf-8") == front_call("echo hi") + "\n"
+
+
+# Каждый знак за пределами ASCII, который сравнение .NET без учёта регистра приравнивает к букве слов
+# сторожа (`git`, `commit`, `push`, `alias`, `gh`, `pr`, `create`), во всей базовой многоязычной
+# плоскости Юникода: в культуре этого прогона и в турецкой и азербайджанской, где `i` своя. По строке
+# «<код> <буква>» на каждый.
+FOLDED_LETTERS_PROBE = r"""
+$letters = 'acegilmoprstuh'
+$found = [System.Collections.Generic.SortedSet[string]]::new()
+foreach ($name in @([cultureinfo]::CurrentCulture.Name, 'en-US', 'tr-TR', 'az-Latn-AZ')) {
+    try { [cultureinfo]::CurrentCulture = [cultureinfo]::new($name) } catch { continue }
+    $any = [regex]::new('(?i)^[' + $letters + ']$')
+    for ($code = 0x80; $code -le 0xFFFF; $code++) {
+        if ($code -ge 0xD800 -and $code -le 0xDFFF) { continue }
+        $char = [string][char]$code
+        if (-not $any.IsMatch($char)) { continue }
+        foreach ($letter in $letters.ToCharArray()) {
+            if ([regex]::new('(?i)^' + $letter + '$').IsMatch($char)) { [void]$found.Add("$code $letter") }
+        }
+    }
+}
+$found
+"""
+
+
+@needs_pwsh
+@needs_bash
+def test_every_letter_the_guard_folds_into_its_words_reaches_the_guard(
+    project_with_skill: Path, tmp_path: Path
+) -> None:
+    """Публикующая команда, написанная знаком, который сторож читает как свою букву, доходит до него.
+
+    Сторож сравнивает без учёта регистра так, как это делает .NET: некоторые знаки за пределами ASCII
+    идут за букву ASCII, и какие именно — зависит от среды выполнения и культуры; bash в локали C не
+    сводит ни одного. Поэтому знаки здесь не перечислены — спрашивается сам PowerShell, и каждый
+    названный им знак вписывается в публикующие команды вместо буквы, за которую он идёт.
+    """
+    assert pwsh
+    probe = subprocess.run(
+        [pwsh, "-NoProfile", "-NonInteractive", "-Command", FOLDED_LETTERS_PROBE],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        timeout=120,
+    )
+    assert probe.returncode == 0, probe.stderr
+    pairs = [line.split() for line in probe.stdout.splitlines() if line.strip()]
+    folded = [(chr(int(code)), letter) for code, letter in pairs]
+    if not folded:
+        pytest.skip(
+            "эта среда выполнения не приравнивает к буквам слов сторожа ни одного знака вне ASCII"
+        )
+
+    install_in(project_with_skill, "-HookShell", "Bash")
+    claim = claim_hooks(settings_of(project_with_skill))[0]
+    env, started = pwsh_stand_in(tmp_path, hook_env(project_with_skill, tmp_path))
+    calls = {}
+    for char, letter in folded:
+        for command in ("git commit -m x", "git push", "git -c alias.x=push x", "gh pr create"):
+            for at, own in enumerate(command):
+                if own == letter:
+                    spelled = command[:at] + char + command[at + 1 :]
+                    calls[f"U+{ord(char):04X} вместо {letter!r}: {spelled}"] = front_call(spelled)
+    missed = hand_over_misses(claim, project_with_skill, calls, env, started)
+    assert not missed, "проверка на bash не отдала сторожу:\n" + "\n".join(missed)
 
 
 @needs_pwsh
@@ -1143,8 +1269,8 @@ def test_outside_bash_the_front_hands_every_call_to_the_guard(
 def test_switching_the_form_rewrites_the_one_entry(project: Path) -> None:
     """Прогнанный с другой формой, установщик переписывает запись сторожа фиксации там, где она стоит.
 
-    Форма выбирается по машине (или называется явно), а настройки общие: один и тот же файл ходит из
-    одной формы в другую и обратно. Каждый раз он обязан выйти ровно таким, каким его пишет свежая
+    Форму называет команда, а настройки общие: один и тот же файл ходит из одной формы в другую и
+    обратно. Каждый раз он обязан выйти ровно таким, каким его пишет свежая
     установка этой формы, — одна запись, ничего от другой формы, каждый чужой байт на месте.
     """
     second = new_repo(project.parent, "второй")

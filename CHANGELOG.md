@@ -7,31 +7,38 @@ This project follows [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
-- **The commit guard no longer starts PowerShell for every shell call.** The guard runs before
-  every Bash and PowerShell call, but acts only on a publishing command — about 4 % of the calls in
-  a live project. Its own early exit came only after `pwsh` had started: half a second and more of
-  wall time and over half a CPU-second per call, more than a second under load, paid on the other
-  96 %. With many sessions at once these starts crowded the machine, and hooks that ran out of time
-  stopped guarding.
+- **The commit guard can stop starting PowerShell for every shell call — when the team asks for
+  it.** The guard runs before every Bash and PowerShell call, but acts only on a publishing command
+  — about 4 % of the calls in a live project. Its own early exit came only after `pwsh` had
+  started: half a second and more of wall time and over half a CPU-second per call, more than a
+  second under load, paid on the other 96 %. With many sessions at once these starts crowd the
+  machine, and hooks that run out of time stop guarding.
 
-  On Windows, where the host runs hooks in Git Bash, the installer now writes the guard's entry with
-  `"shell": "bash"` and a check in front of it made of bash built-ins only — no new process. The
-  check reads the call and lets it go unless the raw call mentions `git` followed by `commit` or
-  `push`, an `alias.` followed by them, or `gh` … `pr` … `create`, in any letter case; that is a
-  superset of the guard's own pattern, and a `\uXXXX` escape anywhere in the call, or a call it
-  could not read to the end, goes to the guard too. Only then does PowerShell start, with the same
-  guard and the same call, so nothing the guard refused before is let through. Checked on 9 085
-  real shell calls of a live project: every one of the 313 the guard refuses reaches it, and about
-  5 % of all calls still start PowerShell instead of all of them.
+  `install.ps1 -HookShell Bash` now writes the guard's entry with `"shell": "bash"` and a check in
+  front of it made of bash built-ins only — no new process. The check reads the call and lets it go
+  unless the raw call mentions `git` followed by `commit` or `push`, an `alias.` followed by them,
+  or `gh` … `pr` … `create`, in any letter case; a `\uXXXX` escape or the letter `İ` (U+0130, which
+  the guard's matching takes for `i`) anywhere in the call sends it on as well. Only then does
+  PowerShell start, with the same guard and the same call. The tests run through the installed
+  entry every command shape the guard's own tests require it to refuse, an upper-case command, a
+  command spelled with a JSON escape and commands spelled with `İ`, and each reaches the guard byte
+  for byte. On 9 085 real shell calls of a live project, every one of the 313 the guard refuses
+  reached it, and about 5 % of all calls still started PowerShell instead of all of them.
 
-  Where the host's Git Bash or `pwsh` is not found, and outside Windows, the entry stays in
-  PowerShell. `-HookShell Bash` or `-HookShell PowerShell` names the choice instead of leaving it
-  to the installer. Either way the entry now carries `"onFailure": "continue"`: on Windows without
-  Git Bash the host otherwise counts a hook that failed or ran out of time before a tool call as a
-  refusal of that call, and the guard's rule is that its own trouble never stops the project.
+  **The bash form requires that every Windows teammate has Git Bash that Claude Code can find.**
+  Without it, that teammate's commit guard does not run, and they see a hook error on every shell
+  call. So the installer never chooses this form by itself: without `-HookShell` it writes the
+  PowerShell form, as 1.20.1 did, unless the project's settings already carry the bash form — a
+  form once named is kept by every later run, on any machine. `-HookShell PowerShell` switches
+  back, and that too is kept.
 
-  Run the installer again after updating: it rewrites the guard's entry in place.
+  Either way the entry now carries `"onFailure": "continue"`: on Windows without Git Bash the host
+  otherwise counts a hook that failed or ran out of time before a tool call as a refusal of that
+  call, and the guard's rule is that its own trouble never stops the project.
 
+  Run the installer again after updating: it adds the field to the guard's entry in place.
+
+## [1.20.1] — 2026-11-16
 
 ### Fixed
 

@@ -41,9 +41,9 @@ param(
     # Project root to install into. Defaults to the repository root the script was run from.
     [string]$ProjectRoot,
 
-    # What runs the commit guard. Auto — the installer decides (see Get-ClaimGuardShell); Bash and
-    # PowerShell — when the choice has to be named, for example when the host finds Git Bash
-    # differently from the environment the install is run from.
+    # What runs the commit guard (see Get-ClaimGuardShell). Bash — the bash form, a team's choice:
+    # every later run keeps it. PowerShell — back to PowerShell. Auto — the form the project's
+    # settings already carry, PowerShell when they carry none.
     [ValidateSet('Auto', 'Bash', 'PowerShell')]
     [string]$HookShell = 'Auto'
 )
@@ -655,32 +655,25 @@ function Get-HookCommand {
     return "& `"`$(if (Test-Path -LiteralPath `"`$PWD/$rel`") { `"`$PWD`" } else { `$env:CLAUDE_PROJECT_DIR })/$rel`""
 }
 
-function Find-HookGitBash {
-    # The Git Bash the host will run a `"shell": "bash"` hook with on Windows — found in the SAME order
-    # the host itself looks for it (Claude Code 2.1.325): the CLAUDE_CODE_GIT_BASH_PATH variable, if it
-    # names bash or sh and the file exists; then the two default Git install folders; then `git` from
-    # PATH and `bin\bash.exe` two levels above it. Where the host finds nothing, it does not run the
-    # hook in bash at all, and on such a machine a hook that fails before a tool call refuses the
-    # call unless its entry says `onFailure: continue`. So the installer looks exactly where the host
-    # does, not "where bash usually lives".
-    $candidates = [System.Collections.Generic.List[string]]::new()
-    $named = [string]$env:CLAUDE_CODE_GIT_BASH_PATH
-    if ($named -and (@('bash.exe', 'sh.exe', 'bash', 'sh') -contains ([System.IO.Path]::GetFileName($named).ToLowerInvariant()))) {
-        $candidates.Add($named)
-    }
-    $candidates.Add('C:\Program Files\Git\bin\bash.exe')
-    $candidates.Add('C:\Program Files (x86)\Git\bin\bash.exe')
-    $git = Get-Command git -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
-    if ($git) {
-        $candidates.Add([System.IO.Path]::GetFullPath((Join-Path $git.Source '..\..\bin\bash.exe')))
-    }
-    foreach ($path in $candidates) {
-        if (Test-Path -LiteralPath $path) { return $path }
+function Get-RecordedClaimShell {
+    param($Settings)
+    # The shell of the commit guard's entry the project's settings already carry; empty without one.
+    $node = Get-Prop $Settings 'hooks'
+    if (-not $node) { return '' }
+    foreach ($eventName in @($node.PSObject.Properties.Name)) {
+        foreach ($bucket in (Get-Buckets -Settings $Settings -EventName $eventName)) {
+            foreach ($hook in $bucket.Hooks) {
+                if ((Test-OurHook $hook) -and (Get-HookKind $hook) -eq 'claim') {
+                    return [string](Get-Prop $hook 'shell')
+                }
+            }
+        }
     }
     return ''
 }
 
 function Get-ClaimGuardShell {
+    param($Settings)
     # What runs the commit guard, and why — the reason goes into the report.
     #
     # The guard sits in front of EVERY shell call, yet does something only on a publishing command
@@ -689,25 +682,25 @@ function Get-ClaimGuardShell {
     # the bash form a check made of Git Bash built-ins, starting not a single new process, stands in
     # front of the guard, and PowerShell starts only on a command that looks like publishing.
     #
-    # The bash form is written only where it is sure to run in bash:
-    #   • on Windows — when the Git Bash the host runs hooks with is found (Find-HookGitBash) and
-    #     `pwsh` is found on PATH: from bash there is nothing else to start the guard with;
-    #   • outside Windows — never on its own: there the host runs such a hook with the system's or the
-    #     person's shell (bash, zsh or sh), and the check needs bash itself. `-HookShell Bash` can name it.
+    # ‼️ The form is the TEAM's choice, never the machine's. The settings are shared, and on Windows
+    # the host runs a bash-form entry only with the Git Bash it finds: on a machine where it finds
+    # none, the entry cannot start at all — that teammate's commit guard does not run, and every shell
+    # call shows a hook error. No machine can see whether every teammate has Git Bash, so the
+    # installer never picks the bash form by itself, and a run on one machine never flips the form a
+    # team chose:
+    #   • Bash / PowerShell — named, and written;
+    #   • Auto — the form the commit guard's entry already has in the settings: a form once named is
+    #     kept by every later run, on any machine; no entry yet, or one in PowerShell — PowerShell.
+    # The entry itself is the record. The profile is a person's own text that the installer never
+    # edits, and a record kept anywhere else could disagree with the entry actually in force.
     switch ($HookShell) {
-        'Bash' { return [pscustomobject]@{ Shell = 'bash'; Why = 'named explicitly (-HookShell Bash)' } }
-        'PowerShell' { return [pscustomobject]@{ Shell = 'powershell'; Why = 'named explicitly (-HookShell PowerShell)' } }
+        'Bash' { return [pscustomobject]@{ Shell = 'bash'; Why = 'named with -HookShell Bash' } }
+        'PowerShell' { return [pscustomobject]@{ Shell = 'powershell'; Why = 'named with -HookShell PowerShell' } }
     }
-    if (-not $IsWindows) {
-        return [pscustomobject]@{ Shell = 'powershell'; Why = 'outside Windows the host does not necessarily run such a hook in bash' }
+    if ((Get-RecordedClaimShell -Settings $Settings) -eq 'bash') {
+        return [pscustomobject]@{ Shell = 'bash'; Why = 'the form the project settings already carry; -HookShell PowerShell switches back' }
     }
-    if (-not (Find-HookGitBash)) {
-        return [pscustomobject]@{ Shell = 'powershell'; Why = 'the Git Bash the host runs hooks with was not found' }
-    }
-    if (-not (Get-Command pwsh -CommandType Application -ErrorAction SilentlyContinue)) {
-        return [pscustomobject]@{ Shell = 'powershell'; Why = 'pwsh is not found on PATH — from Git Bash there is nothing to start the guard with' }
-    }
-    return [pscustomobject]@{ Shell = 'bash'; Why = 'found the Git Bash the host runs hooks with' }
+    return [pscustomobject]@{ Shell = 'powershell'; Why = 'the default; -HookShell Bash puts a cheaper check in front of it — see the README' }
 }
 
 function Get-ClaimFrontCommand {
@@ -728,8 +721,11 @@ function Get-ClaimFrontCommand {
     #      in sh or zsh) — hand the call to the guard at once, reading nothing: standard input is
     #      intact, and the guard decides as before. A line of its own on purpose: sh parses the command
     #      line by line, and this way it never reaches the lines with bash constructs;
-    #   3. read the whole call into a variable. `read` returns 1 once it has read to the end; any other
-    #      code (a zero byte met — not everything was read) hands the call to the guard;
+    #   3. read the whole call into a variable. `read` returns 1 once it has read to the end. Any
+    #      other code means a raw zero byte stopped it (a bash variable cannot hold one): the part
+    #      before the byte goes to the guard unjudged, and the guard, unable to parse that part, lets
+    #      the call go. The host never writes a raw zero byte — JSON carries it as `\u0000`, which
+    #      line 4 hands to the guard whole;
     #   4. let the call go (code 0) when the RAW JSON holds none of the pairs `git`…`commit`,
     #      `git`…`push`, `alias.`…`commit`, `alias.`…`push`, `gh`…`pr`…`create`, case-insensitively.
     #      This is a SUPERSET of the guard's pattern: everything the guard refuses contains one of the
@@ -741,12 +737,22 @@ function Get-ClaimFrontCommand {
     #      `\u` (`C:\Users\user`, in the call's own paths on many machines) is not. Telling an escaped
     #      backslash apart exactly would take removing every pair of backslashes first, and bash does
     #      that in time that grows with the square of the length: a call with a few hundred thousand
-    #      backslashes took over a minute, far past the hook's limit;
+    #      backslashes took over a minute, far past the hook's limit. One letter beyond ASCII is
+    #      handed over too: the dotted capital I, `İ` (U+0130). The guard's case-insensitive match
+    #      takes it for `i` in every culture but the invariant one, while bash folds case beyond
+    #      ASCII only in a UTF-8 locale, which a hook's environment need not have — `git commİt`
+    #      would pass the check and be refused by the guard. A call holding that letter anywhere goes
+    #      to the guard (where the machine's own paths hold it, every call does: no saving there,
+    #      never a missed refusal). Over the whole Basic Multilingual Plane, in every culture of
+    #      .NET 11, it is the only character the match equates with a letter of these words; the
+    #      Kelvin sign (U+212A) stands for `k`, which none of them holds — a guard word with a `k`
+    #      would need it here as well;
     #   5. the rest goes to the guard in PowerShell, with the call that was read on standard input.
     #
     # ‼️ The command text holds not one pair of backslashes in a row: on Windows the host hands the
     # command to Git Bash as a command line, and parsing it turns every `\\` pair into one. The single
-    # backslash the check needs is written as `'\'`.
+    # backslash the check needs is written as `'\'`; the dotted capital I as bash's `$'\xc4\xb0'` (its
+    # UTF-8 bytes), so the text stays ASCII.
     if ($Inside) {
         $rel = "$Inside/hooks/$Name"
         $find = "if [ -f `"$rel`" ]; then g=`"$rel`"; " +
@@ -764,7 +770,7 @@ function Get-ClaimFrontCommand {
         $find
         '[ -n "$BASH_VERSION" ] || ' + $run
         'IFS= read -r -d '''' p; r=$?; h=[0-9a-fA-F]'
-        'if [ $r -eq 1 ] && [[ $p != *''\''u$h$h$h$h* ]]; then shopt -s nocasematch; [[ $p == *git*commit* || $p == *git*push* || $p == *alias.*commit* || $p == *alias.*push* || $p == *gh*pr*create* ]] || exit 0; fi'
+        'if [ $r -eq 1 ] && [[ $p != *''\''u$h$h$h$h* && $p != *$''\xc4\xb0''* ]]; then shopt -s nocasematch; [[ $p == *git*commit* || $p == *git*push* || $p == *alias.*commit* || $p == *alias.*push* || $p == *gh*pr*create* ]] || exit 0; fi'
         $run + ' <<< "$p"'
     )
     return ($lines -join "`n")
@@ -951,10 +957,13 @@ function Invoke-Install {
         $restyle = -not (Test-SameText `
                 -Left (ConvertTo-FileJson -Data $data -Original $settings.Raw) -Right $settings.Raw)
     }
-    $claimShell = Get-ClaimGuardShell
+    # Read before Set-Guards rewrites the entries: the form already in the settings is the record.
+    $claimShell = Get-ClaimGuardShell -Settings $data
     Set-Guards -Settings $data -Wanted (Get-Wanted -Root $Root -Plans $plans -ClaimShell $claimShell.Shell)
     if ($claimShell.Shell -eq 'bash') {
         Report "  the commit guard runs through Git Bash: PowerShell starts only on a command that looks like publishing ($($claimShell.Why))"
+        Report '  ‼️ this form requires that every Windows teammate has Git Bash that Claude Code can find: without it,'
+        Report "  that teammate's commit guard does not run, and they see a hook error on every shell call"
     } else {
         Report "  the commit guard runs through PowerShell, which starts on every shell call ($($claimShell.Why))"
     }

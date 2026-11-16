@@ -162,7 +162,8 @@ bash = _host_bash()
 needs_bash = pytest.mark.skipif(not bash, reason="no bash the host would run hooks with")
 
 # Both forms of the commit guard's entry, for the checks that must hold in each. Named to the
-# installer explicitly: its own choice depends on the machine, and a check must not.
+# installer explicitly: left to itself, it writes the bash form only where the settings already
+# carry it.
 CLAIM_SHELLS = ["PowerShell", pytest.param("Bash", marks=needs_bash)]
 
 
@@ -501,9 +502,9 @@ def pwsh_stand_in(folder: Path, env: dict[str, str]) -> tuple[dict[str, str], Pa
     shim.mkdir(parents=True, exist_ok=True)
     started = folder / "pwsh-started.txt"
     stand_in = shim / "pwsh"
-    stand_in.write_text(
-        f"#!/bin/sh\ncat > '{started.as_posix()}'\n", encoding="utf-8", newline="\n"
-    )
+    # Bytes, not text: a script with `\r\n` line ends does not run in sh, and `write_text` takes no
+    # `newline` before Python 3.10.
+    stand_in.write_bytes(f"#!/bin/sh\ncat > '{started.as_posix()}'\n".encode("utf-8"))
     stand_in.chmod(0o755)
     env = dict(env)
     env["PATH"] = str(shim) + os.pathsep + env.get("PATH", "")
@@ -1077,25 +1078,88 @@ plain_sh = _plain_sh()
 
 
 @needs_pwsh
-def test_the_commit_guard_runs_where_the_host_runs_hooks(project: Path) -> None:
-    """Left to itself, the installer writes the bash form exactly where the host runs it in Git Bash.
+def test_left_to_itself_the_installer_wires_the_commit_guard_in_powershell(project: Path) -> None:
+    """Without `-HookShell`, a project with no entry yet gets the PowerShell form — on any machine.
 
-    On Windows the host runs a `"shell": "bash"` hook with the Git Bash it finds, and with nothing
-    where it finds none; outside Windows, with a shell of the system's choosing. So the bash form is
-    written on Windows with the host's Git Bash and `pwsh` found, and the PowerShell form everywhere
-    else. Either way the entry tells the host that a failure of the guard is not a refusal.
+    The bash form runs only where the host finds Git Bash, and the settings are shared: whether every
+    Windows teammate has it is for the team to say, not for the machine the installer happens to run
+    on. So the installer never picks the bash form by itself, Git Bash found here or not. The entry
+    tells the host that a failure of the guard is not a refusal.
     """
     out = install(project)
 
     wired = claim_hooks(settings_of(project))
     assert len(wired) == 1, wired
-    expected = "bash" if os.name == "nt" and bash and shutil.which("pwsh") else "powershell"
-    assert wired[0]["shell"] == expected, f"the installer chose {wired[0]['shell']}: {out}"
+    assert wired[0]["shell"] == "powershell", (
+        f"the installer chose {wired[0]['shell']} by itself: {out}"
+    )
     assert wired[0].get("onFailure") == "continue", (
         f"a failure of the guard would count as a refusal on a machine without Git Bash: {wired[0]}"
     )
-    runs = "Git Bash" if expected == "bash" else "PowerShell"
-    assert f"the commit guard runs through {runs}" in out, out
+    assert "the commit guard runs through PowerShell" in out, out
+
+
+BASH_FORM_REQUIREMENT = "every Windows teammate has Git Bash that Claude Code can find"
+
+
+@needs_pwsh
+def test_a_named_form_is_kept_by_a_run_without_the_parameter(project: Path) -> None:
+    """The form a team named stays in the project's settings: a run without `-HookShell` keeps it.
+
+    The installer is run again after every update, by whoever updates, on whatever machine. Were it
+    to choose the form anew, the shared file would flip with the machine: a team that chose the bash
+    form would lose it, or a teammate without Git Bash would lose the guard. The entry itself is the
+    record — a run without the parameter leaves the file exactly as it was, in either form, and each
+    run that writes the bash form says what that form requires.
+    """
+    write_settings(project, FOREIGN_SETTINGS)
+    out = install(project, "-HookShell", "Bash")
+    assert BASH_FORM_REQUIREMENT in out, f"the report hides what the bash form requires: {out}"
+    named_bash = settings_path(project).read_bytes()
+
+    out = install(project)
+    assert settings_path(project).read_bytes() == named_bash, (
+        "a run without -HookShell did not keep the bash form the team named"
+    )
+    assert "the commit guard runs through Git Bash" in out, out
+    assert BASH_FORM_REQUIREMENT in out, f"the report hides what the bash form requires: {out}"
+
+    install(project, "-HookShell", "PowerShell")
+    assert claim_hooks(settings_of(project))[0]["shell"] == "powershell"
+    named_powershell = settings_path(project).read_bytes()
+    out = install(project)
+    assert settings_path(project).read_bytes() == named_powershell, (
+        "a run without -HookShell did not keep the PowerShell form named to switch back"
+    )
+    assert "the commit guard runs through PowerShell" in out, out
+    assert BASH_FORM_REQUIREMENT not in out, out
+
+
+def hand_over_misses(
+    claim: dict[str, object],
+    project: Path,
+    calls: dict[str, str],
+    env: dict[str, str],
+    started: Path,
+) -> list[str]:
+    """Each call through the bash form, with a stand-in PowerShell: the ones not handed over whole.
+
+    Every call runs twice: in the environment of the run, and in the C locale, where bash folds no
+    letter beyond ASCII — a hook's environment need not name a UTF-8 locale.
+    """
+    missed = []
+    for locale, run_env in (("as run", env), ("C", {**env, "LC_ALL": "C"})):
+        for what, call in calls.items():
+            if started.exists():
+                started.unlink()
+            done = run_wired(claim, project, call, run_env)
+            handed = started.read_text(encoding="utf-8") if started.exists() else None
+            if done.returncode != 0 or handed != call + "\n":
+                missed.append(
+                    f"{what!r} (locale {locale}): code {done.returncode}, handed {handed!r}, "
+                    f"{done.stderr!r}"
+                )
+    return missed
 
 
 @needs_pwsh
@@ -1103,13 +1167,14 @@ def test_the_commit_guard_runs_where_the_host_runs_hooks(project: Path) -> None:
 def test_the_bash_front_hands_every_publishing_command_to_the_guard(
     project_with_skill: Path, tmp_path: Path
 ) -> None:
-    """Every command the guard refuses as publishing reaches the guard, the call byte for byte.
+    """Every command here that the guard refuses as publishing reaches the guard, byte for byte.
 
-    The bash check in front of the guard matches a SUPERSET of the guard's pattern on the raw call:
-    every shape the guard's own tests require it to refuse goes through the installed entry here,
-    with a stand-in PowerShell that records its start and what it was handed. So does a command
-    whose letters are written as JSON escapes (`\\u0067it`), invisible to the check by themselves,
-    and a call the check could not read to the end.
+    The bash check in front of the guard is built to match a SUPERSET of the guard's pattern on the
+    raw call; this is the evidence for the shapes it names. Every shape the guard's own tests require
+    it to refuse goes through the installed entry, with a stand-in PowerShell that records its start
+    and what it was handed. So do an upper-case command, a command whose letters are written as JSON
+    escapes (`\\u0067it`), invisible to the check by themselves, and commands spelled with the dotted
+    capital I (`İ`, U+0130), which the guard's match takes for `i`.
     """
     install_in(project_with_skill, "-HookShell", "Bash")
     claim = claim_hooks(settings_of(project_with_skill))[0]
@@ -1118,23 +1183,86 @@ def test_the_bash_front_hands_every_publishing_command_to_the_guard(
     calls = {command: front_call(command) for command in PUBLISHING_SHAPES}
     calls["GIT COMMIT -m x"] = front_call("GIT COMMIT -m x")
     calls["escaped: \\u0067it push"] = front_call("git push").replace("git push", "\\u0067it push")
-    missed = []
-    for what, call in calls.items():
-        if started.exists():
-            started.unlink()
-        done = run_wired(claim, project_with_skill, call, env)
-        handed = started.read_text(encoding="utf-8") if started.exists() else None
-        if done.returncode != 0 or handed != call + "\n":
-            missed.append(f"{what!r}: code {done.returncode}, handed {handed!r}, {done.stderr!r}")
+    calls["dotted capital I: git commİt -m x"] = front_call("git commİt -m x")
+    calls["dotted capital I: gİt push"] = front_call("gİt push")
+    missed = hand_over_misses(claim, project_with_skill, calls, env, started)
     assert not missed, "the bash check kept from the guard:\n" + "\n".join(missed)
 
-    # A zero byte stops `read` short of the end: what was read goes to the guard, unjudged.
+    # A raw zero byte stops `read` short of the end. The host never writes one — JSON escapes it,
+    # and an escape is handed over whole above — so all this shows is that the check does not end
+    # such a call itself: PowerShell starts, with the part before the byte.
     if started.exists():
         started.unlink()
     cut = run_wired(claim, project_with_skill, front_call("echo hi") + "\0rest", env)
     assert cut.returncode == 0 and started.exists(), (
-        f"a call the check could not read to the end was let go without the guard: {cut.stderr!r}"
+        f"a call stopped by a zero byte ended in the check, the guard never started: {cut.stderr!r}"
     )
+    assert started.read_text(encoding="utf-8") == front_call("echo hi") + "\n"
+
+
+# Every character beyond ASCII that .NET's case-insensitive match equates with a letter of the
+# guard's words (`git`, `commit`, `push`, `alias`, `gh`, `pr`, `create`), over the whole Basic
+# Multilingual Plane: in the culture of this run and in the Turkish and Azerbaijani ones, whose `i`
+# differs. One "<code> <letter>" line each.
+FOLDED_LETTERS_PROBE = r"""
+$letters = 'acegilmoprstuh'
+$found = [System.Collections.Generic.SortedSet[string]]::new()
+foreach ($name in @([cultureinfo]::CurrentCulture.Name, 'en-US', 'tr-TR', 'az-Latn-AZ')) {
+    try { [cultureinfo]::CurrentCulture = [cultureinfo]::new($name) } catch { continue }
+    $any = [regex]::new('(?i)^[' + $letters + ']$')
+    for ($code = 0x80; $code -le 0xFFFF; $code++) {
+        if ($code -ge 0xD800 -and $code -le 0xDFFF) { continue }
+        $char = [string][char]$code
+        if (-not $any.IsMatch($char)) { continue }
+        foreach ($letter in $letters.ToCharArray()) {
+            if ([regex]::new('(?i)^' + $letter + '$').IsMatch($char)) { [void]$found.Add("$code $letter") }
+        }
+    }
+}
+$found
+"""
+
+
+@needs_pwsh
+@needs_bash
+def test_every_letter_the_guard_folds_into_its_words_reaches_the_guard(
+    project_with_skill: Path, tmp_path: Path
+) -> None:
+    """A publishing command spelled with a character the guard reads as its letter reaches it.
+
+    The guard matches without regard to case, the way .NET does it: some characters beyond ASCII
+    count as an ASCII letter, and which ones depends on the runtime and the culture; bash in the C
+    locale folds none. So the characters are not listed here — PowerShell itself is asked, and each
+    one it names is spelled into publishing commands in place of the letter it stands for.
+    """
+    assert pwsh
+    probe = subprocess.run(
+        [pwsh, "-NoProfile", "-NonInteractive", "-Command", FOLDED_LETTERS_PROBE],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        timeout=120,
+    )
+    assert probe.returncode == 0, probe.stderr
+    pairs = [line.split() for line in probe.stdout.splitlines() if line.strip()]
+    folded = [(chr(int(code)), letter) for code, letter in pairs]
+    if not folded:
+        pytest.skip(
+            "this runtime equates no character beyond ASCII with a letter of the guard's words"
+        )
+
+    install_in(project_with_skill, "-HookShell", "Bash")
+    claim = claim_hooks(settings_of(project_with_skill))[0]
+    env, started = pwsh_stand_in(tmp_path, hook_env(project_with_skill, tmp_path))
+    calls = {}
+    for char, letter in folded:
+        for command in ("git commit -m x", "git push", "git -c alias.x=push x", "gh pr create"):
+            for at, own in enumerate(command):
+                if own == letter:
+                    spelled = command[:at] + char + command[at + 1 :]
+                    calls[f"U+{ord(char):04X} for {letter!r}: {spelled}"] = front_call(spelled)
+    missed = hand_over_misses(claim, project_with_skill, calls, env, started)
+    assert not missed, "the bash check kept from the guard:\n" + "\n".join(missed)
 
 
 @needs_pwsh
@@ -1205,8 +1333,8 @@ def test_outside_bash_the_front_hands_every_call_to_the_guard(
 def test_switching_the_form_rewrites_the_one_entry(project: Path) -> None:
     """Run with the other form, the installer rewrites the commit guard's entry where it stands.
 
-    The form is chosen per machine (or named), and the settings are shared: the same file goes from
-    one form to the other and back. Each time it must come out exactly as a fresh install of that
+    The form is named by the team, and the settings are shared: the same file goes from one form to
+    the other and back. Each time it must come out exactly as a fresh install of that
     form writes it — one entry, nothing left of the other form, every foreign byte in place.
     """
     second = new_repo(project.parent, "second")
