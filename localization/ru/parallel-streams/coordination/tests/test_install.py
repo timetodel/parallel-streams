@@ -491,7 +491,7 @@ def pwsh_stand_in(folder: Path, env: dict[str, str]) -> tuple[dict[str, str], Pa
     stand_in = shim / "pwsh"
     # Байты, а не текст: сценарий с концами строк `\r\n` в sh не идёт, а `newline` у `write_text`
     # есть только с Python 3.10.
-    stand_in.write_bytes(f"#!/bin/sh\ncat > '{started.as_posix()}'\n".encode("utf-8"))
+    stand_in.write_bytes(f"#!/bin/sh\ncat > '{started.as_posix()}'\n".encode())
     stand_in.chmod(0o755)
     env = dict(env)
     env["PATH"] = str(shim) + os.pathsep + env.get("PATH", "")
