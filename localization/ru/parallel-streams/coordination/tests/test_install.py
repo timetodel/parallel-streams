@@ -190,6 +190,7 @@ def stand_in_worktree(project: Path, name: str) -> Path:
         "-c",
         "user.name=probe",
         "commit",
+        "--allow-empty",
         "-m",
         "stand-in",
     )
@@ -1376,8 +1377,8 @@ def test_the_wired_guards_work_from_a_subfolder_of_the_project(
     остановить, проходила — и отличить это от «сказать нечего» было нечем. Поэтому каждый сторож
     проверяется по тому, что он оттуда делает, а не по тому, что запустился.
 
-    Главная папка не поток, и в её подпапке сторож фиксации отходит в сторону: найдясь там, он должен
-    промолчать. То, что он делает, видно из подпапки рабочего дерева проекта, где команда тоже не
+    Главная папка не поток, и в её подпапке сторож фиксации отходит в сторону: там он должен найтись
+    и промолчать. То, что он делает, видно из подпапки рабочего дерева проекта, где команда тоже не
     находит копии и берёт копию проекта.
     """
     install_in(project_with_skill, "-HookShell", shell)
@@ -1447,14 +1448,19 @@ def test_outside_the_project_the_wired_guards_are_found_and_say_nothing(
     снаружи — чужое: принести его доску, отказать его фиксациям или оставить в нём папку состояния
     значило бы, что набор хозяйничает в проекте, куда его не ставили. Молчание двусмысленно, поэтому
     подсказку из той же папки спрашивают о плане самого проекта — и она обязана заговорить.
+    В соседнем репозитории фиксацию делают из его рабочего дерева: главная папка не поток и
+    фиксирует свободно и так, и молчание там не показало бы, что сторож фиксации отличает чужой
+    репозиторий от своего.
     """
     install_in(project_with_skill, "-HookShell", shell)
     commands = wired_commands(project_with_skill)
     if place == "простая папка":
         outside = tmp_path / "простая-папка"
         outside.mkdir()
+        there = outside
     else:
         outside = new_repo(tmp_path, "сосед")
+        there = stand_in_worktree(outside, "wave9-out")
     env = hook_env(project_with_skill, tmp_path)
     before = every_entry(outside)
 
@@ -1463,12 +1469,12 @@ def test_outside_the_project_the_wired_guards_are_found_and_say_nothing(
         "deliver Prompt": {"session_id": "s-out-prompt", "cwd": str(outside)},
         "claim": {
             "session_id": "s-out-claim",
-            "cwd": str(outside),
+            "cwd": str(there),
             "tool_input": {"command": 'git commit -m "их работа"'},
         },
     }
     for what, call in calls.items():
-        done = run_wired(commands[what], outside, call, env)
+        done = run_wired(commands[what], there if what == "claim" else outside, call, env)
         assert done.returncode == 0 and not done.stderr.strip(), (
             f"{what}: сторож не нашёлся, место — {place}: {done.stderr}"
         )

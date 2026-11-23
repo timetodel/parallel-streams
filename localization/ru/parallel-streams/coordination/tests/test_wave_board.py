@@ -11107,20 +11107,22 @@ def test_the_commit_guard_does_nothing_outside_its_project(tmp_path: Path, place
 
     Отказать ей «за необъявленный поток» значило бы судить проект по доске, к которой он отношения не
     имеет, — и ответить сессии было бы нечем, кроме клапана руками. Та же фиксация в своём проекте,
-    без объявления, получает отказ — иначе молчание выше ничего не доказывает; её делают из рабочего
-    дерева проекта, потому что главная папка не поток и фиксирует свободно и так.
+    без объявления, получает отказ — иначе молчание выше ничего не доказывает. В обоих репозиториях
+    фиксацию делают из рабочего дерева: главная папка не поток и фиксирует свободно и так, и
+    молчание в главной папке соседа не показало бы, что сторож отличает чужой репозиторий от своего.
     """
     home, neighbour, plain = home_and_strangers(tmp_path)
     outside = neighbour if place == "соседний репозиторий" else plain
+    there = stream_worktree(neighbour) if outside == neighbour else plain
     tree = stream_worktree(home)
     before = every_entry(outside)
 
     commit = {
         "session_id": "s-away",
-        "cwd": str(outside),
+        "cwd": str(there),
         "tool_input": {"command": 'git commit -m "x"'},
     }
-    done = run_hook(CLAIM_GUARD, outside, commit, home)
+    done = run_hook(CLAIM_GUARD, there, commit, home)
     assert done.returncode == 0, done.stderr
     assert done.stdout.strip() == "", (
         f"сторож фиксации отказал в фиксации, место — {place}: {done.stdout!r}"
@@ -11155,11 +11157,15 @@ def test_the_commit_guard_judges_the_folder_of_the_call(
     Вызов несёт рабочую папку сессии, и всё, что сторож спрашивает, — поток, его заявку, реестр, —
     спрашивается про эту папку. Суди он по папке процесса, фиксация в проекте проходила бы всякий
     раз, когда хук случайно запустился в другом месте, а фиксация в чужом репозитории получала бы
-    отказ по пустому реестру того репозитория. Проект здесь — его рабочее дерево: главная папка не
-    поток и фиксирует свободно и так.
+    отказ по пустому реестру того репозитория. Проект и сосед здесь — рабочие деревья своих
+    репозиториев: главная папка не поток и фиксирует свободно и так, и молчание в ней ничего не
+    сказало бы о том, по какой папке судили.
     """
     home, neighbour, _plain = home_and_strangers(tmp_path)
-    folders = {"проект": stream_worktree(home), "соседний репозиторий": neighbour}
+    folders = {
+        "проект": stream_worktree(home),
+        "соседний репозиторий": stream_worktree(neighbour),
+    }
     commit = {
         "session_id": "s-call",
         "cwd": str(folders[call]),

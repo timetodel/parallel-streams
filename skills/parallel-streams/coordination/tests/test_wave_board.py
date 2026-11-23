@@ -11521,20 +11521,23 @@ def test_the_commit_guard_does_nothing_outside_its_project(tmp_path: Path, place
 
     Refusing it "for a stream that never announced itself" would be judging a project by a board it
     has nothing to do with — and the session's only answer would be the valve, by hand. The same
-    commit in its own project, unannounced, is refused, or the silence above proves nothing — made
-    from a worktree of the project, since its main folder is no stream and commits freely anyway.
+    commit in its own project, unannounced, is refused, or the silence above proves nothing. In both
+    repositories the commit is made from a worktree: a main folder is no stream and commits freely
+    anyway, so silence in the neighbour's main folder would not show that the guard tells someone
+    else's repository from its own.
     """
     home, neighbour, plain = home_and_strangers(tmp_path)
     outside = neighbour if place == "a neighbouring repository" else plain
+    there = stream_worktree(neighbour) if outside == neighbour else plain
     tree = stream_worktree(home)
     before = every_entry(outside)
 
     commit = {
         "session_id": "s-away",
-        "cwd": str(outside),
+        "cwd": str(there),
         "tool_input": {"command": 'git commit -m "x"'},
     }
-    done = run_hook(CLAIM_GUARD, outside, commit, home)
+    done = run_hook(CLAIM_GUARD, there, commit, home)
     assert done.returncode == 0, done.stderr
     assert done.stdout.strip() == "", (
         f"the commit guard refused a commit in {place}: {done.stdout!r}"
@@ -11570,10 +11573,14 @@ def test_the_commit_guard_judges_the_folder_of_the_call(
     claim, the registry — is asked about that folder. Judged by the process folder instead, a commit
     in the project would go through whenever the hook happened to start elsewhere, and a commit in
     someone else's repository would be refused against that repository's empty registry. The project
-    is a worktree of it: its main folder is no stream and commits freely anyway.
+    and the neighbour are worktrees of their repositories here: a main folder is no stream and
+    commits freely anyway, so silence there would tell nothing of which folder was judged.
     """
     home, neighbour, _plain = home_and_strangers(tmp_path)
-    folders = {"the project": stream_worktree(home), "the neighbouring repository": neighbour}
+    folders = {
+        "the project": stream_worktree(home),
+        "the neighbouring repository": stream_worktree(neighbour),
+    }
     commit = {
         "session_id": "s-call",
         "cwd": str(folders[call]),

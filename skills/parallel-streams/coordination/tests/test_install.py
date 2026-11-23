@@ -202,6 +202,7 @@ def stand_in_worktree(project: Path, name: str) -> Path:
         "-c",
         "user.name=probe",
         "commit",
+        "--allow-empty",
         "-m",
         "stand-in",
     )
@@ -1516,15 +1517,19 @@ def test_outside_the_project_the_wired_guards_are_found_and_say_nothing(
     what lies outside is someone else's: delivering its board, refusing its commits or leaving a
     state folder in it would be the kit acting on a project it was never installed into. Silence is
     ambiguous, so the nudge is asked about a plan of the project itself from the same folder — and
-    must speak.
+    must speak. In the neighbouring repository the commit is made from a worktree of it: a main
+    folder is no stream and commits freely anyway, so silence there would not show that the commit
+    guard tells someone else's repository from its own.
     """
     install_in(project_with_skill, "-HookShell", shell)
     commands = wired_commands(project_with_skill)
     if place == "a plain folder":
         outside = tmp_path / "plain-folder"
         outside.mkdir()
+        there = outside
     else:
         outside = new_repo(tmp_path, "neighbour")
+        there = stand_in_worktree(outside, "wave9-out")
     env = hook_env(project_with_skill, tmp_path)
     before = every_entry(outside)
 
@@ -1533,12 +1538,12 @@ def test_outside_the_project_the_wired_guards_are_found_and_say_nothing(
         "deliver Prompt": {"session_id": "s-out-prompt", "cwd": str(outside)},
         "claim": {
             "session_id": "s-out-claim",
-            "cwd": str(outside),
+            "cwd": str(there),
             "tool_input": {"command": 'git commit -m "their work"'},
         },
     }
     for what, call in calls.items():
-        done = run_wired(commands[what], outside, call, env)
+        done = run_wired(commands[what], there if what == "claim" else outside, call, env)
         assert done.returncode == 0 and not done.stderr.strip(), (
             f"{what}: the guard was not found from {place}: {done.stderr}"
         )

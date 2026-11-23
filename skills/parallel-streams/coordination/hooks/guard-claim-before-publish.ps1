@@ -39,6 +39,8 @@ A subagent commits under the stream of the tab that launched it, from whatever f
 it: the host names the tab's session in the subagent's every call, and the tab's open claim records
 that session. A subagent whose tab runs no open stream gets a refusal of its own — it is sent back to
 the tab, never told to announce from its folder, which would open a second stream or move the tab's.
+There is no such refusal in the main folder: a subagent working there commits as the main
+folder does.
 
 A clone of a contributor's own copy (a fork) is not refused at all, once the project's profile names
 its home repository in `## Home`: the guard steps aside wherever `origin` points somewhere else. The
