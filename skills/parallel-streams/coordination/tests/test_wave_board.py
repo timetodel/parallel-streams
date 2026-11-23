@@ -957,6 +957,30 @@ def stub_project(root: Path, name: str, profile: str) -> Path:
     return project
 
 
+def stream_worktree(project: Path, name: str = "wave9-tree") -> Path:
+    """A linked worktree of a stand-in project, where the kit puts one: inside the main folder.
+
+    Everything in the project so far is committed first: a worktree sees only what is committed, and
+    the commit guard reads the profile without stepping outside its own tree. The commit guard steps
+    aside in the repository's main folder — it is not a stream — so a check of what the guard
+    refuses in a stand-in repository is made here, in a worktree, where streams run.
+    """
+    git(project, "add", "-A")
+    git(
+        project,
+        "-c",
+        "user.email=test@example.com",
+        "-c",
+        "user.name=probe",
+        "commit",
+        "--allow-empty",
+        "-m",
+        "first",
+    )
+    git(project, "worktree", "add", "-b", f"feat/{name}", f".claude/worktrees/{name}")
+    return project / ".claude" / "worktrees" / name
+
+
 @needs_pwsh
 def test_plan_edit_guard_takes_the_plans_folder_from_the_profile(wave_repo: Path) -> None:
     """The project's profile names the plans folder, not the guard's code.
@@ -8443,9 +8467,9 @@ def test_every_shape_of_a_publishing_command_is_still_refused(tmp_path: Path, co
 def test_the_valve_lets_a_deliberate_commit_through(tmp_path: Path) -> None:
     """The deliberate exception works — the guard cannot tell every non-stream apart from a stream.
 
-    Committing from the repository's main folder, fixing the channel itself, a bulk chore: in each
-    of those there is no stream to announce, and without a way past it the kit would be refusing
-    work it has no business refusing.
+    Fixing the channel itself, a bulk chore: in each of those there is no stream to announce, and
+    without a way past it the kit would be refusing work it has no business refusing. (The
+    repository's main folder needs no valve: the guard steps aside there by itself.)
     """
     board = tmp_path / "board.jsonl"
     silent = tmp_path / "wave9-deliberate"
@@ -8613,6 +8637,98 @@ def test_a_subagent_is_refused_when_its_tab_runs_no_open_stream(
     assert "subagent" in said, f"the refusal does not tell the subagent it is the case: {said!r}"
 
 
+@needs_pwsh
+@needs_git
+@pytest.mark.parametrize("place", ["the main folder", "a subfolder of the main folder"])
+def test_the_main_folder_is_no_stream_and_commits_unannounced(tmp_path: Path, place: str) -> None:
+    """The repository's main folder commits without a claim — it is not a stream.
+
+    Streams run in linked worktrees, one each; the main folder is where the person sits and many tabs
+    live at once, and the rest of the kit already treats it as no stream. Refused there, a tab had
+    one way out it could take mid-session — announcing a stream from the main folder only to get
+    past the refusal. A subagent working in the main folder commits as the main folder does.
+
+    Silence is ambiguous, so the linked worktree of the same repository — nested inside the main
+    folder, where the kit puts its worktrees — is refused the same commit: the silence above belongs
+    to the main folder, not to a mute guard.
+    """
+    board = tmp_path / "board.jsonl"
+    home = stub_project(tmp_path, "home", profile_text())
+    tree = stream_worktree(home)
+    where = home if place == "the main folder" else home / "src" / "deep"
+
+    for command in ('git commit -m "the work"', "git push -u origin HEAD", "gh pr create --fill"):
+        assert refusal(board, where, command) == "", (
+            f"{place} was refused {command!r} as an unannounced stream — it is not a stream"
+        )
+    assert refusal(board, where, "git commit -m x", session="sess-tab", agent="a1b2c3") == "", (
+        f"a subagent working in {place} was refused — it commits as the main folder does"
+    )
+
+    said = refusal(board, tree, 'git commit -m "the work"')
+    assert "never announced itself" in said, (
+        f"a linked worktree inside the main folder committed unannounced: {said!r}"
+    )
+
+
+@needs_pwsh
+@needs_git
+def test_a_released_claim_in_the_main_folder_no_longer_blocks_its_commits(tmp_path: Path) -> None:
+    """A stream announced from the main folder and released leaves the folder committing freely.
+
+    The failure seen in a live project: a tab announced a stream from the main folder only to get
+    past the guard, released it minutes later — and from then on every commit from the main folder
+    was refused as a stream "no longer run", with the valve, an environment variable a session cannot
+    give its own hooks mid-session, as the only way out.
+
+    Silence is ambiguous, so a stream released in a linked worktree of the same repository is still
+    refused, with its address and the way to take it back.
+    """
+    board = tmp_path / "board.jsonl"
+    home = stub_project(tmp_path, "home", profile_text())
+    tree = stream_worktree(home)
+    claim(board, home, "wave9", "1", "-StreamName", "Get past the guard")
+    done = release(board, home)
+    assert done.returncode == 0, done.stderr
+
+    assert refusal(board, home, 'git commit -m "the work"') == "", (
+        "the main folder was refused its commit for a released stream announced from it"
+    )
+
+    claim(board, tree, "wave9", "2", "-StreamName", "Wrapping up")
+    done = release(board, tree)
+    assert done.returncode == 0, done.stderr
+    said = refusal(board, tree, 'git commit -m "one more thing"')
+    assert "wave9/2" in said and "-TakeOver" in said, (
+        f"a released stream in a linked worktree committed on, or was not told its address: {said!r}"
+    )
+
+
+@needs_pwsh
+@needs_git
+def test_a_worktree_inside_the_main_folder_is_judged_by_its_own_tree(tmp_path: Path) -> None:
+    """A worktree lies inside the main folder on disk, yet it is a stream — and so is every folder below it.
+
+    The kit puts worktrees at `.claude/worktrees/<name>`, under the main folder. Judged by path,
+    every one of them would count as a subfolder of the main folder, and every stream would commit
+    unannounced. Each folder is judged by the tree git finds for it. Silence is ambiguous, so the
+    main folder around them lets the same commit through.
+    """
+    board = tmp_path / "board.jsonl"
+    home = stub_project(tmp_path, "home", profile_text())
+    tree = stream_worktree(home)
+
+    for where in (tree, tree / "src" / "deep"):
+        said = refusal(board, where, 'git commit -m "the work"')
+        assert "never announced itself" in said, (
+            f"{where.relative_to(home).as_posix()} committed unannounced — a worktree inside the "
+            f"main folder was taken for the main folder: {said!r}"
+        )
+    assert refusal(board, home, 'git commit -m "the work"') == "", (
+        "the main folder around the worktree was refused — the refusals above prove nothing"
+    )
+
+
 # A project that takes contributions from people working in their own copy (a fork) names its home
 # repository in the profile. The section is written the way a person writes it: prose around, a list
 # marker, backticks, a letter case of its own.
@@ -8661,6 +8777,16 @@ def clone_with_origin(
     return project
 
 
+def clone_tree(root: Path, name: str, origin: str | None, profile: str = HOME_PROFILE) -> Path:
+    """A clone stand-in as the commit guard is asked about it: from a linked worktree of the clone.
+
+    The guard steps aside in the repository's main folder whatever its origin — the main folder is
+    not a stream — so how it tells home from a fork is checked where streams run. The worktree shares
+    the clone's settings: `git remote` run in it changes the clone's origin.
+    """
+    return stream_worktree(clone_with_origin(root, name, origin, profile))
+
+
 @needs_pwsh
 @ISOLATED_GIT
 @pytest.mark.parametrize(
@@ -8680,7 +8806,7 @@ def test_the_guard_steps_aside_in_a_clone_of_a_fork(tmp_path: Path, origin: str)
     must speak up there, or the silence above proves nothing.
     """
     board = tmp_path / "board.jsonl"
-    fork = clone_with_origin(tmp_path, "fork-clone", origin)
+    fork = clone_tree(tmp_path, "fork-clone", origin)
 
     for command in ('git commit -m "the work"', "git push -u origin HEAD", "gh pr create --fill"):
         assert refusal(board, fork, command) == "", (
@@ -8713,7 +8839,7 @@ def test_a_clone_of_the_home_repository_is_still_refused(tmp_path: Path, origin:
     silence indistinguishable from "every stream announced itself".
     """
     board = tmp_path / "board.jsonl"
-    home = clone_with_origin(tmp_path, "home-clone", origin)
+    home = clone_tree(tmp_path, "home-clone", origin)
 
     said = refusal(board, home, 'git commit -m "the work"')
 
@@ -8733,8 +8859,8 @@ def test_a_home_address_with_an_encoded_character_still_counts(tmp_path: Path) -
     board = tmp_path / "board.jsonl"
     address = "https://dev.azure.com/keeper/my%20project/_git/repo"
     profile = f"# Profile\n\n## Home\n\n- {address}\n"
-    home = clone_with_origin(tmp_path, "home-clone", address, profile=profile)
-    fork = clone_with_origin(
+    home = clone_tree(tmp_path, "home-clone", address, profile=profile)
+    fork = clone_tree(
         tmp_path,
         "fork-clone",
         "https://dev.azure.com/someone/my%20project/_git/repo",
@@ -8775,8 +8901,8 @@ def test_a_home_address_with_the_host_in_front_still_meets_home_by_another_host(
     """
     board = tmp_path / "board.jsonl"
     profile = home_profile("- github.com/keeper/project")
-    home = clone_with_origin(tmp_path, "home-clone", origin, profile)
-    fork = clone_with_origin(tmp_path, "fork-clone", origin.replace("keeper/", "someone/"), profile)
+    home = clone_tree(tmp_path, "home-clone", origin, profile)
+    fork = clone_tree(tmp_path, "fork-clone", origin.replace("keeper/", "someone/"), profile)
 
     said = refusal(board, home, 'git commit -m "the work"')
 
@@ -8807,8 +8933,8 @@ def test_a_home_section_commented_out_above_the_real_one_does_not_take_its_place
         "## Home\n\n- keeper/project\n\n"
         "## Tests\n\n`pytest`\n"
     )
-    home = clone_with_origin(tmp_path, "home-clone", HOME_ORIGIN, profile)
-    fork = clone_with_origin(tmp_path, "fork-clone", FORK_ORIGIN, profile)
+    home = clone_tree(tmp_path, "home-clone", HOME_ORIGIN, profile)
+    fork = clone_tree(tmp_path, "fork-clone", FORK_ORIGIN, profile)
 
     said = refusal(board, home, 'git commit -m "the work"')
 
@@ -8833,7 +8959,7 @@ def test_a_clone_with_no_origin_counts_as_home(tmp_path: Path) -> None:
     the refusal above came from a section nobody read.
     """
     board = tmp_path / "board.jsonl"
-    bare = clone_with_origin(tmp_path, "no-origin", None)
+    bare = clone_tree(tmp_path, "no-origin", None)
     git(bare, "remote", "add", "upstream", HOME_ORIGIN)
 
     said = refusal(board, bare, 'git commit -m "the work"')
@@ -8857,7 +8983,7 @@ def test_a_clone_whose_origin_does_not_read_is_left_alone(tmp_path: Path) -> Non
     is an answer. Then origin is pointed home, and the guard must speak up in the same folder.
     """
     board = tmp_path / "board.jsonl"
-    odd = clone_with_origin(tmp_path, "odd-origin", "https://example.com/")
+    odd = clone_tree(tmp_path, "odd-origin", "https://example.com/")
 
     assert refusal(board, odd, 'git commit -m "the work"') == "", (
         "an origin that names no repository was taken for an answer — the guard refused on a guess"
@@ -8879,7 +9005,7 @@ def test_a_rewritten_origin_of_the_home_repository_is_still_refused(tmp_path: Pa
     enough: the error falls toward a refusal, never toward silence at home.
     """
     board = tmp_path / "board.jsonl"
-    home = clone_with_origin(tmp_path, "mirrored-home", HOME_ORIGIN)
+    home = clone_tree(tmp_path, "mirrored-home", HOME_ORIGIN)
     git(home, "config", "url.https://mirror.example/github/.insteadOf", "https://github.com/")
     resolved = subprocess.run(
         ["git", "remote", "get-url", "origin"],
@@ -8916,7 +9042,7 @@ def test_a_clone_of_a_folder_on_disk_counts_as_home(tmp_path: Path, form: str) -
         "file-url": main_copy.as_uri(),
         "relative-path": "../home-main",
     }[form]
-    local = clone_with_origin(tmp_path, "local-clone", origin)
+    local = clone_tree(tmp_path, "local-clone", origin)
 
     said = refusal(board, local, 'git commit -m "the work"')
 
@@ -8958,7 +9084,7 @@ def test_the_home_clone_is_refused_however_the_address_is_written(
     standing aside at home in silence.
     """
     board = tmp_path / "board.jsonl"
-    home = clone_with_origin(tmp_path, "home-clone", HOME_ORIGIN, home_profile(entry))
+    home = clone_tree(tmp_path, "home-clone", HOME_ORIGIN, home_profile(entry))
 
     said = refusal(board, home, 'git commit -m "the work"')
 
@@ -8990,7 +9116,7 @@ def test_the_address_is_read_through_the_markup_around_it(tmp_path: Path, entry:
     clone pointed home is refused — silence alone proves nothing.
     """
     board = tmp_path / "board.jsonl"
-    fork = clone_with_origin(tmp_path, "fork-clone", FORK_ORIGIN, home_profile(entry))
+    fork = clone_tree(tmp_path, "fork-clone", FORK_ORIGIN, home_profile(entry))
 
     assert refusal(board, fork, 'git commit -m "the work"') == "", (
         f"`## Home` written as {entry!r} was not read as the address — the fork is still refused"
@@ -9053,7 +9179,7 @@ def test_without_a_home_address_every_clone_is_guarded_as_before(
         assert re.search(r"(?mi)^## Home\s*$", text), (
             "the scaffold no longer carries a `## Home` section — this case checks nothing"
         )
-    fork = clone_with_origin(tmp_path, "fork-clone", FORK_ORIGIN, text)
+    fork = clone_tree(tmp_path, "fork-clone", FORK_ORIGIN, text)
 
     assert refusal(board, fork, 'git commit -m "the work"'), (
         "with no home address named, a clone of a fork went unguarded — the section switched on by itself"
@@ -11395,10 +11521,12 @@ def test_the_commit_guard_does_nothing_outside_its_project(tmp_path: Path, place
 
     Refusing it "for a stream that never announced itself" would be judging a project by a board it
     has nothing to do with — and the session's only answer would be the valve, by hand. The same
-    commit in its own project, unannounced, is refused, or the silence above proves nothing.
+    commit in its own project, unannounced, is refused, or the silence above proves nothing — made
+    from a worktree of the project, since its main folder is no stream and commits freely anyway.
     """
     home, neighbour, plain = home_and_strangers(tmp_path)
     outside = neighbour if place == "a neighbouring repository" else plain
+    tree = stream_worktree(home)
     before = every_entry(outside)
 
     commit = {
@@ -11415,10 +11543,10 @@ def test_the_commit_guard_does_nothing_outside_its_project(tmp_path: Path, place
 
     commit = {
         "session_id": "s-home",
-        "cwd": str(home),
+        "cwd": str(tree),
         "tool_input": {"command": 'git commit -m "x"'},
     }
-    at_home = run_hook(CLAIM_GUARD, home, commit, home)
+    at_home = run_hook(CLAIM_GUARD, tree, commit, home)
     assert "never announced itself" in at_home.stdout, (
         f"the commit guard is mute in its own project too: {at_home.stdout!r}"
     )
@@ -11441,10 +11569,11 @@ def test_the_commit_guard_judges_the_folder_of_the_call(
     The call carries the session's working folder, and everything the guard asks — the stream, its
     claim, the registry — is asked about that folder. Judged by the process folder instead, a commit
     in the project would go through whenever the hook happened to start elsewhere, and a commit in
-    someone else's repository would be refused against that repository's empty registry.
+    someone else's repository would be refused against that repository's empty registry. The project
+    is a worktree of it: its main folder is no stream and commits freely anyway.
     """
     home, neighbour, _plain = home_and_strangers(tmp_path)
-    folders = {"the project": home, "the neighbouring repository": neighbour}
+    folders = {"the project": stream_worktree(home), "the neighbouring repository": neighbour}
     commit = {
         "session_id": "s-call",
         "cwd": str(folders[call]),
@@ -11707,7 +11836,9 @@ def test_a_tab_at_the_root_of_a_tree_with_its_own_copy_is_served_as_before(tmp_p
     A tab at the root of a tree that carries its own copy runs that copy, and gets exactly what it
     always got: the copy's own repository is the project it serves, whatever folder the session
     started in. The commit guard refuses an unannounced commit at home and steps aside in a clone of
-    a contributor's fork, and says so at session start; the nudge speaks on the project's plan.
+    a contributor's fork, and says so at session start; the nudge speaks on the project's plan. The
+    commit guard is asked at the root of a worktree with its own committed copy: the main folder is
+    no stream, and the guard steps aside there whatever the clone.
     """
     project = stub_project(
         tmp_path, "with-its-own-copy", profile_text() + "\n## Home\n\n- `keeper/project`\n"
@@ -11722,13 +11853,15 @@ def test_a_tab_at_the_root_of_a_tree_with_its_own_copy_is_served_as_before(tmp_p
     started_elsewhere = tmp_path / "started-elsewhere"
     started_elsewhere.mkdir()
     git(project, "remote", "add", "origin", HOME_ORIGIN)
+    tree = stream_worktree(project)
+    tree_guard = tree / KIT_INSIDE / "hooks" / CLAIM_GUARD.name
 
     commit = {
         "session_id": "s-own",
-        "cwd": str(project),
+        "cwd": str(tree),
         "tool_input": {"command": 'git commit -m "x"'},
     }
-    refused = run_hook(hooks / CLAIM_GUARD.name, project, commit, started_elsewhere)
+    refused = run_hook(tree_guard, tree, commit, started_elsewhere)
     assert "never announced itself" in refused.stdout, (
         f"the copy inside the project does not guard it once the session started elsewhere: {refused.stdout!r}"
     )
@@ -11745,7 +11878,7 @@ def test_a_tab_at_the_root_of_a_tree_with_its_own_copy_is_served_as_before(tmp_p
     )
 
     git(project, "remote", "set-url", "origin", FORK_ORIGIN)
-    aside = run_hook(hooks / CLAIM_GUARD.name, project, commit, started_elsewhere)
+    aside = run_hook(tree_guard, tree, commit, started_elsewhere)
     assert aside.returncode == 0 and aside.stdout.strip() == "", (
         f"the commit guard refused a commit in a clone of a contributor's fork: {aside.stdout!r}"
     )

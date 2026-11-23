@@ -175,6 +175,29 @@ def new_repo(root: Path, name: str) -> Path:
     return project
 
 
+def stand_in_worktree(project: Path, name: str) -> Path:
+    """Связанное рабочее дерево подставного проекта — внутри его главной папки, где его заводит набор.
+
+    Сначала фиксируется всё, что есть в проекте: рабочее дерево видит только зафиксированное, копию
+    набора и профиль тоже. Сторож фиксации отходит в сторону в главной папке репозитория — она не
+    поток, — поэтому то, в чём сторож отказывает, проверяется из рабочего дерева.
+    """
+    git(project, "add", "-A")
+    git(
+        project,
+        "-c",
+        "user.email=test@example.com",
+        "-c",
+        "user.name=probe",
+        "commit",
+        "-m",
+        "stand-in",
+    )
+    tree = project / ".claude" / "worktrees" / name
+    git(project, "worktree", "add", "-b", f"feat/{name}", str(tree))
+    return tree
+
+
 def run_installer(project: Path, *args: str) -> subprocess.CompletedProcess[str]:
     assert pwsh
     return subprocess.run(
@@ -1352,9 +1375,15 @@ def test_the_wired_guards_work_from_a_subfolder_of_the_project(
     скрипт не находился, хук падал с неблокирующей ошибкой, и фиксация, которую он должен был
     остановить, проходила — и отличить это от «сказать нечего» было нечем. Поэтому каждый сторож
     проверяется по тому, что он оттуда делает, а не по тому, что запустился.
+
+    Главная папка не поток, и в её подпапке сторож фиксации отходит в сторону: найдясь там, он должен
+    промолчать. То, что он делает, видно из подпапки рабочего дерева проекта, где команда тоже не
+    находит копии и берёт копию проекта.
     """
     install_in(project_with_skill, "-HookShell", shell)
     commands = wired_commands(project_with_skill)
+    tree_deep = stand_in_worktree(project_with_skill, "wave9-deep") / "src" / "deep"
+    tree_deep.mkdir(parents=True)
     deep = project_with_skill / "src" / "deep"
     deep.mkdir(parents=True)
     env = hook_env(project_with_skill, tmp_path)
@@ -1364,9 +1393,21 @@ def test_the_wired_guards_work_from_a_subfolder_of_the_project(
         "cwd": str(deep),
         "tool_input": {"command": 'git commit -m "работа"'},
     }
-    refused = run_wired(commands["claim"], deep, commit, env)
+    aside = run_wired(commands["claim"], deep, commit, env)
+    assert aside.returncode == 0 and not aside.stderr.strip(), (
+        f"сторож фиксации не нашёлся из подпапки: {aside.stderr}"
+    )
+    assert aside.stdout.strip() == "", (
+        f"сторож фиксации отказал в фиксации из подпапки главной папки: {aside.stdout!r}"
+    )
+    commit = {
+        "session_id": "s-tree-deep",
+        "cwd": str(tree_deep),
+        "tool_input": {"command": 'git commit -m "работа"'},
+    }
+    refused = run_wired(commands["claim"], tree_deep, commit, env)
     assert refused.returncode == 0 and not refused.stderr.strip(), (
-        f"сторож фиксации не нашёлся из подпапки: {refused.stderr}"
+        f"сторож фиксации не нашёлся из подпапки рабочего дерева: {refused.stderr}"
     )
     assert "этот поток не объявлялся" in refused.stdout, (
         f"из подпапки фиксация необъявленного потока прошла: {refused.stdout!r}"
@@ -1747,7 +1788,8 @@ def test_settings_of_an_older_version_reach_the_renamed_guards(
     что такой проект всё ещё зовёт сторожей старыми именами, от рабочей папки. Каждый сторож
     проверяется по тому, что он делает: доставка доставляет (она получила `-Stage`), сторож фиксации
     отказывает (он получил вызов на стандартный ввод, а его ответ и код выхода вернулись), подсказка
-    говорит.
+    говорит. Главная папка не поток, и там сторож фиксации отходит в сторону: его отказа добиваются
+    из рабочего дерева со своей зафиксированной копией набора, файлы под старыми именами тоже в ней.
     """
     install_in(project_with_skill)
     commands = {
@@ -1770,11 +1812,13 @@ def test_settings_of_an_older_version_reach_the_renamed_guards(
     }
     board.write_text(json.dumps(record, ensure_ascii=False) + "\n", encoding="utf-8")
     env = hook_env(project_with_skill, tmp_path)
+    tree = stand_in_worktree(project_with_skill, "wave9-older")
 
     plan = project_with_skill / PLANS / "2026-01-01-wave3-draft.md"
     calls = calls_from(project_with_skill, "s-older", plan)
+    calls["claim"] = calls_from(tree, "s-older", plan)["claim"]
     answers = {
-        what: run_wired(command, project_with_skill, calls[what], env)
+        what: run_wired(command, tree if what == "claim" else project_with_skill, calls[what], env)
         for what, command in commands.items()
     }
     for what, done in answers.items():

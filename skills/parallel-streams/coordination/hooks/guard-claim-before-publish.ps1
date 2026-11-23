@@ -22,10 +22,18 @@ that is enough, because forgetfulness is what actually happens.
 The way out is always one command, and it is printed in full. Nothing has to be worked out: with no
 wave and no plan the channel supplies the wave itself and hands out a free number.
 
+The repository's main folder is not a stream, and the guard steps aside there: in the main folder
+itself and in any folder below it that git counts as part of it (a worktree nested inside the main
+folder is still a worktree, and is guarded). Streams run in linked worktrees, one each; the main
+folder is where the person sits and where many tabs live at once, and the rest of the kit already
+treats it as no stream. Refusing there sent tabs to announce a stream from the main folder only to
+get past the refusal — a stream nobody ran — and once it was released, every later commit from that
+folder was refused as "no longer run". Known limit: a stream run from the main folder, against the
+profile's isolation, is no longer caught here.
+
 Deliberate exception: PARALLEL_STREAMS_ALLOW_UNCLAIMED=1 for the session. The valve exists for the
-cases the guard cannot tell apart from a stream — a person committing from the repository's main
-folder, a fix to the channel itself, a bulk chore. It is one variable, and it is visible in the
-refusal.
+cases the guard cannot tell apart from a stream — a fix to the channel itself, a bulk chore. It is
+one variable, and it is visible in the refusal.
 
 A subagent commits under the stream of the tab that launched it, from whatever folder the host gave
 it: the host names the tab's session in the subagent's every call, and the tab's open claim records
@@ -137,6 +145,25 @@ try {
     # at its start, from the delivery hook: a wrong section at home must not stay silent.
     if (Test-ForeignClone) { exit 0 }
 
+    # ‼️ The repository's main folder is not a stream — step aside. Streams run in linked worktrees,
+    # one each; the main folder is where the person sits and many tabs live at once, and the rest of
+    # the kit already says so: the delivery hook adopts no claim there and shows its summary of stuck
+    # findings only there, and the plan-edit nudge never names it among a wave's streams. Refusing
+    # here sent tabs to announce a stream from the main folder only to get past the refusal — a
+    # stream nobody ran — and once it was released, every later commit from that folder was refused
+    # as "no longer run", with an environment variable the session cannot give its own hooks
+    # mid-session as the only way out.
+    #
+    # The folder must be SHOWN to be the main folder (`Test-MainWorktree`): a worktree nested inside
+    # the main folder, or a folder git could not answer about, is judged exactly as before. Asked
+    # here — after the two checks above, which settle every folder outside this project's home
+    # repository, and before the registry, which costs more than this one git start. And before the
+    # subagent branch below: a subagent working in the main folder commits as the main folder does.
+    #
+    # Known limit: a stream run from the main folder, against the profile's isolation, is no longer
+    # caught here.
+    if (Test-MainWorktree -Path (Get-Location).Path) { exit 0 }
+
     # ‼️ Asked STRICTLY, and this is the whole difference between a guard and a nuisance. Everywhere
     # else in the kit a tolerant read costs one invisible line; here it costs a refusal. Read
     # tolerantly, an unreadable registry — a dropped drive, a claim file busy for a moment, a folder
@@ -177,7 +204,7 @@ try {
     if ($claim -and -not (Test-ClaimClosed -Claims $claims -Claim $claim)) { exit 0 }
 
     $announce = 'pwsh scripts/wave-board.ps1 -Mode Claim -Wave <wave> -Stream <number> -StreamName "<name>" -Tasks "<tasks>"'
-    $valve = 'Not a stream (committing from the main folder, fixing the channel itself, a bulk chore) — the deliberate exception is the environment variable PARALLEL_STREAMS_ALLOW_UNCLAIMED=1 for this session.'
+    $valve = 'Not a stream (fixing the channel itself, a bulk chore) — the deliberate exception is the environment variable PARALLEL_STREAMS_ALLOW_UNCLAIMED=1 for this session.'
 
     # ‼️ A subagent, in a folder with no open claim of its own — typically the worktree the host gave
     # it. Its work belongs to the stream of the tab that launched it, and the tie is the session, not

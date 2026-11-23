@@ -895,6 +895,30 @@ def stub_project(root: Path, name: str, profile: str) -> Path:
     return project
 
 
+def stream_worktree(project: Path, name: str = "wave9-tree") -> Path:
+    """Связанное рабочее дерево подставного проекта — там, где его заводит набор: внутри главной папки.
+
+    Сначала фиксируется всё, что уже есть в проекте: рабочее дерево видит только зафиксированное, а
+    сторож фиксации читает профиль, не выходя за пределы своего дерева. Сторож фиксации отходит в
+    сторону в главной папке репозитория — она не поток, — поэтому то, в чём сторож отказывает в
+    подставном репозитории, проверяется здесь, в рабочем дереве, где идут потоки.
+    """
+    git(project, "add", "-A")
+    git(
+        project,
+        "-c",
+        "user.email=test@example.com",
+        "-c",
+        "user.name=probe",
+        "commit",
+        "--allow-empty",
+        "-m",
+        "first",
+    )
+    git(project, "worktree", "add", "-b", f"feat/{name}", f".claude/worktrees/{name}")
+    return project / ".claude" / "worktrees" / name
+
+
 @needs_pwsh
 def test_plan_edit_guard_takes_the_plans_folder_from_the_profile(wave_repo: Path) -> None:
     """Папку планов называет профиль проекта, а не код сторожа.
@@ -8064,9 +8088,9 @@ def test_every_shape_of_a_publishing_command_is_still_refused(tmp_path: Path, co
 def test_the_valve_lets_a_deliberate_commit_through(tmp_path: Path) -> None:
     """Осознанное исключение работает — сторож отличит от потока не всякое «не поток».
 
-    Фиксация из главной папки репозитория, починка самого канала, разовая рутина: в каждом из этих
-    случаев объявлять нечего, и без обхода набор отказывал бы в работе, отказывать в которой не
-    вправе.
+    Починка самого канала, разовая рутина: в каждом из этих случаев объявлять нечего, и без обхода
+    набор отказывал бы в работе, отказывать в которой не вправе. (Главной папке репозитория клапан не
+    нужен: там сторож отходит в сторону сам.)
     """
     board = tmp_path / "board.jsonl"
     silent = tmp_path / "wave9-deliberate"
@@ -8231,6 +8255,99 @@ def test_a_subagent_is_refused_when_its_tab_runs_no_open_stream(
     assert "субагент" in said, f"отказ не говорит субагенту, что речь о нём: {said!r}"
 
 
+@needs_pwsh
+@needs_git
+@pytest.mark.parametrize("place", ["главная папка", "подпапка главной папки"])
+def test_the_main_folder_is_no_stream_and_commits_unannounced(tmp_path: Path, place: str) -> None:
+    """Главная папка репозитория фиксирует работу без заявки — она не поток.
+
+    Потоки идут в связанных рабочих деревьях, по одному на дерево; в главной папке сидит человек и
+    живёт много вкладок сразу, и остальной набор уже не считает её потоком. Получив там отказ,
+    вкладка имела один выход, доступный посреди работы, — объявить поток из главной папки лишь затем,
+    чтобы пройти мимо отказа. Субагент, работающий в главной папке, фиксирует так же, как сама
+    главная папка.
+
+    Молчание двусмысленно, поэтому связанному рабочему дереву того же репозитория — вложенному в
+    главную папку, туда, где набор заводит свои деревья, — в той же фиксации отказывают: молчание
+    выше принадлежит главной папке, а не онемевшему сторожу.
+    """
+    board = tmp_path / "board.jsonl"
+    home = stub_project(tmp_path, "home", profile_text())
+    tree = stream_worktree(home)
+    where = home if place == "главная папка" else home / "src" / "deep"
+
+    for command in ('git commit -m "работа"', "git push -u origin HEAD", "gh pr create --fill"):
+        assert refusal(board, where, command) == "", (
+            f"{place}: отказали в {command!r} как необъявленному потоку — а это не поток"
+        )
+    assert refusal(board, where, "git commit -m x", session="sess-tab", agent="a1b2c3") == "", (
+        f"{place}: субагенту отказали — он фиксирует так же, как сама главная папка"
+    )
+
+    said = refusal(board, tree, 'git commit -m "работа"')
+    assert "этот поток не объявлялся" in said, (
+        f"связанное рабочее дерево внутри главной папки зафиксировало работу без объявления: {said!r}"
+    )
+
+
+@needs_pwsh
+@needs_git
+def test_a_released_claim_in_the_main_folder_no_longer_blocks_its_commits(tmp_path: Path) -> None:
+    """Поток, объявленный из главной папки и сданный, не мешает этой папке фиксировать работу.
+
+    Сбой, замеченный в живом проекте: вкладка объявила поток из главной папки лишь затем, чтобы
+    пройти мимо сторожа, через несколько минут сдала его — и с тех пор каждую фиксацию из главной
+    папки отклоняли как поток, который «больше не ведётся», а единственным выходом оставался клапан —
+    переменная окружения, которую сессия не может посреди работы передать своим же хукам.
+
+    Молчание двусмысленно, поэтому поток, сданный в связанном рабочем дереве того же репозитория,
+    по-прежнему получает отказ — со своим адресом и способом его вернуть.
+    """
+    board = tmp_path / "board.jsonl"
+    home = stub_project(tmp_path, "home", profile_text())
+    tree = stream_worktree(home)
+    claim(board, home, "wave9", "1", "-StreamName", "Пройти мимо сторожа")
+    done = release(board, home)
+    assert done.returncode == 0, done.stderr
+
+    assert refusal(board, home, 'git commit -m "работа"') == "", (
+        "главной папке отказали в фиксации за сданный поток, объявленный из неё"
+    )
+
+    claim(board, tree, "wave9", "2", "-StreamName", "Завершение")
+    done = release(board, tree)
+    assert done.returncode == 0, done.stderr
+    said = refusal(board, tree, 'git commit -m "ещё одно"')
+    assert "wave9/2" in said and "-TakeOver" in said, (
+        f"сданный поток в связанном рабочем дереве зафиксировал работу дальше или не услышал свой адрес: {said!r}"
+    )
+
+
+@needs_pwsh
+@needs_git
+def test_a_worktree_inside_the_main_folder_is_judged_by_its_own_tree(tmp_path: Path) -> None:
+    """Рабочее дерево лежит на диске внутри главной папки, но это поток — и каждая папка ниже него тоже.
+
+    Набор заводит деревья в `.claude/worktrees/<имя>`, под главной папкой. Суди по пути — каждое из
+    них сочлось бы подпапкой главной, и каждый поток фиксировал бы работу без объявления. О каждой
+    папке судят по дереву, которое для неё находит git. Молчание двусмысленно, поэтому главная папка
+    вокруг них ту же фиксацию пропускает.
+    """
+    board = tmp_path / "board.jsonl"
+    home = stub_project(tmp_path, "home", profile_text())
+    tree = stream_worktree(home)
+
+    for where in (tree, tree / "src" / "deep"):
+        said = refusal(board, where, 'git commit -m "работа"')
+        assert "этот поток не объявлялся" in said, (
+            f"{where.relative_to(home).as_posix()} зафиксировала работу без объявления — рабочее "
+            f"дерево внутри главной папки приняли за главную папку: {said!r}"
+        )
+    assert refusal(board, home, 'git commit -m "работа"') == "", (
+        "главной папке вокруг дерева отказали — отказы выше ничего не доказывают"
+    )
+
+
 # Проект, который принимает работу от участников из их собственных копий (форков), называет в
 # профиле свой домашний репозиторий. Раздел написан так, как его пишет человек: проза вокруг, маркер
 # списка, обратные кавычки, свой регистр букв.
@@ -8279,6 +8396,16 @@ def clone_with_origin(
     return project
 
 
+def clone_tree(root: Path, name: str, origin: str | None, profile: str = HOME_PROFILE) -> Path:
+    """Подставной клон для проверок сторожа фиксации: связанное рабочее дерево этого клона.
+
+    В главной папке репозитория сторож отходит в сторону при любом origin — главная папка не поток, —
+    поэтому то, как он отличает дом от форка, проверяется там, где идут потоки. Настройки у дерева
+    общие с клоном: `git remote`, запущенный в нём, меняет origin клона.
+    """
+    return stream_worktree(clone_with_origin(root, name, origin, profile))
+
+
 @needs_pwsh
 @ISOLATED_GIT
 @pytest.mark.parametrize(
@@ -8298,7 +8425,7 @@ def test_the_guard_steps_aside_in_a_clone_of_a_fork(tmp_path: Path, origin: str)
     иначе молчание выше ничего не доказывает.
     """
     board = tmp_path / "board.jsonl"
-    fork = clone_with_origin(tmp_path, "fork-clone", origin)
+    fork = clone_tree(tmp_path, "fork-clone", origin)
 
     for command in ('git commit -m "работа"', "git push -u origin HEAD", "gh pr create --fill"):
         assert refusal(board, fork, command) == "", (
@@ -8331,7 +8458,7 @@ def test_a_clone_of_the_home_repository_is_still_refused(tmp_path: Path, origin:
     такое молчание неотличимо от «все потоки объявились».
     """
     board = tmp_path / "board.jsonl"
-    home = clone_with_origin(tmp_path, "home-clone", origin)
+    home = clone_tree(tmp_path, "home-clone", origin)
 
     said = refusal(board, home, 'git commit -m "работа"')
 
@@ -8351,8 +8478,8 @@ def test_a_home_address_with_an_encoded_character_still_counts(tmp_path: Path) -
     board = tmp_path / "board.jsonl"
     address = "https://dev.azure.com/keeper/my%20project/_git/repo"
     profile = f"# Profile\n\n## Home\n\n- {address}\n"
-    home = clone_with_origin(tmp_path, "home-clone", address, profile=profile)
-    fork = clone_with_origin(
+    home = clone_tree(tmp_path, "home-clone", address, profile=profile)
+    fork = clone_tree(
         tmp_path,
         "fork-clone",
         "https://dev.azure.com/someone/my%20project/_git/repo",
@@ -8394,8 +8521,8 @@ def test_a_home_address_with_the_host_in_front_still_meets_home_by_another_host(
     """
     board = tmp_path / "board.jsonl"
     profile = home_profile("- github.com/keeper/project")
-    home = clone_with_origin(tmp_path, "home-clone", origin, profile)
-    fork = clone_with_origin(tmp_path, "fork-clone", origin.replace("keeper/", "someone/"), profile)
+    home = clone_tree(tmp_path, "home-clone", origin, profile)
+    fork = clone_tree(tmp_path, "fork-clone", origin.replace("keeper/", "someone/"), profile)
 
     said = refusal(board, home, 'git commit -m "работа"')
 
@@ -8426,8 +8553,8 @@ def test_a_home_section_commented_out_above_the_real_one_does_not_take_its_place
         "## Home\n\n- keeper/project\n\n"
         "## Tests\n\n`pytest`\n"
     )
-    home = clone_with_origin(tmp_path, "home-clone", HOME_ORIGIN, profile)
-    fork = clone_with_origin(tmp_path, "fork-clone", FORK_ORIGIN, profile)
+    home = clone_tree(tmp_path, "home-clone", HOME_ORIGIN, profile)
+    fork = clone_tree(tmp_path, "fork-clone", FORK_ORIGIN, profile)
 
     said = refusal(board, home, 'git commit -m "работа"')
 
@@ -8452,7 +8579,7 @@ def test_a_clone_with_no_origin_counts_as_home(tmp_path: Path) -> None:
     отказ выше пришёл от раздела, который никто не прочитал.
     """
     board = tmp_path / "board.jsonl"
-    bare = clone_with_origin(tmp_path, "no-origin", None)
+    bare = clone_tree(tmp_path, "no-origin", None)
     git(bare, "remote", "add", "upstream", HOME_ORIGIN)
 
     said = refusal(board, bare, 'git commit -m "работа"')
@@ -8474,7 +8601,7 @@ def test_a_clone_whose_origin_does_not_read_is_left_alone(tmp_path: Path) -> Non
     Затем origin направляют домой, и в той же папке сторож обязан заговорить.
     """
     board = tmp_path / "board.jsonl"
-    odd = clone_with_origin(tmp_path, "odd-origin", "https://example.com/")
+    odd = clone_tree(tmp_path, "odd-origin", "https://example.com/")
 
     assert refusal(board, odd, 'git commit -m "работа"') == "", (
         "origin без пути к репозиторию приняли за ответ — сторож отказал наугад"
@@ -8496,7 +8623,7 @@ def test_a_rewritten_origin_of_the_home_repository_is_still_refused(tmp_path: Pa
     одного из двух достаточно: ошибка уходит в сторону отказа, а не молчания дома.
     """
     board = tmp_path / "board.jsonl"
-    home = clone_with_origin(tmp_path, "mirrored-home", HOME_ORIGIN)
+    home = clone_tree(tmp_path, "mirrored-home", HOME_ORIGIN)
     git(home, "config", "url.https://mirror.example/github/.insteadOf", "https://github.com/")
     resolved = subprocess.run(
         ["git", "remote", "get-url", "origin"],
@@ -8533,7 +8660,7 @@ def test_a_clone_of_a_folder_on_disk_counts_as_home(tmp_path: Path, form: str) -
         "file-url": main_copy.as_uri(),
         "relative-path": "../home-main",
     }[form]
-    local = clone_with_origin(tmp_path, "local-clone", origin)
+    local = clone_tree(tmp_path, "local-clone", origin)
 
     said = refusal(board, local, 'git commit -m "работа"')
 
@@ -8575,7 +8702,7 @@ def test_the_home_clone_is_refused_however_the_address_is_written(
     сторону дома.
     """
     board = tmp_path / "board.jsonl"
-    home = clone_with_origin(tmp_path, "home-clone", HOME_ORIGIN, home_profile(entry))
+    home = clone_tree(tmp_path, "home-clone", HOME_ORIGIN, home_profile(entry))
 
     said = refusal(board, home, 'git commit -m "работа"')
 
@@ -8609,7 +8736,7 @@ def test_the_address_is_read_through_the_markup_around_it(tmp_path: Path, entry:
     домой, получает отказ — молчание само по себе ничего не доказывает.
     """
     board = tmp_path / "board.jsonl"
-    fork = clone_with_origin(tmp_path, "fork-clone", FORK_ORIGIN, home_profile(entry))
+    fork = clone_tree(tmp_path, "fork-clone", FORK_ORIGIN, home_profile(entry))
 
     assert refusal(board, fork, 'git commit -m "работа"') == "", (
         f"`## Home`, записанный как {entry!r}, не прочитан как адрес — форку по-прежнему отказывают"
@@ -8672,7 +8799,7 @@ def test_without_a_home_address_every_clone_is_guarded_as_before(
         assert re.search(r"(?mi)^## Home\s*$", text), (
             "в заготовке больше нет раздела `## Home` — этот случай ничего не проверяет"
         )
-    fork = clone_with_origin(tmp_path, "fork-clone", FORK_ORIGIN, text)
+    fork = clone_tree(tmp_path, "fork-clone", FORK_ORIGIN, text)
 
     assert refusal(board, fork, 'git commit -m "работа"'), (
         "домашний адрес не назван, а клон форка остался без сторожа — раздел включился сам собой"
@@ -10980,10 +11107,12 @@ def test_the_commit_guard_does_nothing_outside_its_project(tmp_path: Path, place
 
     Отказать ей «за необъявленный поток» значило бы судить проект по доске, к которой он отношения не
     имеет, — и ответить сессии было бы нечем, кроме клапана руками. Та же фиксация в своём проекте,
-    без объявления, получает отказ — иначе молчание выше ничего не доказывает.
+    без объявления, получает отказ — иначе молчание выше ничего не доказывает; её делают из рабочего
+    дерева проекта, потому что главная папка не поток и фиксирует свободно и так.
     """
     home, neighbour, plain = home_and_strangers(tmp_path)
     outside = neighbour if place == "соседний репозиторий" else plain
+    tree = stream_worktree(home)
     before = every_entry(outside)
 
     commit = {
@@ -11000,10 +11129,10 @@ def test_the_commit_guard_does_nothing_outside_its_project(tmp_path: Path, place
 
     commit = {
         "session_id": "s-home",
-        "cwd": str(home),
+        "cwd": str(tree),
         "tool_input": {"command": 'git commit -m "x"'},
     }
-    at_home = run_hook(CLAIM_GUARD, home, commit, home)
+    at_home = run_hook(CLAIM_GUARD, tree, commit, home)
     assert "этот поток не объявлялся" in at_home.stdout, (
         f"сторож фиксации немой и в своём проекте: {at_home.stdout!r}"
     )
@@ -11026,10 +11155,11 @@ def test_the_commit_guard_judges_the_folder_of_the_call(
     Вызов несёт рабочую папку сессии, и всё, что сторож спрашивает, — поток, его заявку, реестр, —
     спрашивается про эту папку. Суди он по папке процесса, фиксация в проекте проходила бы всякий
     раз, когда хук случайно запустился в другом месте, а фиксация в чужом репозитории получала бы
-    отказ по пустому реестру того репозитория.
+    отказ по пустому реестру того репозитория. Проект здесь — его рабочее дерево: главная папка не
+    поток и фиксирует свободно и так.
     """
     home, neighbour, _plain = home_and_strangers(tmp_path)
-    folders = {"проект": home, "соседний репозиторий": neighbour}
+    folders = {"проект": stream_worktree(home), "соседний репозиторий": neighbour}
     commit = {
         "session_id": "s-call",
         "cwd": str(folders[call]),
@@ -11284,6 +11414,8 @@ def test_a_tab_at_the_root_of_a_tree_with_its_own_copy_is_served_as_before(tmp_p
     всегда: проект, которому служит копия, — её собственный репозиторий, в какой бы папке ни
     началась сессия. Сторож фиксации отказывает необъявленной фиксации дома и отходит в сторону в
     клоне форка участника, о чём говорится на старте сессии; подсказка говорит о плане проекта.
+    Сторожа фиксации спрашивают в корне рабочего дерева со своей зафиксированной копией: главная
+    папка не поток, и там сторож отходит в сторону, каким бы ни был клон.
     """
     project = stub_project(
         tmp_path, "with-its-own-copy", profile_text() + "\n## Home\n\n- `keeper/project`\n"
@@ -11298,13 +11430,15 @@ def test_a_tab_at_the_root_of_a_tree_with_its_own_copy_is_served_as_before(tmp_p
     started_elsewhere = tmp_path / "started-elsewhere"
     started_elsewhere.mkdir()
     git(project, "remote", "add", "origin", HOME_ORIGIN)
+    tree = stream_worktree(project)
+    tree_guard = tree / KIT_INSIDE / "hooks" / CLAIM_GUARD.name
 
     commit = {
         "session_id": "s-own",
-        "cwd": str(project),
+        "cwd": str(tree),
         "tool_input": {"command": 'git commit -m "x"'},
     }
-    refused = run_hook(hooks / CLAIM_GUARD.name, project, commit, started_elsewhere)
+    refused = run_hook(tree_guard, tree, commit, started_elsewhere)
     assert "этот поток не объявлялся" in refused.stdout, (
         "копия внутри проекта не стережёт его, если сессия началась в другом месте: "
         f"{refused.stdout!r}"
@@ -11318,7 +11452,7 @@ def test_a_tab_at_the_root_of_a_tree_with_its_own_copy_is_served_as_before(tmp_p
     )
 
     git(project, "remote", "set-url", "origin", FORK_ORIGIN)
-    aside = run_hook(hooks / CLAIM_GUARD.name, project, commit, started_elsewhere)
+    aside = run_hook(tree_guard, tree, commit, started_elsewhere)
     assert aside.returncode == 0 and aside.stdout.strip() == "", (
         f"сторож фиксации отказал в фиксации в клоне форка участника: {aside.stdout!r}"
     )
