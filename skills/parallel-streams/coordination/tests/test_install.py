@@ -187,6 +187,30 @@ def new_repo(root: Path, name: str) -> Path:
     return project
 
 
+def stand_in_worktree(project: Path, name: str) -> Path:
+    """A linked worktree of a stand-in project, inside its main folder, where the kit puts one.
+
+    Everything in the project is committed first: a worktree sees only what is committed, the copy of
+    the kit and the profile included. The commit guard steps aside in the repository's main folder —
+    it is not a stream — so what the guard refuses is checked from a worktree.
+    """
+    git(project, "add", "-A")
+    git(
+        project,
+        "-c",
+        "user.email=test@example.com",
+        "-c",
+        "user.name=probe",
+        "commit",
+        "--allow-empty",
+        "-m",
+        "stand-in",
+    )
+    tree = project / ".claude" / "worktrees" / name
+    git(project, "worktree", "add", "-b", f"feat/{name}", str(tree))
+    return tree
+
+
 def run_installer(project: Path, *args: str) -> subprocess.CompletedProcess[str]:
     assert pwsh
     return subprocess.run(
@@ -1421,9 +1445,15 @@ def test_the_wired_guards_work_from_a_subfolder_of_the_project(
     CURRENT folder: from a subfolder the script was not found, the hook failed with a non-blocking
     error, and the commit it was there to stop went through — with nothing to tell that apart from
     "nothing to say". So each guard is checked by what it does from there, not by having started.
+
+    The main folder is no stream, and the commit guard steps aside in its subfolder: found there,
+    it must say nothing. What it does is seen from a subfolder of a worktree of the project, where
+    the command finds no copy either and falls back to the project's.
     """
     install_in(project_with_skill, "-HookShell", shell)
     commands = wired_commands(project_with_skill)
+    tree_deep = stand_in_worktree(project_with_skill, "wave9-deep") / "src" / "deep"
+    tree_deep.mkdir(parents=True)
     deep = project_with_skill / "src" / "deep"
     deep.mkdir(parents=True)
     env = hook_env(project_with_skill, tmp_path)
@@ -1433,9 +1463,21 @@ def test_the_wired_guards_work_from_a_subfolder_of_the_project(
         "cwd": str(deep),
         "tool_input": {"command": 'git commit -m "the work"'},
     }
-    refused = run_wired(commands["claim"], deep, commit, env)
+    aside = run_wired(commands["claim"], deep, commit, env)
+    assert aside.returncode == 0 and not aside.stderr.strip(), (
+        f"the commit guard was not found from a subfolder: {aside.stderr}"
+    )
+    assert aside.stdout.strip() == "", (
+        f"the commit guard refused a commit from a subfolder of the main folder: {aside.stdout!r}"
+    )
+    commit = {
+        "session_id": "s-tree-deep",
+        "cwd": str(tree_deep),
+        "tool_input": {"command": 'git commit -m "the work"'},
+    }
+    refused = run_wired(commands["claim"], tree_deep, commit, env)
     assert refused.returncode == 0 and not refused.stderr.strip(), (
-        f"the commit guard was not found from a subfolder: {refused.stderr}"
+        f"the commit guard was not found from a subfolder of a worktree: {refused.stderr}"
     )
     assert "never announced itself" in refused.stdout, (
         f"from a subfolder the commit of an unannounced stream went through: {refused.stdout!r}"
@@ -1475,15 +1517,19 @@ def test_outside_the_project_the_wired_guards_are_found_and_say_nothing(
     what lies outside is someone else's: delivering its board, refusing its commits or leaving a
     state folder in it would be the kit acting on a project it was never installed into. Silence is
     ambiguous, so the nudge is asked about a plan of the project itself from the same folder — and
-    must speak.
+    must speak. In the neighbouring repository the commit is made from a worktree of it: a main
+    folder is no stream and commits freely anyway, so silence there would not show that the commit
+    guard tells someone else's repository from its own.
     """
     install_in(project_with_skill, "-HookShell", shell)
     commands = wired_commands(project_with_skill)
     if place == "a plain folder":
         outside = tmp_path / "plain-folder"
         outside.mkdir()
+        there = outside
     else:
         outside = new_repo(tmp_path, "neighbour")
+        there = stand_in_worktree(outside, "wave9-out")
     env = hook_env(project_with_skill, tmp_path)
     before = every_entry(outside)
 
@@ -1492,12 +1538,12 @@ def test_outside_the_project_the_wired_guards_are_found_and_say_nothing(
         "deliver Prompt": {"session_id": "s-out-prompt", "cwd": str(outside)},
         "claim": {
             "session_id": "s-out-claim",
-            "cwd": str(outside),
+            "cwd": str(there),
             "tool_input": {"command": 'git commit -m "their work"'},
         },
     }
     for what, call in calls.items():
-        done = run_wired(commands[what], outside, call, env)
+        done = run_wired(commands[what], there if what == "claim" else outside, call, env)
         assert done.returncode == 0 and not done.stderr.strip(), (
             f"{what}: the guard was not found from {place}: {done.stderr}"
         )
@@ -1819,7 +1865,9 @@ def test_settings_of_an_older_version_reach_the_renamed_guards(
     Before 1.19.0 an update was "copy the new folder over the old one", with no installer run, so
     such a project still calls the guards by their old names, from the working folder. Each guard is
     checked by what it does: delivery delivers (it got `-Stage`), the commit guard refuses (it got the
-    call on standard input, and its answer and exit code came back), the nudge speaks.
+    call on standard input, and its answer and exit code came back), the nudge speaks. The main
+    folder is no stream, and the commit guard steps aside there: its refusal is asked for from a
+    worktree that carries its own committed copy of the kit, the files under the old names included.
     """
     install_in(project_with_skill)
     commands = {
@@ -1842,11 +1890,13 @@ def test_settings_of_an_older_version_reach_the_renamed_guards(
     }
     board.write_text(json.dumps(record, ensure_ascii=False) + "\n", encoding="utf-8")
     env = hook_env(project_with_skill, tmp_path)
+    tree = stand_in_worktree(project_with_skill, "wave9-older")
 
     plan = project_with_skill / PLANS / "2026-01-01-wave3-draft.md"
     calls = calls_from(project_with_skill, "s-older", plan)
+    calls["claim"] = calls_from(tree, "s-older", plan)["claim"]
     answers = {
-        what: run_wired(command, project_with_skill, calls[what], env)
+        what: run_wired(command, tree if what == "claim" else project_with_skill, calls[what], env)
         for what, command in commands.items()
     }
     for what, done in answers.items():

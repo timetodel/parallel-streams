@@ -3,6 +3,37 @@
 All notable changes to this project are documented here.
 This project follows [Semantic Versioning](https://semver.org/).
 
+## [1.21.0] — 2026-11-23
+
+### Changed
+
+- **The commit guard steps aside in the repository's main folder.** The guard refused every
+  `git commit`, `git push` and `gh pr create` from the main folder unless that folder held an open
+  claim, and the only documented way past it was `PARALLEL_STREAMS_ALLOW_UNCLAIMED=1` for the session
+  — an environment variable a session cannot give its own hooks once it has started. So the refusal
+  pushed tabs into announcing a stream from the main folder just to commit. In a live project a tab
+  did exactly that and released the stream three minutes later; from then on every commit from that
+  main folder was refused as a stream that is "no longer run".
+
+  The main folder is not a stream: streams run in linked worktrees, one each, and the rest of the kit
+  already treats the main folder as no stream (no claim is adopted there, the stuck-findings summary
+  is shown only there, the plan-edit nudge never offers it). The guard now lets publishing commands
+  through in the main folder and in any folder below it that git counts as part of it, with or
+  without a claim, released or not, and for a subagent working there too. The main folder is
+  recognised only when git says so — the folder's own git directory is the shared one — so a
+  worktree nested inside the main folder (the default `.claude/worktrees/<name>`), and any folder
+  below it, is still a worktree. Linked worktrees are guarded exactly as before: no claim, or a
+  released or moved one, is refused, and a subagent's commit goes through only under its tab's open
+  stream.
+
+  **Known limit:** a stream run from the main folder, against the profile's `## Isolation`, is no
+  longer caught by this guard. The valve stays for what it is still needed for — a fix to the
+  channel itself, a bulk chore done from a worktree — and the refusal no longer lists the main folder
+  among its cases.
+
+  A claim released in the main folder by such a workaround no longer blocks commits there; nothing
+  needs to be done about it after updating.
+
 ## [1.20.3] — 2026-11-16
 
 ### Fixed

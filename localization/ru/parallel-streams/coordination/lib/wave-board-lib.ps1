@@ -750,6 +750,49 @@ function Get-SharedGitDirKey {
     return (Get-RepositoryPlace -Path $Path).Key
 }
 
+function Test-MainWorktree {
+    param([string]$Path)
+    # Входит ли папка в ГЛАВНУЮ папку репозитория — дерево, которое сделали `git init` или
+    # `git clone`, его корень или любую папку ниже, — а не в связанное рабочее дерево? Сторож фиксации
+    # там отходит в сторону: главная папка — не поток.
+    #
+    # ‼️ «Да» отвечаем, только когда git говорит это ПРЯМО: в главной папке собственный служебный
+    # каталог дерева и ЕСТЬ общий (`--git-dir` и `--git-common-dir` называют один каталог), а у
+    # связанного дерева собственный — `<общий>/worktrees/<имя>`. Это верно и для главной папки, где
+    # `.git` — файл (служебный каталог вынесен, подмодуль), там, где вопрос «`.git` — каталог?»
+    # ответил бы «нет». Всё, что не дотягивает до такого ответа, — репозитория здесь нет, git не
+    # ответил, ответ не читается, — это «не доказано, что главная папка» ($false), и никогда не
+    # догадка в её пользу: вызывающий тогда судит о папке ровно как прежде. «Не доказано, что
+    # связанное дерево» (`Test-LinkedWorktree` наоборот) и было бы такой догадкой: дерево, чей файл
+    # `.git` на мгновение не прочёлся, сочлось бы главной папкой.
+    #
+    # ‼️ Папка принадлежит тому дереву, которое для неё находит git, а не той папке, через которую
+    # идёт её путь. Рабочие деревья набора лежат ВНУТРИ главной папки (`.claude/worktrees/<имя>`): по
+    # пути каждое из них сочлось бы подпапкой главной. Git отвечает из самой папки, поэтому дерево,
+    # вложенное в главную папку, и любая папка ниже него остаются деревом.
+    #
+    # Один запуск git, и ответ читается так же, как свой читает `Get-RepositoryPlace`: git старше
+    # 2.31 не знает `--path-format` и печатает его обратно отдельной строкой, поэтому оба каталога —
+    # две ПОСЛЕДНИЕ строки; там git может назвать их относительно папки, из которой спросили, и
+    # относительный ответ достраиваем от той же папки.
+    if (-not $Path) { return $false }
+    try {
+        if (-not (Test-Path -LiteralPath $Path -PathType Container)) { return $false }
+        $answer = @(& git -C $Path rev-parse --path-format=absolute --git-dir --git-common-dir 2>$null)
+        if ($LASTEXITCODE -ne 0 -or $answer.Count -lt 2) { return $false }
+        $own = "$($answer[-2])".Trim()
+        $shared = "$($answer[-1])".Trim()
+        if (-not $own -or -not $shared) { return $false }
+        if (-not [System.IO.Path]::IsPathRooted($own)) { $own = Join-Path $Path $own }
+        if (-not [System.IO.Path]::IsPathRooted($shared)) { $shared = Join-Path $Path $shared }
+        $ownKey = Get-FolderKey -Path ([System.IO.Path]::GetFullPath($own))
+        $sharedKey = Get-FolderKey -Path ([System.IO.Path]::GetFullPath($shared))
+        return ($ownKey -eq $sharedKey)
+    } catch {
+        return $false
+    }
+}
+
 function Test-ServedFolder {
     param([string]$Path)
     # Принадлежит ли папка проекту, которому служит эта копия набора? Спрашивает каждый сторож, прежде

@@ -800,6 +800,49 @@ function Get-SharedGitDirKey {
     return (Get-RepositoryPlace -Path $Path).Key
 }
 
+function Test-MainWorktree {
+    param([string]$Path)
+    # Is this folder part of the repository's MAIN folder — the tree `git init` or `git clone` made,
+    # its root or any folder below it — rather than of a linked worktree? The commit guard steps
+    # aside there: the main folder is not a stream.
+    #
+    # ‼️ Answered "yes" only when git says so POSITIVELY: in the main folder the tree's own git
+    # directory IS the shared one (`--git-dir` and `--git-common-dir` name one directory), while a
+    # linked worktree's own is `<shared>/worktrees/<name>`. That holds for a main folder whose `.git`
+    # is a file as well (its git directory moved out, a submodule), where "is `.git` a directory"
+    # would say no. Everything short of that answer — no repository here, git not answering, an
+    # answer that does not read — is "not shown to be the main folder" ($false), never a guess in
+    # its favour: the caller then treats the folder exactly as it did before. "Not provably a
+    # linked worktree" (`Test-LinkedWorktree` turned around) would be that guess: a worktree whose
+    # `.git` file did not read for a moment would count as the main folder.
+    #
+    # ‼️ A folder belongs to the tree git finds for it, not to the folder its path runs through. The
+    # kit's worktrees live INSIDE the main folder (`.claude/worktrees/<name>`): judged by path, each
+    # of them would count as a subfolder of the main folder. Git answers from the folder itself, so a
+    # worktree nested in the main folder, and any folder below it, stays a worktree.
+    #
+    # One git start, read the way `Get-RepositoryPlace` reads its own: git older than 2.31 does not
+    # know `--path-format` and prints it back as a line of its own, so the two directories are the
+    # LAST two lines; there git may name them relative to the folder asked, and a relative answer is
+    # completed from that folder.
+    if (-not $Path) { return $false }
+    try {
+        if (-not (Test-Path -LiteralPath $Path -PathType Container)) { return $false }
+        $answer = @(& git -C $Path rev-parse --path-format=absolute --git-dir --git-common-dir 2>$null)
+        if ($LASTEXITCODE -ne 0 -or $answer.Count -lt 2) { return $false }
+        $own = "$($answer[-2])".Trim()
+        $shared = "$($answer[-1])".Trim()
+        if (-not $own -or -not $shared) { return $false }
+        if (-not [System.IO.Path]::IsPathRooted($own)) { $own = Join-Path $Path $own }
+        if (-not [System.IO.Path]::IsPathRooted($shared)) { $shared = Join-Path $Path $shared }
+        $ownKey = Get-FolderKey -Path ([System.IO.Path]::GetFullPath($own))
+        $sharedKey = Get-FolderKey -Path ([System.IO.Path]::GetFullPath($shared))
+        return ($ownKey -eq $sharedKey)
+    } catch {
+        return $false
+    }
+}
+
 function Test-ServedFolder {
     param([string]$Path)
     # Does this folder belong to the project this copy of the kit serves? Asked by every hook before

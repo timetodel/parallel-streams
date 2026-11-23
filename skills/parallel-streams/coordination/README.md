@@ -191,10 +191,20 @@ to be worked out — with no wave and no plan, `-Mode Claim` on its own supplies
 a free number.
 
 It catches forgetfulness, not intent: one deliberate line of shell gets around it, and that's fine —
-forgetfulness is what actually happens. Where there is genuinely no stream to announce — a commit
-from the repository's main folder, a fix to the channel itself, a bulk chore — the deliberate
-exception is the environment variable `PARALLEL_STREAMS_ALLOW_UNCLAIMED=1` for that session, and the
-refusal names it.
+forgetfulness is what actually happens. Where there is genuinely no stream to announce — a fix to the
+channel itself, a bulk chore — the deliberate exception is the environment variable
+`PARALLEL_STREAMS_ALLOW_UNCLAIMED=1` for that session, and the refusal names it.
+
+The repository's main folder is not a stream, and there the guard steps aside without being asked:
+in the main folder itself and in any folder below it that git counts as part of it. Streams run in
+linked worktrees, one each; the main folder is where the person sits and many tabs live at once, and
+the rest of the kit already treats it as no stream. A worktree nested inside the main folder (the
+default `.claude/worktrees/<name>`) is a worktree, not a subfolder, and is guarded as before. Refusing
+in the main folder only sent tabs to announce a stream from there to get past the refusal — a stream
+nobody ran — and once it was released, every later commit from the main folder was refused as "no
+longer run", with the valve, which a session cannot set for its own hooks mid-session, as the only way
+out. Known limit: a stream run from the main folder, against the profile's `## Isolation`, is no
+longer caught by this guard.
 
 A subagent commits under its tab's stream. A tab hands its tasks to subagents, and the host may give a
 subagent a worktree of its own. Nothing is announced from that folder, and nothing should be: an
@@ -204,9 +214,10 @@ the tab's session in every call a subagent makes, and a claim records the sessio
 from. So a subagent's commit goes through when an open claim of the project carries its tab's session
 — that tab's stream only, never a live neighbour's — and the registry is not touched. A subagent whose
 tab runs no open stream under its current session gets a refusal of its own that sends the work back
-to the tab. The tab announces from its own folder (or, after a context clear in a tab with no name of
-its own, announces again under the same address), and the commit goes through. A claim filed without
-a session (by hand from a terminal, or from a client that does not name it) lends its stream to no
+to the tab (there is no such refusal in the main folder: a subagent commits there as the main folder
+does). The tab announces from its own folder (or, after a context clear in a tab with no name of its
+own, announces again under the same address), and the commit goes through. A claim filed without a
+session (by hand from a terminal, or from a client that does not name it) lends its stream to no
 subagent.
 
 The guard asks the registry STRICTLY: an unreadable registry, a dropped drive, a claim file busy for
